@@ -1,0 +1,28 @@
+{"frames": {
+
+"reel_house.png":
+{
+	"frame": {"x":4,"y":4,"w":862,"h":743},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":5,"y":62,"w":862,"h":743},
+	"sourceSize": {"w":867,"h":867}
+},
+"reel_house_free.png":
+{
+	"frame": {"x":4,"y":753,"w":862,"h":743},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":5,"y":62,"w":862,"h":743},
+	"sourceSize": {"w":867,"h":867}
+}},
+"meta": {
+	"app": "https://www.codeandweb.com/texturepacker",
+	"version": "1.1",
+	"image": "reelhouse.png",
+	"format": "RGBA8888",
+	"size": {"w":870,"h":1500},
+	"scale": "0.33",
+	"smartupdate": "$TexturePacker:SmartUpdate:f754855ea9abdb3d28987a79c0c01d76:7e57ea0ba34720c5b007618c689fead1:011cb7cb6be717478969dba0d87c84b3$"
+}
+}

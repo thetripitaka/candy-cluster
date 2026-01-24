@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+
+    <title>Candy Cluster (Prototype)</title>
+    <style>
+      #hud, #topLeftHud, #debugHud,
+.hud, .top-left-hud, .debug-hud {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+      html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+
+  /* mobile: stop scroll/zoom gestures */
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+    #ui {
+  position: fixed;
+  left: calc(12px + env(safe-area-inset-left));
+  top:  calc(12px + env(safe-area-inset-top));
+  z-index: 10;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: #fff;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  user-select: none;
+}
+      button {
+        cursor: pointer; padding: 10px 14px; border-radius: 10px; border: 0;
+        background: #2b6cff; color: #fff; font-weight: 600;
+      }
+      button:active { transform: translateY(1px); }
+      .chip { padding: 8px 10px; background: rgba(255,255,255,0.08); border-radius: 10px; }
+      #stage {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+canvas { display: block; }
+ @media (max-width: 900px) {
+    #ui { display: none !important; }
+  }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <button id="spinBtn">SPIN</button>
+      <div class="chip">Mode: <span id="modeTxt">BASE</span></div>
+      <div class="chip">Mult: <span id="multTxt">x1</span></div>
+      <div class="chip">Win: <span id="winTxt">0.00</span></div>
+      <div class="chip">FS: <span id="fsTxt">0</span></div>
+    </div>
+    <div id="stage"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

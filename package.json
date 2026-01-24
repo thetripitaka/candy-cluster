@@ -1,0 +1,27 @@
+{
+  "name": "candy-cluster",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/howler": "^2.2.12",
+    "@types/node": "18",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "vite": "5.4.10"
+  },
+  "dependencies": {
+    "howler": "^2.2.4",
+    "pixi.js": "^8.14.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
