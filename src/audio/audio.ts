@@ -1,7 +1,7 @@
 // src/audio/audio.ts
 import { Howl, Howler } from "howler";
 
-type SfxKey =
+export type SfxKey =
   | "ui_click"
   | "confirm"
   | "ui_toggle"
@@ -12,13 +12,25 @@ type SfxKey =
   | "bonus_trigger"
   | "fs_intro"
   | "fs_outro"
-  | "fs_click"      // ✅ ADD THIS
+  | "fs_click"
   | "bigwin_hit"
+  | "bigwin_super"
+  | "bigwin_mega"
+  | "bigwin_epic"
+  | "bigwin_max"
+  | "final_amount"
+  | "final_fsoutro_amount"
   | "bounce"
   | "multiplier"
   | "boosted"
   | "infused"
-  | "car";
+  | "car"
+  | "tick"
+  | "fstrigger";
+
+
+
+
 
 
 
@@ -40,6 +52,9 @@ type AudioOptions = {
 };
 
 export class AudioManager {
+  getBaseMusicIntensity01() {
+  return this.baseIntensity01;
+}
 
   // ✅ Ensure base layers are playing (muted), so they stay in sync
 private ensureBaseLayersPlaying() {
@@ -158,7 +173,14 @@ getMusicDuck(): number {
 private musicBaseLayers: Howl[] = [];
 private baseIntensity01 = 0;   // 0..1
 private baseLayersInited = false;
-
+// =====================
+// TICK LOOP (Big Win + FS Outro)
+// =====================
+private tickId: number | null = null;
+private tickGain = 2.3; // try 1.3 .. 2.5
+private tickOn = false;
+private tickLastRate = 1;
+private tickLastVol = 0;
 // =====================
 // FS INTRO: TRACTOR LOOP (overlay-only)
 // =====================
@@ -180,7 +202,8 @@ private currentMusicKey: MusicKey | null = null;
     this.sfx = {
       infused: this.makeSfx("/assets/audio/infused.mp3"),
   ui_click: this.makeSfx("/assets/audio/ui_click.mp3"),
-  confirm:  this.makeSfx("/assets/audio/confirm.mp3"), // ✅ ADD THIS
+  
+  confirm:  this.makeSfx("/assets/audio/confirm.mp3"), 
   ui_toggle: this.makeSfx("/assets/audio/ui_toggle.mp3"),
   spin_start: this.makeSfx("/assets/audio/spin_start.mp3"),
   reel_land: this.makeSfx("/assets/audio/reel_land.mp3"),
@@ -191,11 +214,17 @@ private currentMusicKey: MusicKey | null = null;
   bonus_trigger: this.makeSfx("/assets/audio/bonus_trigger.mp3"),
   fs_intro: this.makeSfx("/assets/audio/fs_intro.mp3"),
   fs_outro: this.makeSfx("/assets/audio/fs_outro.mp3"),
+  fstrigger: this.makeSfx("/assets/audio/fstrigger.mp3"),
   bigwin_hit: this.makeSfx("/assets/audio/bigwin_hit.mp3"),
+  bigwin_super: this.makeSfx("/assets/audio/bigwin_super.mp3"),
+bigwin_mega:  this.makeSfx("/assets/audio/bigwin_mega.mp3"),
+bigwin_epic:  this.makeSfx("/assets/audio/bigwin_epic.mp3"),
+bigwin_max:   this.makeSfx("/assets/audio/bigwin_max.mp3"),
+final_amount: this.makeSfx("/assets/audio/final_amount.mp3"),
+final_fsoutro_amount: this.makeSfx("/assets/audio/final_fsoutro_amount.mp3"),
   bounce: this.makeSfx("/assets/audio/bounce.mp3"),
   boosted: this.makeSfx("/assets/audio/boosted.mp3"),
-
-  
+    tick: this.makeSfx("/assets/audio/tick.mp3"),
   multiplier: this.makeSfx("/assets/audio/multiplier.mp3"),
 };
 
@@ -293,14 +322,18 @@ console.log("[AUDIO] usingWebAudio:", (Howler as any).usingWebAudio, "ctx:", (Ho
   // Playback
   // -----------------
 playSfx(key: SfxKey, volMul = 1, rate = 1.0) {
+  this.initFromUserGesture();
   if (this.sfxMuted) return;
+
   const h = this.sfx[key];
   if (!h) return;
 
-  const busVol = this.sfxVolume01 * Math.max(0, volMul);
+  const busVol =
+    this.sfxVolume01 *
+    Math.max(0, volMul); // ✅ remove tickGain from normal SFX
+
   const r = Math.max(0.5, Math.min(2.5, rate));
 
-  // fallback-safe
   h.rate(r);
   h.volume(busVol);
 
@@ -308,6 +341,7 @@ playSfx(key: SfxKey, volMul = 1, rate = 1.0) {
   h.rate(r, id);
   h.volume(busVol, id);
 }
+
 
 
 
@@ -336,24 +370,27 @@ startFsIntroTractorLoop(fadeMs = 300, volMul = 0.85) {
   const target = this.sfxVolume01 * this.fsIntroTractorVolMul;
 
   // already playing? just fade to correct volume
-  if (this.fsIntroTractorId != null && this.fsIntroTractor.playing(this.fsIntroTractorId)) {
-    const cur = this.fsIntroTractor.volume(this.fsIntroTractorId);
-    this.fsIntroTractor.fade(cur, target, fadeMs, this.fsIntroTractorId);
-    return;
-  }
+const existingId = this.fsIntroTractorId;
+if (existingId != null && this.fsIntroTractor.playing(existingId)) {
+  const cur = this.fsIntroTractor.volume(existingId) as number;
+  this.fsIntroTractor.fade(cur, target, fadeMs, existingId);
+  return;
+}
+
 
   // start fresh at 0 then fade in
   this.fsIntroTractor.volume(0);
-const id = this.fsIntroTractor.play("loop");
-  this.fsIntroTractorId = id;
+const id = this.fsIntroTractor.play("loop") as unknown as number;
+this.fsIntroTractorId = id;
 
-  this.fsIntroTractor.fade(0, target, fadeMs, id);
+this.fsIntroTractor.fade(0, target, fadeMs, id);
+
 }
 
 stopFsIntroTractorLoop(fadeMs = 250) {
   if (this.fsIntroTractorId == null) return;
 
-  const id = this.fsIntroTractorId;
+  const id = this.fsIntroTractorId as unknown as number;
 
   // If it isn't playing anymore, just clear state
   if (!this.fsIntroTractor.playing(id)) {
@@ -361,18 +398,113 @@ stopFsIntroTractorLoop(fadeMs = 250) {
     return;
   }
 
-  const cur = this.fsIntroTractor.volume(id);
+  const cur = this.fsIntroTractor.volume(id) as number;
   this.fsIntroTractor.fade(cur, 0, fadeMs, id);
 
   // hard stop after fade
   setTimeout(() => {
-    // Only stop if it's still the same "session"
-    if (this.fsIntroTractorId !== id) return;
+    if (this.fsIntroTractorId !== (id as any)) return;
     try { this.fsIntroTractor.stop(id); } catch {}
     this.fsIntroTractorId = null;
   }, fadeMs + 30);
 }
 
+// =====================
+// TICK LOOP controls (Big Win + FS Outro)
+// =====================
+startTickLoop(fadeMs = 120, volMul = 0.35, rate = 1.0) {
+  // ✅ ensure audio is unlocked before starting any loop
+  this.initFromUserGesture();
+
+  if (this.sfxMuted) return;
+  const h = this.sfx.tick;
+  console.log("[TICK] startTickLoop", {
+  sfxMuted: this.sfxMuted,
+  sfxVolume01: this.sfxVolume01,
+  volMul,
+  rate,
+  tickId: this.tickId,
+  playing: this.tickId != null ? h.playing(this.tickId) : false,
+});
+
+  if (!h) return;
+
+  this.tickOn = true;
+
+ const busVol =
+  this.sfxVolume01 *
+  Math.max(0, volMul) *
+  this.tickGain;
+  const busVolClamped = Math.min(1.0, busVol);
+  const r = Math.max(0.5, Math.min(3.5, rate));
+
+  // start loop if needed
+  if (this.tickId == null || !h.playing(this.tickId)) {
+    h.loop(true);
+    h.volume(0);
+    h.rate(r);
+    const id = h.play() as unknown as number;
+    this.tickId = id;
+  }
+
+  // fade in to target
+  const id = this.tickId!;
+  const cur = h.volume(id);
+  try {
+    h.fade(cur as number, busVol, fadeMs, id);
+  } catch {
+    h.volume(busVol, id);
+  }
+
+  this.tickLastRate = r;
+  this.tickLastVol = busVol;
+}
+
+setTickParams(volMul: number, rate: number) {
+  if (!this.tickOn) return;
+  if (this.sfxMuted) return;
+
+  const h = this.sfx.tick;
+  if (!h) return;
+  if (this.tickId == null) return;
+
+  const id = this.tickId;
+
+  const busVol = this.sfxVolume01 * Math.max(0, volMul);
+  const r = Math.max(0.5, Math.min(3.5, rate));
+
+  // avoid micro-spam
+  if (Math.abs(r - this.tickLastRate) > 0.01) {
+    h.rate(r, id);
+    this.tickLastRate = r;
+  }
+  if (Math.abs(busVol - this.tickLastVol) > 0.01) {
+    h.volume(busVol, id);
+    this.tickLastVol = busVol;
+  }
+}
+
+stopTickLoop(fadeMs = 140) {
+  const h = this.sfx.tick;
+  if (!h) return;
+
+  this.tickOn = false;
+
+  if (this.tickId == null) return;
+
+  const id = this.tickId;
+  this.tickId = null;
+
+  try {
+    const cur = h.volume(id);
+    h.fade(cur as number, 0, fadeMs, id);
+    setTimeout(() => {
+      try { h.stop(id); } catch {}
+    }, fadeMs + 20);
+  } catch {
+    try { h.stop(id); } catch {}
+  }
+}
 
 playMusic(key: MusicKey, fadeMs = 300) {
   // 🔒 Guard
@@ -447,6 +579,8 @@ playMusic(key: MusicKey, fadeMs = 300) {
 
   // Re-apply bus state to everything
   apply() {
+    
+
 
     // ✅ FS INTRO tractor loop follows SFX mute/volume live
 if (this.fsIntroTractorId != null) {
@@ -460,6 +594,11 @@ if (this.fsIntroTractorId != null) {
     this.fsIntroTractor.volume(target, id);
   }
 }
+
+  // ✅ stop tick loop when muting
+  if (this.sfxMuted) {
+    this.stopTickLoop(0);
+  }
 
     // SFX: nothing playing continuously, so just keep volumes updated when played.
 

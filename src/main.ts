@@ -42,6 +42,7 @@ import {
 import { AudioManager } from "./audio/audio.ts";
 
 
+import type { SfxKey } from "./audio/audio";
 
 
   import type {
@@ -62,9 +63,9 @@ let autoMenuApi: any = null;
 // --------------------------------------
 // DEV STUBS (build-only helpers)
 // --------------------------------------
-function debugForceFsOutro(_amt: number) {
-  // dev-only helper was removed; keep stub so build passes
-}
+let debugForceFsOutro = (_amt: number) => {
+  // stub until main() installs the real implementation
+};
 
 
 
@@ -276,7 +277,6 @@ window.addEventListener("keydown", async (e) => {
 
   console.log("[M TEST] musicMuted ->", !muted);
 });
-
 
 
 // =====================
@@ -633,13 +633,15 @@ if (!disableCustomCursorOnMobile()) {
 // MOBILE LANDSCAPE BLOCKER (PORTRAIT-ONLY LOCK)
 // =====================
 const rotateBlocker = new Graphics();
-rotateBlocker.zIndex = 999999;
+rotateBlocker.zIndex = 10_000_000; // ✅ stronger than anything else
 rotateBlocker.visible = false;
+
+
 rotateBlocker.eventMode = "static";
 rotateBlocker.cursor = "default";
 root.addChild(rotateBlocker);
 
-const rotateText = new Text("PLEASE ROTATE YOUR DEVICE", {
+const rotateText = new Text("PLEASE ROTATE\nBACK TO PORTRAIT", {
   fontFamily: "Micro5",
   fontSize: 36,
   fill: 0xffffff,
@@ -653,7 +655,7 @@ rotateBlocker.addChild(rotateText);
 function layoutRotateBlocker() {
   const W = app.screen.width;
   const H = app.screen.height;
-
+  
   rotateBlocker.clear();
   rotateBlocker
     .rect(0, 0, W, H)
@@ -6455,38 +6457,49 @@ let fsOutroPortraitScaleLocked = false;
 
 
 
-    function fireFsOutroFinishFX() {
-      if (fsOutroBurstDone) return;
-      fsOutroBurstDone = true;
+  function fireFsOutroFinishFX() {
+  if (fsOutroBurstDone) return;
+  fsOutroBurstDone = true;
 
-      // =====================
-      // 💰 SINGLE CLEAN FINISH COIN BURST
-      // =====================
-      setTimeout(() => {
-        burstCoins(1.7, 1.9);
-      }, 60);
+  // 💰 coins (existing)
+  setTimeout(() => {
+    burstCoins(1.7, 1.9);
+  }, 60);
 
+  // 🌈 FS OUTRO ONLY: short voxel confetti burst
+  setTimeout(() => {
+    startMaxConfetti(0.9);
+    setTimeout(() => stopMaxConfetti(true), 900); // FS-only burst
+  }, 80);
 
-
-
-      // =====================
-      // ✨ NUMBER PULSE ONLY (NO FIRE BURST)
-      // =====================
-      pulseFsOutroAmount();
-    }
-
+  // ✨ number pulse
+  pulseFsOutroAmount();
+}
 
 
 
-    function finishFsOutroCountUp() {
-      fsOutroTickToken++; // cancel RAF
-      fsOutroWinAmount.text = fmtMoney(fsOutroFinalAmount);
-      fsOutroCountDone = true;
-      fireFsOutroFinishFX();
 
-      // ✅ start the idle pulse even when user skips the count
-      startFsOutroIdlePulse();
-    }
+
+
+   function finishFsOutroCountUp() {
+  fsOutroTickToken++; // cancel RAF
+  audio?.stopTickLoop?.(80);
+
+  fsOutroWinAmount.text = fmtMoney(fsOutroFinalAmount);
+  fsOutroCountDone = true;
+
+  // ✅ restore music immediately when we hit the final amount (even on skip)
+  restoreMusicAfterFsOutro(350);
+
+  // ✅ play finish hit on skip-to-final too
+  audio?.playSfx?.("final_fsoutro_amount", 1.15);
+
+  fireFsOutroFinishFX();
+
+  startFsOutroIdlePulse();
+}
+
+
 
 
 
@@ -6498,7 +6511,7 @@ let fsOutroPortraitScaleLocked = false;
 
     // ✅ max progress change PER SECOND (not per frame)
     // 0.12 means it can move 12% of the bar per second max.
-    const MAX_STEP_PER_SEC = 0.12;
+    const MAX_STEP_PER_SEC = 0.3;
 
 
       fsOutroTickToken++;
@@ -6507,6 +6520,10 @@ let fsOutroPortraitScaleLocked = false;
       fsOutroFinalAmount = targetAmount;
     fsOutroCountDone = false;
     fsOutroBurstDone = false;
+    // ✅ TICK LOOP: start quiet + slow, then ramp during the count
+audio?.startTickLoop?.(120, 0.38, 1.0);
+
+
 
 
       const start = performance.now();
@@ -6554,6 +6571,17 @@ let fsOutroPortraitScaleLocked = false;
       const v = from + (targetAmount - from) * e;
       fsOutroWinAmount.text = fmtMoney(v);
 
+      // ✅ TICK LOOP ramp (FS OUTRO): rate + volume rise as we approach the end
+// progress 0..1
+const p = Math.max(0, Math.min(1, e));
+
+const rate = 0.98 + 0.50 * Math.pow(p, 1.4);
+const loudnessComp = 1.0 + 0.20 * (rate - 1.0);
+const vol = (0.22 + 0.40 * Math.pow(p, 1.2)) * loudnessComp;
+
+audio?.setTickParams?.(vol, rate);
+
+
       // =====================
       // FINISH ONLY WHEN VISUALLY DONE
       // =====================
@@ -6561,16 +6589,23 @@ let fsOutroPortraitScaleLocked = false;
 
         requestAnimationFrame(tick);
       } else {
-      fsOutroWinAmount.text = fmtMoney(targetAmount);
-    fsOutroCountDone = true;
-    fireFsOutroFinishFX();
+  audio?.stopTickLoop?.(120);
 
-    // ✅ start idle pulse AFTER the one-shot finishes
-    setTimeout(() => {
-      if (state.overlay.fsOutro) startFsOutroIdlePulse();
-    }, 420);
+  fsOutroWinAmount.text = fmtMoney(targetAmount);
+  fsOutroCountDone = true;
 
-      }
+  restoreMusicAfterFsOutro(350);
+
+  // ✅ play finish hit ONLY when we actually reach the final number
+  audio?.playSfx?.("final_fsoutro_amount", 1.15);
+
+  fireFsOutroFinishFX();
+
+  setTimeout(() => {
+    if (state.overlay.fsOutro) startFsOutroIdlePulse();
+  }, 420);
+}
+
     }
 
 
@@ -6593,6 +6628,35 @@ function showFsOutroP(on: boolean, totalWin: number, ms = 420) {
     setTimeout(resolve, ms + 30);
   });
 }
+// =====================
+// DEBUG: FORCE FS OUTRO (wired to O key)
+// =====================
+debugForceFsOutro = (amt: number) => {
+  if (FINAL_BUILD) return;
+
+  console.log("[DEBUG] Force FS OUTRO", amt);
+
+  // make sure audio is unlocked (outro has click-to-continue)
+  audio?.initFromUserGesture?.();
+
+  // kill any other overlay states that could block input/visibility
+  state.overlay.bigWin = false;
+  state.overlay.fsIntro = false;
+  state.overlay.fsOutroPending = false;
+
+  // stop any running FS-outro tick if it was mid-way
+  fsOutroTickToken++;          // cancels RAF
+  fsOutroCountDone = true;
+  audio?.stopTickLoop?.(0);
+
+  // optional: ensure reel dimmer isn't stuck from something else
+  // (your setReelDimmer no-ops on mobile anyway)
+  void setReelDimmer(false);
+
+  // show the FS outro with this amount
+  showFsOutro(true, amt, 420);
+};
+
 
     function showFsOutro(on: boolean, totalWin: number, ms = 420) {
       // ✅ FORCE the outro bg texture FIRST (so layout uses correct dimensions)
@@ -6687,12 +6751,16 @@ fsOutroPortraitScale = 1;
 
             // ✅ stop coins (drain true lets them fall away nicely)
             stopCoinShower(true);
+            stopMaxConfetti(true);
     // ✅ stop any running FS outro count-up
     fsOutroTickToken++; // stop any running RAF
     fsOutroCountDone = true;
+    audio?.stopTickLoop?.(0); // ✅ hard kill tick loop if outro is closing
+
 
 
             state.overlay.fsOutro = false;
+            restoreMusicAfterFsOutro(250);
             FIREFLY_ON = false;
     clearFirefliesNow();
 
@@ -6704,12 +6772,51 @@ fsOutroPortraitScale = 1;
     }
 
 
-    // =====================
+    // ================= ====
     // BIG WIN OVERLAY — click to continue
     // =====================
 
 
-    let bigWinCanContinue = false;
+   let bigWinCanContinue = false;
+
+let __bigWinPrevMusicVol01: number | null = null;
+// ✅ Duck current music to 50% during Big Win (BASE + FREE SPINS)
+const BIGWIN_MUSIC_DUCK = 0.35;
+
+// =====================
+// FS OUTRO PENDING — MUSIC DUCK TO 50%
+// =====================
+let __fsOutroPrevMusicVol01: number | null = null;
+const FS_OUTRO_MUSIC_DUCK = 0.2; // 50%
+
+function fadeMusicTo(target01: number, ms = 250) {
+  const from = audio?.getMusicVolume01?.() ?? 0.6;
+  const to = Math.max(0, Math.min(1, target01));
+
+  // If audio isn't ready, just set it (safe no-op if methods missing)
+  if (!audio?.setMusicVolume01 || !audio?.apply) return;
+
+  void animateMs(ms, (t) => {
+    const e = t * t * (3 - 2 * t); // smoothstep
+    audio.setMusicVolume01(from + (to - from) * e);
+    audio.apply();
+  });
+}
+
+function duckMusicForFsOutroPending(ms = 250) {
+  if (__fsOutroPrevMusicVol01 == null) {
+    __fsOutroPrevMusicVol01 = audio?.getMusicVolume01?.() ?? 0.6;
+  }
+  fadeMusicTo(__fsOutroPrevMusicVol01 * FS_OUTRO_MUSIC_DUCK, ms);
+}
+
+function restoreMusicAfterFsOutro(ms = 250) {
+  if (__fsOutroPrevMusicVol01 == null) return;
+  fadeMusicTo(__fsOutroPrevMusicVol01, ms);
+  __fsOutroPrevMusicVol01 = null;
+}
+
+
     let bigWinPortraitScale = 1;
 let bigWinPortraitScaleLocked = false;
     let bigWinResolve: (() => void) | null = null;
@@ -8132,6 +8239,34 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
       }
     }
 
+    function playBigWinTierSfx(tier: BigWinTier) {
+  // Don’t play for BIG (you already play bigwin_hit at overlay start)
+  if (tier === "SUPER") audio?.playSfx?.("bigwin_super", 1.0);
+  else if (tier === "MEGA") audio?.playSfx?.("bigwin_mega", 1.0);
+  else if (tier === "EPIC") audio?.playSfx?.("bigwin_epic", 1.0);
+  else if (tier === "MAX") audio?.playSfx?.("bigwin_max", 1.0);
+}
+
+
+function playBigWinTierPitch(tier: BigWinTier) {
+  const rate =
+    tier === "SUPER" ? 1.08 :
+    tier === "MEGA"  ? 1.16 :
+    tier === "EPIC"  ? 1.24 :
+    tier === "MAX"   ? 1.34 :
+    1.0;
+
+  // ✅ Only pitch for tier-ups (not BIG)
+  if (tier === "SUPER" || tier === "MEGA" || tier === "EPIC" || tier === "MAX") {
+    // ✅ hard safety: ensure finite + sane range for Howler
+    const safeRate = Number.isFinite(rate) ? Math.max(0.5, Math.min(4.0, rate)) : 1.0;
+
+    // ✅ your AudioManager signature expects a NUMBER rate as arg #3
+    audio?.playSfx?.("bigwin_hit", 1.0, safeRate);
+  }
+}
+
+let bigWinFinalSoundPlayed = false;
 
     function showBigWin(on: boolean, winAmountValue: number, winX: number, ms = 520) {
       
@@ -8139,8 +8274,20 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
 
       if (on) {
       state.overlay.bigWin = true;
-      audio?.playSfx?.("bigwin_hit", 1.0);
-audio?.playMusic?.("music_bigwin", 250);
+ bigWinFinalSoundPlayed = false;
+// ✅ one hit at overlay start
+audio?.playSfx?.("bigwin_hit", 1.0);
+
+// ✅ BASE + FS: keep whatever music is playing, just duck volume
+if (__bigWinPrevMusicVol01 == null) {
+  __bigWinPrevMusicVol01 = audio?.getMusicVolume01?.() ?? 0.6;
+}
+
+const ducked = Math.max(0, Math.min(1, __bigWinPrevMusicVol01 * BIGWIN_MUSIC_DUCK));
+audio?.setMusicVolume01?.(ducked);
+audio?.apply?.();
+
+
 
         bigWinPulseDone = false;
       lockInputForBigWin(true);
@@ -8255,13 +8402,34 @@ layoutBigWin(); // apply it immediately
       const currentX = currentAmount / bet;
 
       bigWinAmount.text = fmtMoney(currentAmount);
+      // ✅ TICK LOOP ramp (BIG WIN): faster + louder as it climbs
+const p01 = Math.max(0, Math.min(1, rawT)); // ✅ 0..1 progress
+
+
+// 🔊 loudness compensation for higher pitch
+
+
+// final volume
+
+
+const rate = 0.98 + 0.65 * Math.pow(p01, 1.45);
+const loudnessComp = 1.0 + 0.25 * (rate - 1.0);
+
+const vol = (0.22 + 0.45 * Math.pow(p01, 1.2)) * loudnessComp;
+audio?.setTickParams?.(vol, rate);
 
       const tier = bigWinTierForX(currentX);
 
 
-    if (tier !== lastTier) {
-      lastTier = tier;
-      swapBigWinTierTitle(tier);
+   if (tier !== lastTier) {
+  lastTier = tier;
+  swapBigWinTierTitle(tier);
+playBigWinTierPitch(tier);
+  // ✅ NEW: play tier upgrade stinger exactly once per tier
+  playBigWinTierSfx(tier);
+
+  bigWinFloatTier = tier;
+      
 
       // ✅ switch what spawns (BIG=fruits, SUPER+=your new PNGs)
       bigWinFloatTier = tier;
@@ -8292,6 +8460,8 @@ layoutBigWin(); // apply it immediately
 
 
       if (rawT < 1) {
+        // ✅ TICK LOOP: start for Big Win count-up
+audio?.startTickLoop?.(120, 0.22, 1.0);
         requestAnimationFrame(tickBigWin);
       } else {
 
@@ -8300,6 +8470,9 @@ layoutBigWin(); // apply it immediately
       // snap exact final values
       bigWinAmount.text = fmtMoney(targetAmount);
     pulseBigWinAmount(); // ✅ pulse when amount lands (like fsOutro)
+   audio?.stopTickLoop?.(0); // kill tick immediately
+    audio?.playSfx?.("final_amount", 1.15, 1.0); // volMul=1.15, rate=1.0
+
 
 
       // ✅ now allow click-to-continue
@@ -8397,11 +8570,23 @@ layoutBigWin(); // apply it immediately
             gameCore.alpha = 1;
             (gameCore as any).eventMode = "auto";
             lockInputForBigWin(false);
-
+audio?.stopTickLoop?.(0); // ✅ safety stop
 
             state.overlay.bigWin = false;
-            
+            // ✅ If we ducked FS music for big win, restore it
+
+
+// keep your original “resume correct track” behavior for non-FS or safety
+// ✅ restore music volume after big win
+if (__bigWinPrevMusicVol01 != null) {
+  audio?.setMusicVolume01?.(__bigWinPrevMusicVol01);
+  audio?.apply?.();
+  __bigWinPrevMusicVol01 = null;
+}
+
+// keep your safety “resume correct track” (optional but fine)
 audio?.playMusic?.(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base", 350);
+
 
 
             
@@ -8414,12 +8599,17 @@ audio?.playMusic?.(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base",
       }
     }
 
-    function finishBigWinCountUp() {
-      // cancel any in-flight RAF
-      bigWinTickToken++;
-
-      // snap visuals
+function finishBigWinCountUp() {
+  bigWinTickToken++;          // cancel RAF
       bigWinAmount.text = fmtMoney(bigWinFinalAmount);
+ // 🔊 FINAL AMOUNT HIT (play FIRST)
+audio?.playSfx?.("final_amount", 1.15, 1.0); // volMul=1.15, rate=1.0
+
+// 🧹 stop the ticking AFTER the hit has time to land
+setTimeout(() => {
+  audio?.stopTickLoop?.(120);
+}, 80);
+
       pulseBigWinAmount(); // ✅ pulse even when skipping (matches fsOutro)
 
 
@@ -8467,18 +8657,24 @@ audio?.playMusic?.(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base",
         
         bigWinContinue.removeAllListeners?.("pointertap");
     bigWinContinue.on("pointertap", (e) => {
-      (e as any).stopPropagation?.();
-      if (state.overlay.bigWin) {
-      if (!bigWinCountDone) {
-        finishBigWinCountUp();
-        return;
-      }
-      stopBigWinIdlePulse();          // ✅ add this
-      showBigWin(false, 0, 0, 260);
-      return;
-    }
-      
-    });
+  (e as any).stopPropagation?.();
+
+  if (!state.overlay.bigWin) return;
+
+  // 1st click: skip to final (NO click sfx)
+  if (!bigWinCountDone) {
+    finishBigWinCountUp();
+    return;
+  }
+
+  // 2nd click: continue/close (PLAY click sfx)
+  audio?.playSfx?.("fs_click", 1.15);
+
+  stopBigWinIdlePulse();
+  showBigWin(false, 0, 0, 260);
+});
+
+
 
 
 
@@ -8487,32 +8683,42 @@ audio?.playMusic?.(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base",
 
 
     fsDimmer.on("pointertap", () => {
-      // =====================
-      // BIG WIN: click = skip then close
-      // =====================
-      if (state.overlay.bigWin) {
-        // 1st click: skip count-up
-        if (!bigWinCountDone) {
-          finishBigWinCountUp();
-          return;
-        }
-        // 2nd click: close
-        showBigWin(false, 0, 0, 260);
-        return;
-      }
+   // =====================
+  // BIG WIN: click = skip then close
+  // =====================
+  if (state.overlay.bigWin) {
+  audio?.initFromUserGesture?.();
+
+  // 1st click: skip (NO click sfx)
+  if (!bigWinCountDone) {
+    finishBigWinCountUp();
+    return;
+  }
+
+  // 2nd click: close (PLAY click sfx)
+  audio?.playSfx?.("fs_click", 1.15);
+
+  showBigWin(false, 0, 0, 260);
+  return;
+}
+
 
       // =====================
       // FS OUTRO: click = skip then close
       // =====================
-      if (state.overlay.fsOutro) {
-        fsOutroPulseToken++; // stop idle pulse immediately
+     if (state.overlay.fsOutro) {
+  fsOutroPulseToken++;
 
-        if (!fsOutroCountDone) {
-          finishFsOutroCountUp();
-          return;
-        }
+  // 1st click: skip to final (NO click sfx)
+  if (!fsOutroCountDone) {
+    finishFsOutroCountUp();
+    return;
+  }
 
-        void (async () => {
+  // 2nd click: continue/close (PLAY click sfx)
+  audio?.playSfx?.("fs_click", 1.15);
+
+  void (async () => {
   await showFsOutroP(false, 0, 260);
 
       // ✅ IMPORTANT: turn OFF the reel win dimmer when leaving FS outro
@@ -9082,6 +9288,8 @@ const FS_ADDED_LAND_LABEL_Y  = 0.52;
     async function showFsAddedPopup(added: number) {
       // Ensure geometry is correct
       layoutFsAddedPopup();
+        // 🔊 FS RETRIGGER SFX (plays immediately when popup appears)
+  audio?.playSfxThrottled?.("fstrigger", 200, 1.0, 1.0);
 
       fsAddedAmountText.text = `+${added}`;
 
@@ -9244,7 +9452,8 @@ multPlaqueLayer.visible = false;
       } else {
         // ✅ stop tractor loop as the intro ends (fade out)
 audio?.stopFsIntroTractorLoop?.(350);
-        audio?.setBaseMusicIntensity?.(audio?.baseIntensity01 ?? 1.0, 350);
+       audio?.setBaseMusicIntensity?.(audio?.getBaseMusicIntensity01?.() ?? 1.0, 350);
+
 
         zoomBackgroundTo(1.0, ms);
         // fadeGameTo(1, 1.0, ms); // ✅ don't restore here — we will reveal later with showGameCoreDelayed()
@@ -11138,11 +11347,7 @@ let betDownBtnPixi: any = null;
       betDownBtnPixi?.setEnabled?.(enabled);
       betUpBtnPixi?.setEnabled?.(enabled);
 
-      // also stop auto mode during overlays
-      if (!enabled) {
-        state.ui.auto = false;
-        autoBtnPixi?.setOn?.(false);
-      }
+     
     }
 
     function lockInputForBigWin(on: boolean) {
@@ -11991,13 +12196,12 @@ h = Math.round(h * BET_PILL_H_SCALE_DESKTOP);
     }
 
     function makePngButton(
-      
-      
-      upUrl: string,
-      hoverUrl: string,
-      downUrl: string,
-      onClick: () => void
-    ) {
+  upUrl: string,
+  hoverUrl: string,
+  downUrl: string,
+  onClick: () => void,
+  opts?: { clickSfx?: SfxKey | null; clickVol?: number }
+) {
       const c = new Container();
 
       const up = new Sprite(texUI(upUrl));
@@ -12047,11 +12251,23 @@ h = Math.round(h * BET_PILL_H_SCALE_DESKTOP);
         down.visible = false;
       });
 
-      c.on("pointertap", () => {
-         audio?.initFromUserGesture?.(); // ✅ ensure unlocked
-  audio?.playSfx?.("ui_click", 0.9);
+c.on("pointertap", () => {
+  audio?.initFromUserGesture?.(); // ✅ ensure unlocked
+
+  // ✅ IMPORTANT:
+  // - if clickSfx is UNDEFINED -> default to "ui_click"
+  // - if clickSfx is NULL      -> play nothing
+  // - if clickSfx is a key     -> play that
+  const sfx =
+    opts && ("clickSfx" in opts)
+      ? (opts.clickSfx ?? null)  // preserves explicit null
+      : "ui_click";
+
+  if (sfx) audio?.playSfx?.(sfx as any, opts?.clickVol ?? 0.9);
+
   onClick();
 });
+
 
 
         (c as any).setEnabled = (enabled: boolean) => {
@@ -12659,12 +12875,13 @@ if (state.ui.auto) {
   stopAutoNow("spin button (stop auto)");
   refreshAutoSpinSpinButton();
   return;
+  
 }
 
 
  // ✅ If auto is ARMED (picked a value), SPIN becomes "PLAY AUTO"
 if (state.ui.autoArmed) {
-  audio?.playSfx?.("spin_start", 1.0);
+ 
   const rounds = state.ui.autoPendingRounds ?? -1;
 
   state.ui.auto = true;
@@ -12699,7 +12916,10 @@ if (state.ui.autoArmed) {
         }
 
         void doSpin();
-      }
+      
+      },
+       { clickSfx: null } // ✅ no ui_click on SPIN
+      
     );
 // ✅ Bigger hit area for SPIN only (doesn't change visuals)
 const isTouch =
@@ -15725,21 +15945,63 @@ function getPortraitReelScale() {
     /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     window.matchMedia?.("(pointer: coarse)")?.matches;
 
-  const isLandscape = W > H;
-
- // ✅ Portrait-locked mobile: never block rendering in landscape
-if (LOCK_MOBILE_TO_PORTRAIT && IS_MOBILE) {
-  rotateBlocker.visible = false;
-} else {
-  // (optional) keep your old blocker behavior when NOT locked
   const isLandscape = app.screen.width > app.screen.height;
-  if (IS_MOBILE && isLandscape) {
-    rotateBlocker.visible = true;
-    layoutRotateBlocker();
-    return;
-  }
-  rotateBlocker.visible = false;
+
+
+  
+// =====================
+// PORTRAIT-ONLY LOCK (MOBILE + DOM BLOCKER)
+// =====================
+const domBlocker = document.getElementById("rotate-blocker-dom");
+
+if (IS_MOBILE && isLandscape) {
+  // Pixi blocker (covers canvas area)
+  rotateBlocker.visible = true;
+  layoutRotateBlocker();
+
+  // DOM blocker (covers entire browser viewport incl letterbox)
+  if (domBlocker) domBlocker.style.display = "flex";
+
+  // Hide everything underneath (no peeking, no interaction)
+  backgroundLayer.visible = false;
+  gameCore.visible = false;
+  uiLayer.visible = false;
+
+  root.sortChildren();
+  return; // 🔒 STOP layout here
 }
+
+// =====================
+// LEAVING LANDSCAPE
+// =====================
+rotateBlocker.visible = false;
+if (domBlocker) domBlocker.style.display = "none";
+
+backgroundLayer.visible = true;
+gameCore.visible = true;
+uiLayer.visible = true;
+
+// safety relayout next frame (iOS viewport settles late)
+requestAnimationFrame(() => {
+  layoutUI();
+  autoMenuApi?.layout?.();
+  settingsApi?.layout?.();
+  buyMenuApi?.layoutBuy?.();
+});
+
+
+
+
+
+gameCore.visible = true;
+uiLayer.visible = true;
+
+
+// restore game/ui if we were blocking
+gameCore.alpha = 1;
+(gameCore as any).eventMode = "auto";
+uiLayer.alpha = 1;
+uiLayer.eventMode = "auto";
 
 
   // --- background + overlays ---
@@ -15854,8 +16116,23 @@ if (isMob) {
 
   layoutTumbleBanner();
   layoutMultiplierPlaque();
-  layoutUI();
+   layoutUI();
   autoMenuApi?.layout?.();
+
+  // ✅ IMPORTANT: force re-layout of menus after any resize/orientation change
+  settingsApi?.layout?.();
+  buyMenuApi?.layoutBuy?.();
+
+  // optional but often helpful if those UIs depend on stage/screen sizes
+  layoutFsCounter();
+  layoutTumbleBanner();
+  layoutMultiplierPlaque();
+  layoutReelFlash();
+
+  // if you have “live car rescale” logic, do it here too
+  rescaleLiveCars?.();
+
+  
   layoutReelFlash();
 }
 
@@ -16993,6 +17270,8 @@ applyUiLocks();
     if (state.game.mode === "FREE_SPINS" && state.fs.remaining === 0) {
       // ✅ we are still "in free spins" during the pre-outro pause
       state.overlay.fsOutroPending = true;
+  // ✅ FS ended: duck music to 50% during the pause + outro count-up
+  duckMusicForFsOutroPending(350);
 
       // keep FS presentation during the pause
       setReelHouseForMode("FREE_SPINS");   // ✅ keep FS reel house visible
