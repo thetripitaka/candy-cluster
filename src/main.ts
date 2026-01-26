@@ -4,7 +4,6 @@ import {
       Container,
       Sprite,
       Texture,
-      RenderTexture,
       Assets,
       BlurFilter,
       Graphics,
@@ -12,7 +11,6 @@ import {
       TextStyle,
       Rectangle,
       AnimatedSprite,
-      SCALE_MODES,
     } from "pixi.js";
 
 
@@ -24,7 +22,6 @@ import {
     easeOutCubic,
     easeInCubic,
     softstep,
-    linear,
   } from "./core/timing";
 
   import { addSystem, ensureTickerRouter } from "./core/tickerRouter";
@@ -282,21 +279,6 @@ window.addEventListener("keydown", async (e) => {
 // =====================
 // CLUSTER POP PITCH LADDER
 // =====================
-let clusterPopRate = 1.0;
-
-// how fast it climbs each tumble (tweak 0.02..0.07)
-const CLUSTER_POP_RATE_STEP = 0.1;
-
-// cap so it never gets chipmunk-y (tweak 1.25..1.55)
-const CLUSTER_POP_RATE_MAX = 2;
-
-function resetClusterPopRate() {
-  clusterPopRate = 1.0;
-}
-
-function bumpClusterPopRate() {
-  clusterPopRate = Math.min(CLUSTER_POP_RATE_MAX, clusterPopRate + CLUSTER_POP_RATE_STEP);
-}
 
 
 
@@ -413,7 +395,6 @@ function bumpClusterPopRate() {
       const COLS = 6;
       const ROWS = 5;
       let cellSize = 130;
-      const gap = 0;          // spacing between symbols (layout)
     const FRAME_GAP = 4.1;     // affects reel house sizing ONLY
     const SYMBOL_GAP = 0;    // affects symbol spacing ONLY
       // what the reel house should assume (usually keep 0)
@@ -480,7 +461,6 @@ function bumpClusterPopRate() {
 
       function idxToXY(i: number) { return { x: i % COLS, y: Math.floor(i / COLS) }; }
       function xyToIdx(x: number, y: number) { return y * COLS + x; }
-      function inBounds(x: number, y: number) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
 
     
       
@@ -548,18 +528,6 @@ function computeCellSize() {
   // clamp so it doesn’t get microscopic
   const s = Math.floor(Math.max(72, Math.min(130, Math.min(cellFromW, cellFromH))));
   return s;
-}
-function computeCellSizeFromBoard(boardW: number, boardH: number) {
-  // boardW/H are the INNER reel window size (already inset)
-  const pad = 10; // inner breathing room (px) — tweak 0..20
-  const availW = Math.max(1, boardW - pad * 2);
-  const availH = Math.max(1, boardH - pad * 2);
-
-  const cellFromW = availW / COLS;
-  const cellFromH = availH / ROWS;
-
-  const s = Math.floor(Math.min(cellFromW, cellFromH));
-  return Math.max(56, Math.min(120, s));
 }
 
       
@@ -1004,7 +972,6 @@ if (disableCustomCursorOnMobile()) {
     let curY = targetY;
 
     function clamp(n: number, a: number, b: number) { return Math.max(a, Math.min(b, n)); }
-    function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
 
     // =========
     // 8-bit sparks (pool)
@@ -1252,7 +1219,6 @@ window.addEventListener(
       if (!loadingLayer.visible) return;     // loader-only gate
       if (!loaderCursorOn) return;
 
-      const p = e.global;
       spawnLoaderClickBurst(targetX, targetY); // use snapped/offset cursor position
     });
 
@@ -1530,7 +1496,9 @@ for (let i = burstLive.length - 1; i >= 0; i--) {
     async function hideLoadingScreen() {
 
 
-
+  // ✅ prevent any “under-layer” peek while loader fades out
+  gameCore.visible = false;
+  uiLayer.visible = false;
 
       // quick fade out
       const startA = loadingLayer.alpha;
@@ -1596,8 +1564,6 @@ async function runFinalBootPipelineOnce() {
     // SPLASH LOGO FLOAT (idle)
     // =====================
     let splashFloatT = 0;
-    let splashFloatEnabled = false;
-
     // tuning (very subtle)
     const SPLASH_FLOAT_AMP_Y = 10;   // px up/down
     const SPLASH_FLOAT_AMP_X = 4;    // px left/right
@@ -1607,8 +1573,6 @@ async function runFinalBootPipelineOnce() {
     let splashFloatBlend = 0;
     let splashLogoSettled = false;
 
-
-const SPLASH_BOX_MOBILE_LANDSCAPE_MUL = 0.8; // 🔧 try 0.65–0.85
 
 const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
 
@@ -1693,44 +1657,6 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
 
   window.addEventListener("resize", layoutStudioIntro);
 
-  async function playStudioIntro() {
-    // texture must exist (we loaded it in Assets.load)
-    const t = Assets.get(STUDIO_LOGO_URL) as Texture | undefined;
-    if (t) studioLogo.texture = t;
-
-    layoutStudioIntro();
-    root.sortChildren();
-
-    state.overlay.studio = true;
-    studioIntroLayer.visible = true;
-    studioIntroLayer.alpha = 1;
-    studioIntroLayer.eventMode = "static";
-
-    // start hidden
-    studioLogo.alpha = 0;
-
-    // fade IN
-    await animateMs(420, (tt) => {
-      const e = tt * tt * (3 - 2 * tt);
-      studioLogo.alpha = e;
-    });
-
-    // hold
-    await waitMs(650);
-
-    // fade OUT
-    await animateMs(420, (tt) => {
-      const e = tt * tt * (3 - 2 * tt);
-      studioLogo.alpha = 1 - e;
-    });
-
-    // hide
-    studioIntroLayer.visible = false;
-    studioIntroLayer.eventMode = "none";
-    studioLogo.alpha = 0;
-    state.overlay.studio = false;
-  }
-
 
     const splashLayer = new Container();
     splashLayer.zIndex = 999998; // below loading (999999), above everything else
@@ -1797,13 +1723,6 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
   const STUDIO_SPIN_TIME_MS = 650;    // how long columns spin BEFORE stopping begins
   const STUDIO_STOP_STAGGER_MS = 90;  // stop columns one-by-one
   const STUDIO_STOP_SETTLE_MS = 220;  // snap settle per column
-  const STUDIO_DROP_FROM_Y = -260;    // where tiles start above the logo (px in screen space)
-
-  function clearStudioTiles() {
-    studioTileLayer.removeChildren();
-    studioTilesBuilt = false;
-    studioTiles = [];
-  }
 
   function buildStudioLogoTiles() {
     if (studioTilesBuilt) return;
@@ -2375,7 +2294,6 @@ splashPresents.visible = !isMobilePortraitUILayout();
 
 
     // ----- SPLASH LOGO (BLOCKY + FARM) layout -----
-const SPLASH_LANDSCAPE_HORIZONTAL_GAP = -40; // tweak: -120..+80
     // tuning knobs
     const SPLASH_TARGET_W = Math.min(W * 0.80, 1200);
 const SPLASH_LOGO_SCALE = isMobileLandscapeUILayout()
@@ -2770,21 +2688,11 @@ if (portrait) {
 
     window.addEventListener("resize", layoutSplash);
 
-    // helper: get root-space position of the in-game logo (gameTitle)
-    function getGameTitleRootTarget() {
-      // gameTitle lives inside gameCore, so use global->root conversion
-      const gp = gameTitle.getGlobalPosition();
-      const lp = root.toLocal(gp);
-      return { x: lp.x, y: lp.y };
-    }
-
 // =====================
 // SPLASH TITLE LANDING TUNING (MOBILE LANDSCAPE ONLY)
 // =====================
 const SPLASH_LAND_DROP_Y_N = 0.42;
 const SPLASH_LAND_FARM_DROP_PX = 18;
-const SPLASH_LAND_FINAL_Y_N = 0.24;
-const SPLASH_LAND_FINAL_FARM_PX = 30;
     // MAIN sequence
     async function startSplashSequence() {
       // ✅ Splash background starts at TOP of PNG
@@ -2876,8 +2784,6 @@ const FARM_DROP_Y_OFFSET =
   38;                                   // desktop fallback (keep same or tune)
 
 
-
-    const logoRevealY = H * 0.30;
 
     // stagger timing (separate feel for drop vs rise)
     const DROP_STAGGER_MS = 700; // heavier, more impact
@@ -3064,7 +2970,6 @@ if (isDesktopDrop) {
     // ✅ start idle float after logo settles
     splashFloatT = 0;
     splashFloatBlend = 0;
-    splashFloatEnabled = true;
 
     // blend the float in smoothly
     tween(
@@ -3090,7 +2995,6 @@ if (isDesktopDrop) {
 
       const onContinue = async () => {
         // stop splash logo float immediately
-    splashFloatEnabled = false;
     splashFloatBlend = 0;
     splashLogoSettled = false;
 
@@ -3156,79 +3060,6 @@ let TITLE_OFFSET_Y = -80;  // px (+ down, - up)
 let TITLE_OFFSET_X_DESKTOP = 60;   // start same as current, then tweak
 let TITLE_OFFSET_Y_DESKTOP = -80;  // start same as current, then tweak
 
-
-    
-
-    // =====================
-    // SYMBOL COLOR SAMPLING (cache)
-    // =====================
-    const SYMBOL_COLOR_CACHE: Partial<Record<SymbolId, number>> = {};
-    const _sampleRT = { w: 16, h: 16 };
-
-    function sampleSymbolBodyColorFromSprite(s: Sprite): number {
-      const c = new Container();
-
-      const clone = new Sprite(s.texture);
-      clone.anchor.set(0.5);
-      clone.position.set(_sampleRT.w / 2, _sampleRT.h / 2);
-
-      // scale symbol to fit the tiny RT
-      const sc = Math.min(
-        (_sampleRT.w * 0.90) / clone.texture.width,
-        (_sampleRT.h * 0.90) / clone.texture.height
-      );
-      clone.scale.set(sc);
-
-      c.addChild(clone);
-
-      const rt = RenderTexture.create({ width: _sampleRT.w, height: _sampleRT.h });
-      app.renderer.render({ container: c, target: rt, clear: true });
-
-      const px = app.renderer.extract.pixels(rt) as unknown as Uint8Array;
-
-      // Weighted average of "good" colour pixels (high saturation, not too dark/light)
-      let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
-
-      for (let i = 0; i < px.length; i += 4) {
-        const r = px[i + 0];
-        const g = px[i + 1];
-        const b = px[i + 2];
-        const a255 = px[i + 3];
-
-        if (a255 < 25) continue; // ignore transparent
-
-        // ignore very dark outlines + very bright highlights
-        const maxc = Math.max(r, g, b);
-        const minc = Math.min(r, g, b);
-        const v = maxc / 255;                  // value 0..1
-        const s01 = maxc === 0 ? 0 : (maxc - minc) / maxc;  // saturation 0..1
-
-        if (v < 0.18) continue;  // too dark (outlines)
-        if (v > 0.95) continue;  // too bright (highlights)
-        if (s01 < 0.22) continue; // too grey/neutral
-
-        const a = a255 / 255;
-
-        // weight toward "colourful" pixels
-        const w = a * (0.35 + s01 * 1.8);
-
-        rSum += r * w;
-        gSum += g * w;
-        bSum += b * w;
-        wSum += w;
-      }
-
-      c.destroy({ children: true });
-      rt.destroy(true);
-
-      if (wSum <= 0.0001) return 0xffffff;
-
-      const rr = Math.max(0, Math.min(255, Math.round(rSum / wSum)));
-      const gg = Math.max(0, Math.min(255, Math.round(gSum / wSum)));
-      const bb = Math.max(0, Math.min(255, Math.round(bSum / wSum)));
-
-      return (rr << 16) | (gg << 8) | bb;
-    }
 
 // =====================
 // FINAL: atlas handles must be declared EARLY (prevents TDZ crashes)
@@ -3597,12 +3428,6 @@ let studioLogoHouseTex: Texture | null = null;
 
     startSmokeFx();
 
-    // Optional helper if you want to reposition it quickly later
-    function setSmokeEmitterNorm(xN: number, yN: number) {
-      SMOKE_EMIT_X_N = Math.max(0, Math.min(1, xN));
-      SMOKE_EMIT_Y_N = Math.max(0, Math.min(1, yN));
-    }
-
 
     // =====================
     // VOXEL LEAF FX (cheap foreground particles)
@@ -3764,36 +3589,6 @@ let studioLogoHouseTex: Texture | null = null;
       leafPool.push(p);
     }
 
-      }
-    }
-
-    function seedLeafFxOnScreen(count = 10) {
-      const W = app.renderer.width;
-      const H = app.renderer.height;
-
-      for (let i = 0; i < count; i++) {
-        if (leafLive.length >= LEAF_MAX_LIVE) break;
-
-        let p = leafPool.pop();
-        if (!p) {
-          const c = makeVoxelLeaf();
-          p = { c, vx: 0, vy: 0, vr: 0, life: 0 };
-        }
-
-        // ✅ already visible in a mid band
-        p.c.x = Math.random() * (W + 200) - 100;
-        p.c.y = H * (0.25 + Math.random() * 0.45);
-
-        // keep the same “left -> right” drift feel
-        const speed = 35 + Math.random() * 55;
-        p.vx = speed;
-        p.vy = 10 + Math.random() * 28;
-        p.vr = (-1 + Math.random() * 2) * 0.35;
-        p.life = 6.0 + Math.random() * 4.0;
-        p.c.rotation = Math.random() * Math.PI * 2;
-
-        leafFxLayer.addChild(p.c);
-        leafLive.push(p);
       }
     }
 
@@ -3994,8 +3789,6 @@ function killCarsNow() {
     const BG_CAR_MIN_DELAY = 18; // seconds
     const BG_CAR_MAX_DELAY = 35;
     const BG_CAR_SPEED = 200;     // px/sec
-    const BG_CAR_SCALE = .8;
-    const BG_CAR_Y_N = 0.78;     // vertical band (0..1 of screen)
 
     // =====================
     // FREE SPINS BACKGROUND CAR (FS ONLY) — TUNING
@@ -4007,7 +3800,6 @@ function killCarsNow() {
     const FS_CAR_MAX_DELAY = 18;
 
     const FS_CAR_SPEED = 260;    // px/sec
-    const FS_CAR_SCALE = .8;
 
     // ✅ FREE SPINS CAR: extra scale multiplier (LANDSCAPE ONLY)
 const FS_CAR_LANDSCAPE_SCALE_MUL = 0.78; // 🔧 try 0.70–0.90
@@ -4069,12 +3861,6 @@ function rescaleLiveCars() {
     const BG_CAR_END_EXTRA_PAD = 520; // how far past the end it should keep driving
 
 
-
-    // ---- cheap motion blur tuning ----
-    const BG_CAR_BLUR_STRENGTH = 6;   // 4–10
-    const BG_CAR_BLUR_BACK_PX = 22;   // how far the ghost trails behind
-    const BG_CAR_BLUR_ALPHA = 0.35;   // 0.2–0.5
-    const BG_CAR_BLUR_STRETCH = 0.18; // extra X stretch (0.1–0.3)
 
 
     // =====================
@@ -4190,8 +3976,6 @@ function rescaleLiveCars() {
         const by0 = ty0 + h;
         const bx1 = tx1;
         const by1 = ty1 + h;
-        const bx2 = tx2;
-        const by2 = ty2 + h;
         const bx3 = tx3;
         const by3 = ty3 + h;
 
@@ -4671,7 +4455,6 @@ if (e.key.toLowerCase() === "i") {
 
 
     function spawnCloud() {
-      const W = app.renderer.width;
       const H = app.renderer.height;
 
       let p = cloudPool.pop();
@@ -5045,7 +4828,6 @@ addSystem((dt) => {
 
     function spawnSnow() {
       const W = app.renderer.width;
-      const H = app.renderer.height;
 
       let p = snowPool.pop();
       if (!p) {
@@ -5431,7 +5213,6 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
     window.addEventListener("resize", layoutFsTractor);
 
     function fsTractorOffLeftX() {
-      const W = app.screen.width;
       const w = fsTractor?.width || 400;
       return -w * 0.6;
     }
@@ -5499,7 +5280,6 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
       const y = fsTractorY();
 
     fsTractorBobBaseY = y;
-    fsTractorBobBaseX = fsTractorCenterX();
 
 
       fsTractor.x = x0;
@@ -5531,7 +5311,6 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
       const y = fsTractorY();
 
       fsTractorBobBaseY = y;
-    fsTractorBobBaseX = fsTractor.x;
 
       return new Promise<void>((resolve) => {
         tween(
@@ -5589,7 +5368,6 @@ const x1 =
 
   // lock bob base so bob system doesn’t fight the tween
   fsTractorBobBaseY = y0;
-  fsTractorBobBaseX = x0;
 
   return new Promise<void>((resolve) => {
     tween(
@@ -5623,17 +5401,6 @@ const x1 =
     );
   });
 }
-
-    // hard hide (safety)
-    function hideFsTractorNow() {
-      if (!fsTractor) return;
-      fsTractorLayer.visible = false;
-      clearTractorExhaustNow();
-    const banner = (fsTractor as any)?._banner as Container | undefined;
-    if (banner) banner.visible = false;
-
-
-    }
 
     // =====================
     // FS TRACTOR — VOXEL EXHAUST (same style as car, but on ROOT layer)
@@ -5799,7 +5566,6 @@ const x1 =
     // FS TRACTOR BOB (like car: smooth suspension + gravel chatter)
     // =====================
     let fsTractorBobBaseY = 0;
-    let fsTractorBobBaseX = 0;
 
     const FS_TRACTOR_BOB_ON = true;
 
@@ -6507,8 +6273,6 @@ let fsOutroPortraitScaleLocked = false;
       targetAmount: number,
       durationMs = 1400
     ) {
-    const EPSILON = 0.9998;
-
     // ✅ max progress change PER SECOND (not per frame)
     // 0.12 means it can move 12% of the bar per second max.
     const MAX_STEP_PER_SEC = 0.3;
@@ -6777,8 +6541,6 @@ fsOutroPortraitScale = 1;
     // =====================
 
 
-   let bigWinCanContinue = false;
-
 let __bigWinPrevMusicVol01: number | null = null;
 // ✅ Duck current music to 50% during Big Win (BASE + FREE SPINS)
 const BIGWIN_MUSIC_DUCK = 0.35;
@@ -6825,24 +6587,8 @@ let bigWinPortraitScaleLocked = false;
     let bigWinFinalAmount = 0;        // final win amount for snap
     let bigWinFinalTier: BigWinTier = "BIG"; // final tier for snap
 
-    let bigWinPulseDone = false; // one-shot pulse guard
 
 
-
-    // =====================
-    // GLOBAL INPUT LOCK (BIG WIN / FS overlays / splash)
-    // =====================
-    function inputLocked(): boolean {
-      // block all game input during overlays
-      return (
-        loadingLayer?.visible ||
-        state.overlay.splash ||
-        state.overlay.startup ||
-        state.overlay.fsIntro ||
-        state.overlay.fsOutro ||
-        state.overlay.bigWin
-      );
-    }
 
 
     // tune thresholds (in X of bet)
@@ -6860,10 +6606,6 @@ let bigWinPortraitScaleLocked = false;
       if (x >= MEGA_WIN_X)  return "MEGA";
       if (x >= SUPER_WIN_X) return "SUPER";
       return "BIG";
-    }
-
-    function bigWinLabelForX(x: number) {
-      return `${bigWinTierForX(x)} WIN`;
     }
 
 
@@ -7064,7 +6806,6 @@ let bigWinPortraitScaleLocked = false;
 
     function redrawBigWinSpotlight() {
       const W = app.screen.width;
-      const H = app.screen.height;
 
       const cx = Math.round(W * 0.5);
       const y0 = BIGWIN_SPOTLIGHT_TOP_Y;
@@ -7210,9 +6951,6 @@ function computeBigWinPortraitScale(finalAmount: number) {
   // MOBILE LANDSCAPE: SCALE DOWN BIG WIN
   // =====================
 if (isMobileLandscapeUILayout()) {
-  const BIGWIN_LAND_GAP = app.screen.height * 0.5; // 🔧 try 0.18–0.28
-const BIGWIN_LAND_CENTER_Y = Math.round(app.screen.height * 0.5);
-
   // ✅ scale down for landscape
   bigWinTitle.scale.set(BIGWIN_LAND_SCALE);
   bigWinAmount.scale.set(BIGWIN_LAND_SCALE);
@@ -7320,7 +7058,6 @@ if (isMobilePortraitUILayout() && bigWinPortraitScaleLocked) {
 // BIG WIN — MOBILE LANDSCAPE SCALE
 // =====================
 const BIGWIN_LAND_SCALE = 0.6;     // 🔧 try 0.62–0.82
-const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spacing
 
     // =====================
     // BIG WIN TITLE DROP IN/OUT (TITLE ONLY)
@@ -7442,11 +7179,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
     const WATERMELON_EPIC = "watermelon_epic_win.png";
 
 
-
-
-    const PEAR_SCALE_MULT = 10; // 🍐 size tweak
-
-
     // =====================
     // BIG WIN FRUIT SET
     // =====================
@@ -7558,8 +7290,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
     // tuning
     const APPLE_MAX_LIVE = 16;
     const APPLE_SPAWN_PER_SEC = 2;      // how many per second while active
-    const APPLE_LIFE_MIN = 2.2;
-    const APPLE_LIFE_MAX = 3.6;
 
     // =====================
     // BIG WIN FLOAT SCALE MULTIPLIERS
@@ -7582,12 +7312,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
 
       root.addChild(appleFxLayer);
       root.sortChildren();
-    }
-
-    // 0..1 but clustered toward 0.5
-    function randCentered01(): number {
-      // average of 3 uniforms gives a nice “bell” around 0.5
-      return (Math.random() + Math.random() + Math.random()) / 3;
     }
 
     function spawnApple() {
@@ -7776,18 +7500,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
       }
     }
 
-    function hardStopApples() {
-      appleActive = false;
-      appleFlyOut = false;
-      appleSpawnAcc = 0;
-
-      for (let i = appleLive.length - 1; i >= 0; i--) {
-        const p = appleLive[i];
-        p.s.removeFromParent();
-        appleLive.splice(i, 1);
-        applePool.push(p);
-      }
-    }
     // =====================
     // MAX WIN — RAINBOW VOXEL CONFETTI (cubes)
     // =====================
@@ -7893,7 +7605,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
       const g = p.g;
 
       const W = app.renderer.width;
-      const H = app.renderer.height;
 
       // spawn ACROSS the screen (no center source)
       const x = -60 + Math.random() * (W + 120);
@@ -8069,7 +7780,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
       if (!tex.length) return;
 
       const W = app.renderer.width;
-      const H = app.renderer.height;
 
       let p = coinPool.pop();
 
@@ -8149,14 +7859,6 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
       // quick burst without restarting the whole system
       const count = Math.floor((12 + intensity * 10) * multiplier);
       for (let i = 0; i < count; i++) spawnCoin(intensity);
-    }
-
-    function intensityForTier(tier: BigWinTier) {
-      return tier === "MAX"  ? 3.2 :
-            tier === "EPIC" ? 2.6 :
-            tier === "MEGA" ? 2.0 :
-            tier === "SUPER"? 1.5 :
-            1.0; // BIG
     }
 
 
@@ -8266,15 +7968,12 @@ function playBigWinTierPitch(tier: BigWinTier) {
   }
 }
 
-let bigWinFinalSoundPlayed = false;
-
     function showBigWin(on: boolean, winAmountValue: number, winX: number, ms = 520) {
       
       layoutBigWin();
 
       if (on) {
       state.overlay.bigWin = true;
- bigWinFinalSoundPlayed = false;
 // ✅ one hit at overlay start
 audio?.playSfx?.("bigwin_hit", 1.0);
 
@@ -8289,7 +7988,6 @@ audio?.apply?.();
 
 
 
-        bigWinPulseDone = false;
       lockInputForBigWin(true);
 
     // ✅ BIG WIN FRUITS: always start at BIG when the overlay starts
@@ -8322,7 +8020,6 @@ audio?.apply?.();
       });
     }
 
-        bigWinCanContinue = false;
     showBigWinContinue(false, 0); // keep it hidden until count-up finishes
 
 
@@ -8355,7 +8052,6 @@ bigWinPortraitScaleLocked = true;
 layoutBigWin(); // apply it immediately
 
     bigWinCountDone = false;
-    bigWinCanContinue = false;
 
 
     // timing (bigger wins count longer)
@@ -8389,15 +8085,8 @@ layoutBigWin(); // apply it immediately
     const t = Math.min(1, rawT * slowdown + rawT * (1 - slowdown));
 
     // smooth visuals
-    const e = t * t * (3 - 2 * t);
-
       // ✅ normal-ish at the start, slows more toward the end
       // (bigger p = faster early + slower late)
-      const p = 2.0 + maxProgress * 5.0; // 2..7
-      const easedT = 1 - Math.pow(1 - rawT, p);
-
-
-
       const currentAmount = targetAmount * t;
       const currentX = currentAmount / bet;
 
@@ -8476,7 +8165,6 @@ audio?.startTickLoop?.(120, 0.22, 1.0);
 
 
       // ✅ now allow click-to-continue
-      bigWinCanContinue = true;
       showBigWinContinue(true, 360);
       bigWinCountDone = true;
       startBigWinIdlePulse();
@@ -8498,7 +8186,6 @@ audio?.startTickLoop?.(120, 0.22, 1.0);
 
         // blur + dim in (reuse your overlay look)
         const startA = fsDimmer.alpha;
-        const startB = bgBlur.strength;
 
         
         
@@ -8642,7 +8329,6 @@ setTimeout(() => {
 
       // allow close now
       bigWinCountDone = true;
-      bigWinCanContinue = true;
 
       // show continue prompt if you hide it during count
       showBigWinContinue(true, 180);
@@ -8926,152 +8612,6 @@ if (isMobilePortraitUILayout()) {
     }
 
 
-    // =====================
-    // FS INTRO AWARD: DROP IN / FLY OUT
-    // =====================
-    const FS_INTRO_AWARD_OFFSCREEN_PAD = 120;
-
-    function fsIntroAwardOffY() {
-      // start above top edge
-      return -FS_INTRO_AWARD_OFFSCREEN_PAD;
-    }
-
-    // =====================
-    // FS INTRO "10" SIZE TUNING
-    // =====================
-    const FS_INTRO_AMOUNT_SCALE = 3; // try 1.3–2.2
-
-    function showFsIntroAward(on: boolean, ms = 720) {
-      // make sure target positions are up to date
-      layoutFsIntroAward();
-
-      const offY = fsIntroAwardOffY();
-
-      const targetAmountY = fsIntroAmount.y;
-      const targetLabelY  = fsIntroLabel.y;
-
-      // tuning
-      const STAGGER_MS = 120; // delay between "10" and "FREE SPINS" (try 120–220)
-
-      if (on) {
-        // ensure visible and start OFFSCREEN
-        fsIntroAmount.visible = true;
-        fsIntroLabel.visible = true;
-
-          // ✅ FORCE the "10" to be bigger (reliable)
-      fsIntroAmount.scale.set(FS_INTRO_AMOUNT_SCALE);
-      fsIntroLabel.scale.set(FS_INTRO_AMOUNT_SCALE);
-
-
-        // start hidden
-        fsIntroAmount.alpha = 0;
-        fsIntroLabel.alpha = 0;
-        
-
-        // start above screen
-        fsIntroAmount.y = offY;
-        fsIntroLabel.y = offY;
-      
-
-        // 1) DROP "10" first (slow + heavy)
-        // 1) DROP "FREE SPINS" first
-    tween(
-      ms,
-      (k) => {
-        const t = Math.max(0, Math.min(1, k));
-
-        const SLOW_PORTION = 0.92;
-        const tt = Math.min(1, t / SLOW_PORTION);
-        const eased = tt * tt * (3 - 2 * tt); // smoothstep
-        const e = easeOutBack(eased, 0.18);
-
-        fsIntroLabel.alpha = t;
-
-        fsIntroLabel.y = offY + (targetLabelY - offY) * e;
-      
-      },
-      undefined,
-      linear
-    );
-
-    // 2) DROP "10" after a small delay
-    setTimeout(() => {
-      tween(
-        ms,
-        (k) => {
-          const t = Math.max(0, Math.min(1, k));
-
-          const SLOW_PORTION = 0.92;
-          const tt = Math.min(1, t / SLOW_PORTION);
-          const eased = tt * tt * (3 - 2 * tt); // smoothstep
-          const e = easeOutBack(eased, 0.18);
-
-          fsIntroAmount.alpha = t;
-          fsIntroAmount.y = offY + (targetAmountY - offY) * e;
-        },
-        undefined,
-        linear
-      );
-    }, STAGGER_MS);
-
-
-      } else {
-      if (!fsIntroAmount.visible && !fsIntroLabel.visible) return;
-
-      const startAY = fsIntroAmount.y;
-      const startLY = fsIntroLabel.y;
-
-      const startA  = fsIntroAmount.alpha;
-      const startL  = fsIntroLabel.alpha;
-
-
-      const OUT_MS = Math.max(420, Math.floor(ms * 0.65)); // slightly quicker out
-
-      // 1) ✅ FLY OUT "10" FIRST
-      tween(
-        OUT_MS,
-        (k) => {
-          const t = Math.max(0, Math.min(1, k));
-          const e = easeInCubic(t);
-
-          fsIntroAmount.alpha = startA * (1 - e);
-          fsIntroAmount.y = startAY + (offY - startAY) * e;
-        }
-      );
-
-      // 2) ✅ FLY OUT "FREE SPINS" AFTER STAGGER
-      setTimeout(() => {
-        tween(
-          OUT_MS,
-          (k) => {
-            const t = Math.max(0, Math.min(1, k));
-            const e = easeInCubic(t);
-
-            fsIntroLabel.alpha = startL * (1 - e);
-        
-
-            fsIntroLabel.y = startLY + (offY - startLY) * e;
-          
-          },
-          () => {
-            // hide after both are done
-            fsIntroAmount.visible = false;
-            fsIntroLabel.visible = false;
-        
-
-            fsIntroAmount.alpha = 0;
-            fsIntroLabel.alpha = 0;
-
-            fsIntroAmount.scale.set(1);
-    fsIntroLabel.scale.set(1);
-          
-          }
-        );
-      }, STAGGER_MS);
-    }
-
-    }
-
 
 
 
@@ -9160,60 +8700,6 @@ if (isMobilePortraitUILayout()) {
       }
     }
 
-    // =====================
-    // FS OUTRO "CLICK TO CONTINUE" (slides up from below screen)
-    // =====================
-    const FS_OUTRO_CONTINUE_TARGET_Y_N = 0.95; // tweak: 0.78–0.90
-    const FS_OUTRO_CONTINUE_OFFSCREEN_PAD = 90;
-
-    function fsOutroContinueOffY() {
-      return app.screen.height + FS_OUTRO_CONTINUE_OFFSCREEN_PAD;
-    }
-
-    function fsOutroContinueTargetY() {
-      return app.screen.height * FS_OUTRO_CONTINUE_TARGET_Y_N;
-    }
-
-    function layoutFsOutroContinueX() {
-      fsOutroContinue.x = app.screen.width / 2;
-    }
-
-    function showFsOutroContinue(on: boolean, ms = 320) {
-      layoutFsOutroContinueX();
-
-      const offY = fsOutroContinueOffY();
-      const targetY = fsOutroContinueTargetY();
-
-      if (on) {
-        fsOutroContinue.visible = true;
-        fsOutroContinue.alpha = 0;
-        fsOutroContinue.y = offY;
-
-        tween(ms, (k) => {
-          const e = Math.max(0, Math.min(1, k));
-          fsOutroContinue.alpha = e;
-          fsOutroContinue.y = offY + (targetY - offY) * e;
-        });
-      } else {
-        const startY = fsOutroContinue.y;
-        const startA = fsOutroContinue.alpha;
-
-        tween(
-          ms,
-          (k) => {
-            const e = Math.max(0, Math.min(1, k));
-            fsOutroContinue.alpha = startA * (1 - e);
-            fsOutroContinue.y = startY + (offY - startY) * e;
-          },
-          () => {
-            fsOutroContinue.alpha = 0;
-            fsOutroContinue.y = offY;
-            fsOutroContinue.visible = false;
-          }
-        );
-      }
-    }
-
     function showFsContinue(on: boolean, ms = 320) {
       layoutFsContinueX();
 
@@ -9270,8 +8756,6 @@ if (isMobilePortraitUILayout()) {
     // =====================
     // OVERLAY TIMING PRESETS
     // =====================
-    const FS_RETRIGGER_PAUSE_MS = 1400; // extra pause so player can read “Free spins added”
-
     const FS_OVERLAY_FADE_IN_MS  = 550;  // slower, more cinematic
     const FS_OVERLAY_FADE_OUT_MS = 260;  // quicker exit feels snappy
 
@@ -9280,9 +8764,6 @@ if (isMobilePortraitUILayout()) {
 // =====================
 const FS_ADDED_LAND_AMOUNT_SCALE = 0.75;   // try 0.65–0.85
 const FS_ADDED_LAND_LABEL_SCALE  = 0.75;
-
-const FS_ADDED_LAND_AMOUNT_Y = 0.20; // % of screen height
-const FS_ADDED_LAND_LABEL_Y  = 0.52;
 
 
     async function showFsAddedPopup(added: number) {
@@ -9813,11 +9294,6 @@ layoutMultiplierPlaque();
         voxelExplodeLayer.addChild(g);
 
         // ===== per-voxel physics loop =====
-        const start = performance.now();
-        let last = start;
-
-        
-
         voxelExplodeLive.push({
       g,
       sh,
@@ -9845,63 +9321,6 @@ layoutMultiplierPlaque();
     const voxelPool: VoxelParticle[] = [];
     const voxelLive: VoxelParticle[] = [];
     let voxelTickerAdded = false;
-
-    function spawnVoxelBurst(x: number, y: number, color: number) {
-      const COUNT = 22;            // burst amount
-      const MIN_VOX = 4;           // voxel size px
-      const MAX_VOX = 7;
-      const SPEED = 420;           // px/sec-ish
-
-      for (let i = 0; i < COUNT; i++) {
-        let p = voxelPool.pop();
-        if (!p) {
-          const g = new Graphics();
-          p = { g, vx: 0, vy: 0, vr: 0, life: 0, life0: 0, grav: 0 };
-        }
-
-        const vox = (MIN_VOX + Math.random() * (MAX_VOX - MIN_VOX)) | 0;
-
-        const g = p.g;
-        g.clear();
-
-        // small shade variance so it looks “chunky”
-        const shade = 0.85 + Math.random() * 0.35;
-        const a = 0.95;
-
-      g
-    .rect(0, 0, vox, vox)
-    .fill({ color, alpha: a });
-
-
-        // center the voxel
-        g.pivot.set(vox * 0.5, vox * 0.5);
-
-        // spawn at symbol position + slight jitter
-        g.x = x + (-10 + Math.random() * 20);
-        g.y = y + (-10 + Math.random() * 20);
-
-        // velocity: burst outward + slight upward bias
-        const ang = Math.random() * Math.PI * 2;
-        const sp = SPEED * (0.35 + Math.random() * 0.75);
-        p.vx = Math.cos(ang) * sp;
-        p.vy = Math.sin(ang) * sp - (120 + Math.random() * 140);
-
-        // gravity + spin
-        p.grav = 980 + Math.random() * 540;
-        p.vr = (-1 + Math.random() * 2) * 7.0;
-
-        // lifetime
-        p.life0 = 0.55 + Math.random() * 0.35;
-        p.life = p.life0;
-
-        g.rotation = Math.random() * Math.PI * 2;
-        g.alpha = shade; // reuse as a “brightness” multiplier
-        g.scale.set(1);
-
-        voxelExplodeLayer.addChild(g);
-        voxelLive.push(p);
-      }
-    }
 
     function tickVoxelExplodeFx() {
       const dt = app.ticker.deltaMS / 1000;
@@ -10339,7 +9758,6 @@ addSystem(() => {
 
     const PLAQUE_H = 88;
     const PLAQUE_GAP = 0;
-    const PLAQUE_R = 0;
 
 
 
@@ -10536,11 +9954,6 @@ addSystem(() => {
     }
 
 
-      // alphas Top->Bottom (tweak to taste)
-      const alphas = [0.28, 0.55, 0.7, 0.55];
-
-      const maxVal = LADDER[LADDER.length - 1];
-
     for (let i = 0; i < 4; i++) {
       const row = plaqueRows[i];
       const v = values[i];
@@ -10564,17 +9977,6 @@ addSystem(() => {
 
     }
 
-    function clampLadder(i: number) {
-      const last = LADDER.length - 1;
-      return Math.max(0, Math.min(last, i));
-    }
-
-    function ladderAt(i: number) {
-
-
-      
-      return LADDER[clampLadder(i)] ?? 1;
-    }
       function ladderAtRaw(i: number) {
       return LADDER[i]; // ✅ no clamp
     }
@@ -10610,10 +10012,6 @@ addSystem(() => {
     }
 
 
-
-    function isAtMax(idx: number) {
-      return idx >= LADDER.length - 1;
-    }
 
 
     // prev with wrap (so 0 goes to MAX)
@@ -10790,7 +10188,6 @@ addSystem(() => {
       const targetLabelAlphas   = plaqueRows.map((_, i) => slotLabelAlphas[wrap(i + dirSlot, 4)]);
       const targetRowAlphas     = plaqueRows.map((_, i) => slotRowAlphas[wrap(i + dirSlot, 4)]);
       const targetOutlineAlphas = plaqueRows.map((_, i) => slotOutlineAlphas[wrap(i + dirSlot, 4)]);
-    const startAlpha = multPlaque.alpha;
     multPlaque.alpha = 1;
   // 🔊 MULTIPLIER PLAQUE STEP-UP SFX (only when climbing up)
 if (dir === 1) {
@@ -10919,28 +10316,6 @@ if (dir === 1) {
       runToIdx(idx);
     }
 
-    function resetMultiplierPlaqueToBase() {
-      // hard reset internal state
-      plaqueAnimBusy = false;
-      queuedTargetIdx = null;
-      plaqueIdx = 0;
-
-      // clear any "force hidden" row flags
-      for (const r of plaqueRows as any[]) {
-        r._forceHidden = false;
-        r.row.visible = true;
-        r.row.alpha = 1;
-      }
-
-    // ✅ Boot init only (do this once)
-    plaqueIdx = 0;
-    applyPlaqueState(plaqueIdx);
-    restyleAllSlots();
-    applyPlaqueSlotVisibility(plaqueIdx);
-    setMult(LADDER[plaqueIdx] ?? 1);
-
-    }
-
     function slideOneStepP(
       dir: 1 | -1,
       ms = 260,
@@ -10975,27 +10350,6 @@ if (dir === 1) {
     }
 
 
-
-    function animateMultiplierPlaqueBackToBase() {
-      plaqueAnimBusy = false;
-      queuedTargetIdx = null;
-
-      if (plaqueIdx === 0) {
-        applyPlaqueState(0);
-        restyleAllSlots();
-        applyPlaqueSlotVisibility(0);
-        setMult(1);
-        state.game.returningFromFreeSpins = false; // ✅ CLEAR
-        return;
-      }
-
-      runToIdx(0);
-
-      // clear flag AFTER animation completes
-      setTimeout(() => {
-        state.game.returningFromFreeSpins = false;
-      }, 300); // slightly longer than slide duration
-    }
 
 
 
@@ -11169,9 +10523,6 @@ if (isMobilePortraitUILayout()) {
 
   multPlaqueLayer.scale.set(SCALE);
 
-  // ⚠️ IMPORTANT: bounds AFTER scaling
-  const lb = multPlaqueLayer.getBounds();
-
   // ✅ Pin to top-right (screen space)
   multPlaqueLayer.x = Math.round(
     W - safeRight - PAD_X
@@ -11273,16 +10624,6 @@ applyPlaqueSlotVisibility(plaqueIdx);
 
 
 
-    function blurBackgroundTo(target: number, ms = 300) {
-      const start = bgBlur.strength;
-      tween(
-        ms,
-        (k) => {
-          bgBlur.strength = start + (target - start) * k;
-        }
-      );
-    }
-
     function fadeUiLayerTo(targetAlpha: number, ms = 250) {
       const start = uiLayer.alpha;
 
@@ -11366,6 +10707,8 @@ let betDownBtnPixi: any = null;
       fadeMs = 300,
       fromScale = 0.92
     ) {
+       gameCore.visible = true;   // ✅ ensure it can render when we reveal it
+  uiLayer.visible = true;
       // start hidden
       gameCore.alpha = 0;
       gameCore.scale.set(fromScale);
@@ -11464,24 +10807,6 @@ function centerPivot(c: Container) {
     bb.width + padX * 2,
     bb.height + padY * 2
   );
-}
-
-function placeLeft(
-  c: Container,
-  xPx: number,
-  yPx: number
-) {
-  c.x = Math.round(xPx + c.getLocalBounds().width / 2);
-  c.y = Math.round(yPx);
-}
-
-function placeRight(
-  c: Container,
-  xPx: number,
-  yPx: number
-) {
-  c.x = Math.round(xPx - c.getLocalBounds().width / 2);
-  c.y = Math.round(yPx);
 }
 
 
@@ -12157,7 +11482,7 @@ h = Math.round(h * BET_PILL_H_SCALE_DESKTOP);
     const onTrackDown = (e: any) => {
       e.stopPropagation?.();           // prevent row tap toggling mute
       dragging = true;                 // ✅ start dragging when you press on the line
-      const v = setFromGlobalX(e.global.x);
+      setFromGlobalX(e.global.x);
       onChange?.(value01); // ✅ this is the important bit
       return value01;
     };
@@ -12367,14 +11692,6 @@ return c as Container & {
       s.height = refH;
     });
 
-   // ✅ Slightly larger than default (still tight on desktop)
-const SPIN_HIT_PAD_X = IS_TOUCH ? 40 : 6;
-const SPIN_HIT_PAD_Y = IS_TOUCH ? 34 : 6;
-
-
-
-
-
       let isOn = initialOn;
       
 
@@ -12578,17 +11895,6 @@ const SPIN_HIT_PAD_Y = IS_TOUCH ? 34 : 6;
     const CLOSE_DOWN  = "btn_settings_on_down.png";
 
 
-
-    // =====================
-    // BUY MENU CARD ART (PNG)
-    // =====================
-    const BUY_ART_PICK_URL  = "/assets/ui/buy_art_pick.png";
-    const BUY_ART_GIGA_URL  = "/assets/ui/buy_art_giga.png";
-    const BUY_ART_SUPER_URL = "/assets/ui/buy_art_super.png";
-    const BUY_ART_ULTRA_URL = "/assets/ui/buy_art_ultra.png";
-
-    const BUY_HOVER_URL = "/assets/ui/btn_buy_hover.png";
-    const BUY_DOWN_URL  = "/assets/ui/btn_buy_down.png";
 
     const BUY_UP    = "btn_buy_up.png";
     const BUY_HOVER = "btn_buy_hover.png";
@@ -13263,14 +12569,6 @@ setMusicValue01: (v01: number) => audio?.setMusicVolume01?.(v01),
 
 
 
-    function openSettingsPanel() {
-      console.log("Settings OPEN");
-    }
-
-    function closeSettingsPanel() {
-      console.log("Settings CLOSED");
-    }
-
 
 
 
@@ -13598,7 +12896,6 @@ function isMobilePortraitUILayout() {
 // MOBILE LANDSCAPE SCALE TUNING
 // =====================
 const MOBILE_LANDSCAPE_REELHOUSE_MUL = 0.5; // outer art smaller (try 0.86–0.94)
-const MOBILE_LANDSCAPE_CELL_MUL      = 1.06; // symbols smaller  (try 0.86–0.94)
 const MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL = 0.48
 function carsDisabled(): boolean {
   // ✅ only disable cars in MOBILE PORTRAIT
@@ -13852,12 +13149,6 @@ betTitleLabel.position.set(
   Math.round(-betAmountUI.getLocalBounds().height * 0.85)
 );
 
-// right edge of BUY button (BUY is centered at buyBtnPixi.x)
-const buyRight = buyBtnPixi.x + buyBtnPixi.width / 2;
-
-// 🔧 TUNING: horizontal gap between BUY and BET
-const BUY_TO_BET_GAP = 80; // try 16..40
-
 // pill width (scaled)
 const pillW = betAmountUI.getBounds().width; // ✅ true on-screen width after group scaling
 
@@ -13988,8 +13279,6 @@ setScaleToHeight(buyBtnPixi, BUY_BTN_H);
 // TUNING KNOBS
 const AT_OFFSET_X = 0.32; // distance to the right of SPIN (0.14..0.24)
 const AT_GAP_Y = 0.33;    // vertical gap between AUTO / TURBO
-const AT_CENTER_Y = SPIN_Y; // align to spin vertically
-
 const spinX = Math.round(w * 0.5);
 const spinY = Math.round(h * SPIN_Y);
 
@@ -14199,8 +13488,6 @@ const LAND_GROUP_SCALE  = 1.9;          // 🔧 1.05..1.35 (bigger = larger grou
 
 const LAND_GROUP_H = LAND_GROUP_BASE_H * LAND_GROUP_SCALE;
 
-const LAND_TEXT_SCALE = 1; // 🔧 was 0.52 (try 0.58–0.70)
-
 const SETTINGS_Y_OFFSET = Math.round(h * -0.3); // negative = up, positive = down
 
 
@@ -14254,10 +13541,6 @@ betDownBtnPixi.y = +BET_ARROW_GAP_Y;
   const BET_TEXT_GAP = Math.round(LAND_GROUP_H * 0.18);
 betTitleLabel.position.set(0, Math.round(-(betAmountUI.getLocalBounds().height * 0.5 + BET_TEXT_GAP)));
 
-
-  const betX = Math.round(
-    betControlsGroup.x + betControlsGroup.getLocalBounds().width * 0.55 + betDisplayGroup.getLocalBounds().width * 0.5 + 16
-  );
 
 betDisplayGroup.y = CY + GROUPS_Y_OFFSET;
 
@@ -14385,8 +13668,6 @@ const STACK_TO_SPIN_GAP = -50; // try 6..18
 const STACK_GAP_Y = Math.round(h * 0.6); // try 0.18..0.30
 
 const spinW = spinBtnPixi.getLocalBounds().width;
-
-const spinH  = spinBtnPixi.getLocalBounds().height;
 
 const autoW  = autoBtnPixi.getLocalBounds().width;
 const turboW = turboBtnPixi.getLocalBounds().width;
@@ -15219,7 +14500,6 @@ async function jumpSpriteToCell(
   const ms = opts.ms;
   const arc = opts.arc;
   const baseS = opts.baseS;
-let bouncePlayed = false;
 
 
 // 🔊 wild hop / bounce SFX
@@ -15578,10 +14858,6 @@ root.sortChildren();
     c.addChild(amountText, xText, multText);
 
 
-      // format multiplier like your plaque (2dp only if needed)
-      const isInt = Math.abs(mult - Math.round(mult)) < 1e-6;
-      const multStr = isInt ? String(Math.round(mult)) : mult.toFixed(2);
-
       // ✅ TICK UP FROM 0 → baseValue, while always showing xMULT
       const start = performance.now();
 
@@ -15696,7 +14972,6 @@ p.scale.set(s);
     const CLUSTER_STAGGER_MS = 50;     // delay between columns/tiles popping (increase this)
     const CLUSTER_POP_SCALE  = 1.14;    // pop size (e.g. 1.08–1.20)
     const CLUSTER_POP_IN_MS  = 90;      // pop up duration
-    const CLUSTER_POP_OUT_MS = 140;     // settle back duration
 
     // frames follow the exact same stagger as the pop
     const WIN_FRAME_STAGGER_MS = CLUSTER_STAGGER_MS;
@@ -15927,11 +15202,6 @@ addSystem(() => {
       Math.sin(t * Math.PI * 2 * (TITLE_FLOAT_SPD * 0.7)) * TITLE_FLOAT_ROT * titleFloatBlend;
   });
 
-function getPortraitReelScale() {
-  // subtle boost only
-  return isMobilePortraitUILayout() ? 1.08 : 1.0;
-}
-
   function layoutAll() {
 
   // =====================
@@ -16087,9 +15357,6 @@ reelHouse.y = isPortrait
 
   // ✅ MOBILE: now compute symbols/cell size from the *actual* reel window
 if (isMob) {
-  const portraitBoost = getPortraitReelScale(); // your existing portrait tweak (1.08 or 1.0)
-
-
   // ✅ MOBILE: compute cellSize EXACTLY from the reel window (no clamps/pads)
 if (isMob) {
   const cellFromW = (boardTotalW - (COLS - 1) * SYMBOL_GAP) / COLS;
@@ -16266,7 +15533,6 @@ await runFinalBootPipelineOnce();
 
     const STARTUP_PAN_MS = 2000;      // tweak
     const STARTUP_REVEAL_DELAY = 10; // tweak
-    const STARTUP_BG_PAN_PX_N = 0; // % of screen height to start "lower" (shows top of bg)
 
     function playStartupIntro() {
       state.overlay.startup = true;
@@ -16631,139 +15897,6 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
 
 
 
-    type PayFrameView = { g: Graphics };
-    let payFrameViews: PayFrameView[] = [];
-
-    function clearPayFrames() {
-      for (const v of payFrameViews) v.g.visible = false;
-      payFrameLayer.removeChildren();
-      // remove this line if present:
-      // clearWinPops();
-    }
-
-
-
-
-    const winPopPool: Text[] = [];
-
-    function clearWinPops() {
-      for (const t of winPopPool) {
-        t.visible = false;
-        if (t.parent) t.parent.removeChild(t);
-      }
-    }
-
-    function getWinPop(): Text {
-      const t = winPopPool.find((x) => !x.visible);
-      if (t) return t;
-
-      const nt = new Text({
-        text: "",
-        style: {
-          fontFamily: "Luckiest Guy, Arial Black, Arial",
-          fontSize: 96,
-          fill: 0xffffff,
-          stroke: { color: 0x000000, width: 10 },
-
-          align: "center",
-          dropShadow: true,
-          dropShadowColor: 0x000000,
-          dropShadowBlur: 2,
-          dropShadowDistance: 4,
-        } as any,
-      });
-
-      nt.anchor.set(0.5);
-      nt.resolution = 2; // sharper text
-      nt.visible = false;
-      winPopPool.push(nt);
-      return nt;
-    }
-
-    // Uses whatever win value your cluster has (winX/payoutX/win) and falls back safely.
-    function clusterWinX(c: any): number {
-      return (c?.winX ?? c?.payoutX ?? c?.win ?? 0) as number;
-    }
-
-    function showWinPopsForClusters(clusters: any[], bet: number) {
-      clearWinPops();
-
-      for (const c of clusters) {
-        const indices: number[] = (c.positions ?? c.indices ?? c.cells ?? c.pos ?? []) as number[];
-
-        if (!indices?.length) continue;
-
-        // center of cluster in WORLD coords
-        const pts = indices
-          .map((i) => cellViews[i]?.sprite?.getGlobalPosition?.())
-          .filter(Boolean) as any[];
-
-        if (!pts.length) continue;
-
-        let cx = 0, cy = 0;
-        for (const p of pts) { cx += p.x; cy += p.y; }
-        cx /= pts.length;
-        cy /= pts.length;
-
-        const win = clusterWinX(c) * bet;
-        const label = `$${win.toFixed(2)}`;
-
-        const t = getWinPop();
-        t.text = label;
-        t.visible = true;
-        t.alpha = 0;
-        t.scale.set(0.65);
-
-        // convert WORLD -> winPopLayer local
-        const local = winPopLayer.toLocal({ x: cx, y: cy } as any);
-        t.position.set(local.x, local.y - 10);
-
-        t.zIndex = 1;
-        winPopLayer.addChild(t);
-
-        const startY = t.y;
-
-        // pop in + float up + fade out
-        tween(
-          180,
-          (k) => {
-            const e = easeOutCubic(k);
-            t.alpha = e;
-            const s = 0.65 + (1.0 - 0.65) * e;
-            t.scale.set(s);
-          },
-          () => {
-            tween(
-              650,
-              (k2) => {
-                const e2 = easeOutCubic(k2);
-                t.y = startY - 34 * e2;
-                t.alpha = 1 - e2;
-              },
-              () => {
-                t.visible = false;
-                if (t.parent) t.parent.removeChild(t);
-              }
-            );
-          }
-        );
-      }
-    }
-
-
-    function ensurePayFrame(i: number) {
-      while (payFrameViews.length <= i) {
-        const g = new Graphics();
-        g.visible = false;
-        payFrameLayer.addChild(g);
-        payFrameViews.push({ g });
-      }
-      return payFrameViews[i].g;
-    }
-
-   
-
-
   function drawEyeRect(g: Graphics, w: number, h: number, col: number) {
     g.clear();
 
@@ -16857,14 +15990,8 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
 
     function drawGrid(grid: Cell[]) {
       ensureGridSprites();
-      const { x: ox, y: oy } = boardOrigin();
 
       for (let i = 0; i < CELL_COUNT; i++) {
-        const { x, y } = idxToXY(i);
-
-        const px = ox + x * (cellSize + SYMBOL_GAP);
-        const py = oy + y * (cellSize + SYMBOL_GAP);
-
         const s = cellViews[i].sprite;
     const id = grid[i].id;
     (s as any).__sid = id;
@@ -16898,21 +16025,11 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
     function setHighlight(i: number, on: boolean) {
       const v = cellViews[i];
       if (!v) return;
-
-      const s = v.sprite;
-    const id = (s.texture === SYMBOL_TEX["S1"] ? "S1" : null); // not great
-
     }
 
 
 
 
-
-      function setHidden(i: number, hidden: boolean) {
-        const v = cellViews[i];
-        if (!v) return;
-        v.sprite.visible = !hidden;
-      }
 
 
       const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -16974,8 +16091,6 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
       to.alpha = targetAlpha;
     }
 
-    let isRelayoutLocked = false;
-
 let __fsAutoKickToken = 0;
 
 function kickFreeSpinsAuto(delayMs = 250) {
@@ -17010,7 +16125,6 @@ function kickFreeSpinsAuto(delayMs = 250) {
 
 
     async function doSpin() {
-      isRelayoutLocked = true;
       if (state.overlay.splash) return;
 
     // 🔒 Startup intro: absolutely no spinning / input should work
@@ -17037,7 +16151,6 @@ function kickFreeSpinsAuto(delayMs = 250) {
 state.ui.spinning = true;
 applyUiLocks();
 
-resetClusterPopRate(); // ✅ start pitch ladder fresh each spin
 audio?.playSfx?.("spin_start", 1.0);
 
 
@@ -17166,7 +16279,6 @@ autoBtnPixi?.setEnabled?.(uiFree);
 
 
 
-      const prevFs = state.fs.remaining;          // remember if we were in base mode
       let openedFsIntro = false;           // if true, don't auto-chain spins
       let res: SpinResult | null = null;   // so finally can see it
 
@@ -17242,7 +16354,6 @@ audio?.setBaseMusicIntensity?.(0.15, 300);
   }
 
       } finally {
-        isRelayoutLocked = false;
         state.ui.spinning = false;
         spinningBtnPixi.visible = false;
     spinBtnPixi.visible = true;
@@ -18044,14 +17155,6 @@ if (res.mode === "FREE_SPINS" && res.fsAwarded > 0 && state.fs.remaining > 0) {
       await setReelDimmer(false);
 
       
-
-
-
-
-
-
-    let accum = 0;
-
     for (let si = 0; si < res.steps.length; si++) {
       
       const step = res.steps[si];
