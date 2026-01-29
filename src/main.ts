@@ -6,6 +6,8 @@ import "./style.css";
 import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
 import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
 import { createPerfHud } from "./dev/perfHud";
+
+import { getResultProvider } from "./engine/resultProvider";
 import { setRtpScale } from "./game/simulate";
 import {
       Application,
@@ -16382,13 +16384,17 @@ autoBtnPixi?.setEnabled?.(uiFree);
     fsTotalCap: state.fs.totalCap,
   });
 
-  res = simulateSpin(
-    simCfg,
-    mode,
-    state.fs.remaining,
-    state.fs.ladderIndex,
-    undefined
-  );
+const resultProvider = getResultProvider();
+
+res = await resultProvider({
+  cfg: simCfg,
+  mode,
+  fsRemainingIn: state.fs.remaining,
+  ladderIndexIn: state.fs.ladderIndex,
+  seed: undefined, // keep undefined unless you want deterministic dev runs
+  betAmount: bet,  // handy later for engine
+});
+
 
 
 
