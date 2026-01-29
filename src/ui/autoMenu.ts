@@ -1,5 +1,8 @@
 // src/ui/autoMenu.ts
+
 import { Application, Container, Graphics, Text, TextStyle, Rectangle, Sprite, Texture } from "pixi.js";
+import { getLang } from "../i18n/i18n";
+import { applyUiTextCase, localizeStyle, micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
 
 
 export type AutoMenuApi = {
@@ -33,7 +36,7 @@ export type AutoMenuOpts = {
 
   texAutoMenu: (frame: string) => Texture;
   audio?: { playSfx: (key: any, vol?: number) => void };
-
+ t?: (key: string) => string;
 };
 
 type Chip = {
@@ -47,13 +50,23 @@ type Chip = {
 
 export function createAutoMenu(opts: AutoMenuOpts): AutoMenuApi {
  
-  const { app, root, onPick, audio } = opts;
+ const { app, root, onPick, audio, t } = opts;
 
+const tt = (key: string, fallback: string) => t?.(key) ?? fallback;
   // Layer that holds everything (dimmer + panel)
   const layer = new Container();
   layer.visible = false;
   layer.eventMode = "none";
   root.addChild(layer);
+
+  const uiLabel = (key: string, fallback: string) => applyUiTextCase(tt(key, fallback));
+// ✅ Auto-menu-only: force Micro5 for Latin-safe languages (no global impact)
+const localizeAutoStyle = <T extends Record<string, any>>(baseStyle: T): T => {
+  const s: any = localizeStyle(baseStyle); // keeps your size/spacing tuning
+  s.fontFamily = micro5ForLatinUiFontFamily(getLang()); // Micro5 for latin-safe, else normal
+  return s as T;
+};
+
 
   // ✅ ensure it renders ABOVE reelhouse/symbols/UI
 layer.zIndex = 7500;   // ✅ above reels/symbols (gameCore), below uiLayer (8000)
@@ -91,18 +104,22 @@ panel.scale.set(0.6);
   panel.addChild(panelBg);
 
   // Titles
-  const titleStyle = new TextStyle({
-    fontFamily: "Micro5, monospace",
-    fontSize: 54,
-    fill: 0xffc400,
-    letterSpacing: 2,
-  });
-  const subStyle = new TextStyle({
-    fontFamily: "Micro5, monospace",
+const titleStyle = new TextStyle(
+localizeAutoStyle({
+  fontSize: 54,
+  fill: 0xffc400,
+  letterSpacing: 2,
+} as any)
+);
+
+const subStyle = new TextStyle(
+localizeAutoStyle({
     fontSize: 44,
     fill: 0xffffff,
     letterSpacing: 2,
-  });
+  } as any)
+);
+
 
 // Title group (AUTO PLAY + NUMBER OF ROUNDS)
 const titleGroup = new Container();
@@ -110,8 +127,16 @@ panel.addChild(titleGroup);
 
 titleGroup.scale.set(1.12); // 25% bigger
 
-const title = new Text({ text: "AUTO PLAY", style: titleStyle });
-const subtitle = new Text({ text: "NUMBER OF ROUNDS", style: subStyle });
+const title = new Text({
+  text: uiLabel("ui.autoPlayTitle", "AUTO PLAY"),
+  style: titleStyle,
+});
+
+const subtitle = new Text({
+  text: uiLabel("ui.autoPlaySubtitle", "NUMBER OF ROUNDS"),
+  style: subStyle,
+});
+
 
 title.anchor.set(0.5, 0);
 subtitle.anchor.set(0.5, 0);
@@ -131,18 +156,21 @@ panel.addChild(chipsWrap);
 const chipValues: number[] = [-1, 10, 25, 50, 75, 100, 500, 1000];
 const chips: Chip[] = [];
 
-const chipLabelStyle = new TextStyle({
-  fontFamily: "Micro5, monospace",
-  fontSize: 60,
-  fill: 0x2b2b2b,
-  letterSpacing: 1,
-});
+const chipLabelStyle = new TextStyle(
+  localizeStyle({
+    fontFamily: "Micro5",
+    fontSize: 60,
+    fill: 0x2b2b2b,
+    letterSpacing: 1,
+  } as any)
+);
+
 
 let selectedRounds = opts.initialSelectedRounds ?? -999; // none by default
 
 // Optical centering tweak for pixel font (positive = lower)
-const LABEL_Y_NUDGE = -10; // try 1–4
-
+const LABEL_Y_NUDGE = -5; // try 1–4
+const LABEL_X_NUDGE = -5;   // 👈 left/right (negative = left)
 // ✅ Atlas frame names
 const BTN_UP = "btn_submenu_auto_up.png";
 const BTN_DOWN = "btn_submenu_auto_down.png";
@@ -157,11 +185,9 @@ function setSelected(rounds: number) {
     c.btn.texture = opts.texAutoMenu(isSel ? BTN_ON : BTN_UP);
 
     // keep label styling
-    c.label.style = new TextStyle({
-      ...chipLabelStyle,
-      fill: 0x2b2b2b,
-      fontSize: c.label.style.fontSize, // keep whatever layout() set
-    });
+   (c.label.style as any).fill = 0x2b2b2b;
+(c.label.style as any).fontSize = (c.label.style as any).fontSize; // keep
+
 
     // ✅ IMPORTANT: re-center after texture swap
     centerLabelOnButton(c.btn, c.label, c.pressed ? 2 : 0);
@@ -175,10 +201,10 @@ function centerLabelOnButton(btn: Sprite, label: Text, extraY = 0) {
   const cx = b.x + b.width * 0.5;
   const cy = b.y + b.height * 0.5;
 
-  label.position.set(
-    Math.round(cx),
-    Math.round(cy + LABEL_Y_NUDGE + extraY)
-  );
+ label.position.set(
+  Math.round(cx + LABEL_X_NUDGE),
+  Math.round(cy + LABEL_Y_NUDGE + extraY)
+);
 }
 
 
@@ -271,6 +297,9 @@ dimmer.on("pointertap", () => close());
   panel.on("pointertap", (e) => e.stopPropagation());
 
  function open() {
+  title.text = uiLabel("ui.autoPlayTitle", "AUTO PLAY");
+subtitle.text = uiLabel("ui.autoPlaySubtitle", "NUMBER OF ROUNDS");
+
   layer.visible = true;
   layer.eventMode = "static";
   root.sortChildren?.(); // ✅ bring zIndex ordering up-to-date
@@ -418,7 +447,15 @@ c.btn.scale.set(bs);
 
 // label size scales with chip
 const fontSize = Math.round(Math.max(34, Math.min(60, discR * 0.95)));
-c.label.style = new TextStyle({ ...chipLabelStyle, fontSize });
+c.label.style = new TextStyle(
+  localizeStyle({
+    fontFamily: "Micro5",
+    fontSize,
+    fill: 0x2b2b2b,
+    letterSpacing: 1,
+  } as any)
+);
+
 
 // ✅ center text based on the actual button frame (UP/DOWN/ON)
 centerLabelOnButton(c.btn, c.label, c.pressed ? 2 : 0);

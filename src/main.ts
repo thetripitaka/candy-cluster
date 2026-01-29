@@ -1,4 +1,11 @@
 
+import { setLang, getLang, t } from "./i18n/i18n";
+import { ensureUiFontLoaded } from "./i18n/loadFonts";
+import "./style.css";
+import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
+import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
+
+
 import {
       Application,
       Container,
@@ -13,6 +20,16 @@ import {
       AnimatedSprite,
     } from "pixi.js";
 
+import {
+  MOBILE_LANDSCAPE_REELHOUSE_MUL,
+  MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL,
+  isMobileUILayout,
+  isMobilePortraitUILayout,
+  isMobileLandscapeUILayout,
+  disableCustomCursorOnMobile,
+  setCursorSafe,
+  carsDisabled,
+} from "./ui/layoutFlags";
 
   import {
     waitMs,
@@ -26,6 +43,7 @@ import {
 
   import { addSystem, ensureTickerRouter } from "./core/tickerRouter";
 
+
   import { simulateSpin } from "./game/simulate";
 
   import { buildSimConfig, LADDER, SYMBOL_FRAMES, WEIGHTS_BASE, } from "./game/simConfig";
@@ -34,10 +52,22 @@ import {
 
   import { createBuyMenu } from "./ui/buyMenu";
 
+
+
   import { createAutoMenu } from "./ui/autoMenu";
+  import { applyClickToContinueStyle } from "./ui/textStyles";
+  import { safeInsetBottomPx, safeInsetTopPx } from "./ui/safeArea";
+  import { makeTurboTiming } from "./core/turboTiming";
+import { makeGrid, rngChoiceWeighted } from "./game/gridGen";
+  
+import { idxToXY, xyToIdx } from "./game/gridMath";
+import { fmtMoney } from "./ui/money";
+
 
 import { AudioManager } from "./audio/audio.ts";
+import { installLoaderMagicCursor } from "./ui/loaderMagicCursor";
 
+import { uiFontFamilyFor } from "./i18n/fonts";
 
 import type { SfxKey } from "./audio/audio";
 
@@ -64,16 +94,59 @@ let debugForceFsOutro = (_amt: number) => {
   // stub until main() installs the real implementation
 };
 
+// ✅ TDZ-safe forward declarations (must be BEFORE any use)
+let PANEL_HEIGHT_FRAC = 0.1;
+
+let bgBase: Sprite | null = null;
+let bgFree: Sprite | null = null;
+
+let boostedText: Text | null = null;
+let infusedText: Text | null = null;
+
+
+async function main() {
+    if ((window as any).__GAME_BOOTED__) return;
+  (window as any).__GAME_BOOTED__ = true;
+ // 1) decide language first
+  const detectedLang =
+    new URLSearchParams(window.location.search).get("lang") ||
+    localStorage.getItem("lang") ||
+    "en";
+
+  setLang(detectedLang as any);
+
+  // ✅ PRELOAD UI FONTS
+  await ensureUiFontLoaded("en");
+  await ensureUiFontLoaded(getLang());
+
+    // 🔥 FONT WARM-UP (prevents 1-frame fallback in canvas)
+  await document.fonts.load('16px "Micro5"');
+  await document.fonts.load('16px "Pixeldown"');
+  await document.fonts.ready;
+
+  // force browser to actually rasterize the font once
+  const warmCanvas = document.createElement("canvas");
+  warmCanvas.width = warmCanvas.height = 2;
+  const ctx = warmCanvas.getContext("2d");
+  if (ctx) {
+    ctx.font = '16px "Micro5"';
+    ctx.fillText(".", 0, 0);
+    ctx.font = '16px "Pixeldown"';
+    ctx.fillText(".", 0, 0);
+  }
+
+// 3) apply DOM rotate blocker font immediately
+document
+  .getElementById("rotate-blocker-text")
+  ?.style.setProperty("font-family", uiFontFamilyFor(getLang()));
 
 
 
 
-
-
-
-
-    async function main() {
-
+console.log("[LANG]", getLang());
+console.log("[FONT]", uiFontFamilyFor(getLang()));
+console.log('[FONT CHECK ZH]', document.fonts.check('16px "ZCOOLKuaiLe"'));
+console.log('[FONT CHECK AR]', document.fonts.check('16px "Marhey"'));
       // =====================
 // INPUT MODE DETECTION (declare ONCE)
 // =====================
@@ -82,15 +155,291 @@ const IS_TOUCH =
   window.matchMedia?.("(pointer: coarse)")?.matches;
       const FINAL_BUILD = false;
 
+      
 
-    // =====================
-// FINAL: prevent double-boot
-// =====================
-if ((window as any).__GAME_BOOTED__) {
-  console.warn("[BOOT] main() called twice — ignored");
-  return;
+function forcePlaquePixeldown(txt: Text) {
+  // lock to Pixeldown regardless of language
+  const s: any =
+    (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
+
+  // IMPORTANT: match your actual @font-face name
+  s.fontFamily = '"Pixeldown"';
+
+  txt.style = new TextStyle(s);
 }
-(window as any).__GAME_BOOTED__ = true;
+function forceMicro5(txt: Text) {
+  const s: any =
+    (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
+
+  // IMPORTANT: match your @font-face name exactly
+  s.fontFamily = '"Micro5"';
+
+  txt.style = new TextStyle(s);
+}
+
+function loaderFontFamilyFor(lang: string) {
+  // ✅ ONLY Latin-safe languages => Micro5
+  if (isLatinUiLang(lang)) return '"Micro5"';
+
+  // ✅ non-latin => glyph-safe per-language font
+  return uiFontFamilyFor(lang);
+}
+
+function forceLoaderFont(txt: Text) {
+  if (!txt) return;
+
+  const s: any =
+    (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
+
+  s.fontFamily = loaderFontFamilyFor(getLang());
+  txt.style = new TextStyle(s);
+}
+
+// -----------------------------
+// BOTTOM UI FONT OVERRIDE (Latin langs -> Micro5)
+// -----------------------------
+function isLatinUiLang(lang: string) {
+  // treat xx and xx-YY the same
+  const base = (lang || "en").toLowerCase();
+
+  // Latin-script UI languages you care about
+  const latin = [
+    "en", "es", "fr", "de", "it", "pt",
+    "nl", "sv", "da", "no", "fi",
+    "pl", "cs", "sk", "hu", "ro", "tr",
+  ];
+
+  return latin.some((k) => base === k || base.startsWith(k + "-"));
+}
+
+function bottomUiFontFamilyFor(lang: string) {
+  return micro5ForLatinUiFontFamily(lang);
+}
+function forceBottomUiFont(txt: Text) {
+  if (!txt) return;
+
+  const s: any =
+    (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
+
+  s.fontFamily = bottomUiFontFamilyFor(getLang());
+  txt.style = new TextStyle(s);
+}
+
+
+function refreshLocalizedText() {
+// Boosted / Infused popups
+if (boostedText) boostedText.text = applyUiTextCase(t("ui.popup.boosted"));
+if (infusedText) infusedText.text = applyUiTextCase(t("ui.popup.infused"));
+
+try {
+  if (boostedText) forceOverlayBrandFont(boostedText);
+  if (infusedText) forceOverlayBrandFont(infusedText);
+} catch {}
+
+  if (typeof splashShadowBlocky !== "undefined") {
+  splashShadowBlocky.text = applyUiTextCase(t("blocky"));
+}
+if (typeof splashShadowFarm !== "undefined") {
+  splashShadowFarm.text = applyUiTextCase(t("farm"));
+}
+  // ✅ FS OUTRO overlay fonts (non-latin -> language font)
+try {
+  // update the label text too (important for non-English)
+  if (typeof fsOutroTotalLabel !== "undefined") {
+    fsOutroTotalLabel.text = applyUiTextCase(t("ui.totalWin"));
+  }
+
+  if (typeof fsOutroTotalLabel !== "undefined") forceOverlayBrandFont(fsOutroTotalLabel);
+  if (typeof fsOutroWinAmount !== "undefined") forceOverlayBrandFont(fsOutroWinAmount);
+  if (typeof fsOutroContinue !== "undefined") forceOverlayBrandFont(fsOutroContinue);
+} catch {}
+
+  // =====================
+// SPLASH LOCALISATION
+// =====================
+try {
+  if (typeof splashInfoBoxes !== "undefined" && splashInfoBoxes?.length) {
+    for (let i = 0; i < splashInfoBoxes.length; i++) {
+      const box = splashInfoBoxes[i] as any;
+      const title = box._splashTitle as Text | undefined;
+      const subtitle = box._splashSubtitle as Text | undefined;
+
+      const info = SPLASH_INFO[i];
+      if (title && info?.titleKey) title.text = applyUiTextCase(t(info.titleKey));
+      if (subtitle && info?.bodyKey) subtitle.text = applyUiTextCase(t(info.bodyKey));
+
+      // re-apply localized styles so font changes apply too
+      if (title) title.style = new TextStyle(localizeStyle({ ...(title.style as any) }) as any);
+      if (subtitle) {
+  const st: any = localizeStyle({ ...(subtitle.style as any) });
+  st.fontFamily = splashSubtitleFontFamilyFor(getLang()); // ✅ Latin => Micro5
+  subtitle.style = new TextStyle(st);
+}
+
+    }
+  }
+
+  if (typeof splashLayer !== "undefined" && splashLayer?.visible && typeof layoutSplash === "function") {
+    layoutSplash(); // text width changes => layout changes
+  }
+} catch {}
+
+  // Loader
+if (typeof loadingTitle !== "undefined") loadingTitle.text = t("ui.loading");
+if (typeof loadingPct !== "undefined") {
+  // keep whatever % you’re currently showing
+  const pct = parseInt(String(loadingPct.text).replace(/[^\d]/g, ""), 10) || 0;
+  loadingPct.text = `${t("ui.loadingPct")} ${pct}%`;
+}
+
+// Also re-apply localized fonts to loader styles
+if (typeof loadingTitle !== "undefined") loadingTitle.style = new TextStyle(localizeStyle({ ...(loadingTitle.style as any) }) as any);
+if (typeof loadingPct !== "undefined") loadingPct.style = new TextStyle(localizeStyle({ ...(loadingPct.style as any) }) as any);
+
+// ✅ Re-assert loader-only font choice after localizeStyle()
+if (typeof loadingTitle !== "undefined") forceLoaderFont(loadingTitle);
+if (typeof loadingPct !== "undefined") forceLoaderFont(loadingPct);
+
+
+  // FS retrigger popup label
+if (typeof fsAddedLabelText !== "undefined") {
+  fsAddedLabelText.text = applyUiTextCase(t("ui.freeSpins"));
+}
+// ✅ FS retrigger popup fonts (non-latin -> language font)
+try {
+  const ff = overlayBrandFontFamilyFor(getLang());
+
+  if (typeof fsAddedAmountText !== "undefined" && fsAddedAmountText) {
+    const st: any = (fsAddedAmountText.style as any)?.clone ? (fsAddedAmountText.style as any).clone() : { ...(fsAddedAmountText.style as any) };
+    st.fontFamily = ff;
+    fsAddedAmountText.style = new TextStyle(st);
+  }
+
+  if (typeof fsAddedLabelText !== "undefined" && fsAddedLabelText) {
+    const st: any = (fsAddedLabelText.style as any)?.clone ? (fsAddedLabelText.style as any).clone() : { ...(fsAddedLabelText.style as any) };
+    st.fontFamily = ff;
+    fsAddedLabelText.style = new TextStyle(st);
+  }
+} catch {}
+
+  // Rotate overlays
+  rotateText.text = t("ui.rotateBackPortrait");
+
+  // Continue prompts
+  const cta = t("ui.clickToContinue");
+
+  if (typeof splashContinue !== "undefined") splashContinue.text = applyUiTextCase(cta);
+  if (typeof fsContinueText !== "undefined") fsContinueText.text = applyUiTextCase(cta);
+  if (typeof fsOutroContinue !== "undefined") fsOutroContinue.text = applyUiTextCase(cta);
+  if (typeof bigWinContinue !== "undefined") bigWinContinue.text = applyUiTextCase(cta);
+  // Big Win title (if overlay is showing, keep it in the correct language)
+if (typeof bigWinTitle !== "undefined" && state?.overlay?.bigWin) {
+  // use whatever tier is currently displayed (fallback to BIG)
+  setBigWinTitleForTier((bigWinShownTier ?? "BIG") as any);
+}
+// ✅ Big Win overlay fonts (non-latin -> language font)
+try {
+  const ff = overlayBrandFontFamilyFor(getLang());
+
+  if (typeof bigWinTitle !== "undefined" && bigWinTitle) {
+    const st: any = (bigWinTitle.style as any)?.clone ? (bigWinTitle.style as any).clone() : { ...(bigWinTitle.style as any) };
+    st.fontFamily = ff;
+    bigWinTitle.style = new TextStyle(st);
+  }
+
+  if (typeof bigWinAmount !== "undefined" && bigWinAmount) {
+    const st: any = (bigWinAmount.style as any)?.clone ? (bigWinAmount.style as any).clone() : { ...(bigWinAmount.style as any) };
+    st.fontFamily = ff;
+    bigWinAmount.style = new TextStyle(st);
+  }
+
+  if (typeof bigWinContinue !== "undefined" && bigWinContinue) {
+    const st: any = (bigWinContinue.style as any)?.clone ? (bigWinContinue.style as any).clone() : { ...(bigWinContinue.style as any) };
+    st.fontFamily = ff;
+    bigWinContinue.style = new TextStyle(st);
+  }
+} catch {}
+
+
+  // ✅ make sure their font swaps with language (keeps your styling)
+  const ctaStyle = localizeStyle({ ...(splashContinue?.style as any) });
+  if (typeof splashContinue !== "undefined") splashContinue.style = new TextStyle(ctaStyle as any);
+
+  const fsStyle = localizeStyle({ ...(fsContinueText?.style as any) });
+  if (typeof fsContinueText !== "undefined") fsContinueText.style = new TextStyle(fsStyle as any);
+
+  const outroStyle = localizeStyle({ ...(fsOutroContinue?.style as any) });
+  if (typeof fsOutroContinue !== "undefined") fsOutroContinue.style = new TextStyle(outroStyle as any);
+
+  const bigStyle = localizeStyle({ ...(bigWinContinue?.style as any) });
+  if (typeof bigWinContinue !== "undefined") bigWinContinue.style = new TextStyle(bigStyle as any);
+ if (typeof studioTag !== "undefined") forceMicro5(studioTag);
+  // ✅ Bottom UI: Latin languages use Micro5
+  // (Balance / Win / Bet / Mult labels + values)
+  try {
+    if (typeof balanceTitleLabel !== "undefined") forceBottomUiFont(balanceTitleLabel);
+    if (typeof balanceLabel !== "undefined") forceBottomUiFont(balanceLabel);
+
+    if (typeof winTitleLabel !== "undefined") forceBottomUiFont(winTitleLabel);
+    if (typeof winAmountLabel !== "undefined") forceBottomUiFont(winAmountLabel);
+
+    if (typeof betTitleLabel !== "undefined") forceBottomUiFont(betTitleLabel);
+    if (typeof betAmountText !== "undefined") forceBottomUiFont(betAmountText);
+
+    if (typeof multTitleLabel !== "undefined") forceBottomUiFont(multTitleLabel);
+    if (typeof multAmountLabel !== "undefined") forceBottomUiFont(multAmountLabel);
+  } catch {}
+// =====================
+// SPLASH LOCALISATION
+// =====================
+try {
+
+
+  // Logo words (BLOCKY / FARM)
+  if (typeof splashLogoBlocky !== "undefined") {
+    splashLogoBlocky.text = applyUiTextCase(t("splash.title.blocky"));
+
+    const st = (splashLogoBlocky.style as any)?.clone ? (splashLogoBlocky.style as any).clone() : { ...(splashLogoBlocky.style as any) };
+    st.fontFamily = splashTitleFontFamilyFor(getLang());
+    splashLogoBlocky.style = new TextStyle(st);
+  }
+
+  if (typeof splashLogoFarm !== "undefined") {
+    splashLogoFarm.text = applyUiTextCase(t("splash.title.farm"));
+
+    const st = (splashLogoFarm.style as any)?.clone ? (splashLogoFarm.style as any).clone() : { ...(splashLogoFarm.style as any) };
+    st.fontFamily = splashTitleFontFamilyFor(getLang());
+    splashLogoFarm.style = new TextStyle(st);
+  }
+
+  // Card texts
+  if (typeof splashInfoBoxes !== "undefined" && splashInfoBoxes?.length) {
+    for (let i = 0; i < splashInfoBoxes.length; i++) {
+      const box = splashInfoBoxes[i] as any;
+      const title = box._splashTitle as Text | undefined;
+      const subtitle = box._splashSubtitle as Text | undefined;
+
+      const info = SPLASH_INFO[i];
+      if (title && info?.titleKey) title.text = applyUiTextCase(t(info.titleKey));
+      if (subtitle && info?.bodyKey) subtitle.text = applyUiTextCase(t(info.bodyKey));
+
+      // re-apply localized styles so font changes work
+      if (title) title.style = new TextStyle(localizeStyle({ ...(title.style as any) }) as any);
+      if (subtitle) subtitle.style = new TextStyle(localizeStyle({ ...(subtitle.style as any) }) as any);
+    }
+  }
+
+  // When text changes, bounds change → re-layout splash
+  if (typeof splashLayer !== "undefined" && splashLayer?.visible && typeof layoutSplash === "function") {
+  layoutSplash();
+}
+} catch {}
+
+}
+
+
+
+
 
 
 
@@ -127,59 +476,7 @@ if ((window as any).__GAME_BOOTED__) {
 
     removeOldTopLeftHud();
 
-    const pixeldown = new FontFace(
-      
-      "pixeldown",
-      "url(/assets/fonts/pixeldown.ttf)"
-    );
-
-    const Micro5 = new FontFace(
-      "Micro5",
-      "url(/assets/fonts/Micro5.ttf)"
-    );
-
-    // =====================
-    // SHARED "CLICK TO CONTINUE" STYLE
-    // =====================
-    function applyClickToContinueStyle(t: Text) {
-      t.style = new TextStyle({
-      fontFamily: "pixeldown",
-      fill: 0xffffff,
-      fontSize: 35,
-      fontWeight: "200",
-      letterSpacing: 1,
-      align: "center",
-
-      // ✅ STROKE (outline)
-  stroke: { color: 0x000000, width: 4 },
-
-
-      // ✅ SHADOW
-      dropShadow: true,
-      dropShadowAlpha: 0.9,
-      dropShadowBlur: 0,
-      dropShadowDistance: 4,
-      dropShadowAngle: -Math.PI / 4,
-    } as any);
-
-
-      t.anchor.set(0.5);
-      t.eventMode = "static";
-      t.cursor = "pointer";
-
-      // generous, consistent click area
-      t.hitArea = new Rectangle(-360, -60, 720, 120);
-    }
-
-
-
-    await Promise.all([
-      pixeldown.load(),
-      Micro5.load(),
-    ]);
-
-    (document as any).fonts.add(pixeldown);
-    (document as any).fonts.add(Micro5);
+    
 
 
 
@@ -247,8 +544,14 @@ if ((window as any).__GAME_BOOTED__) {
     },
 
   bank: {
-    betLevels: [1.00, 2.00, 5.00, 10.00, 20.00, 50.00, 100.00, 200.00],
-    betIndex: 0,
+    betLevels: [
+  0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.80, 1.00,
+  1.20, 1.40, 1.60, 1.80, 2.00, 3.00, 4.00, 5.00,
+  6.00, 7.00, 8.00, 9.00, 10.00, 12.00, 14.00, 16.00, 18.00, 20.00,
+  30.00, 40.00, 50.00, 75.00, 100.00, 150.00, 200.00, 250.00,
+  300.00, 350.00, 400.00, 450.00, 500.00, 750.00, 1000.00
+],
+   betIndex: 7, // $1.00 default
     balance: 1000,
     lastWin: 0,
   },
@@ -383,7 +686,7 @@ window.addEventListener("keydown", async (e) => {
 
   
 
-
+    const backgroundLayer = new Container();
       
     
     
@@ -437,44 +740,6 @@ window.addEventListener("keydown", async (e) => {
   return base;
 }
 
-
-
-
-
-      function rngChoiceWeighted<T extends string>(weights: Record<T, number>): T {
-        let total = 0;
-        for (const k in weights) total += weights[k as T];
-        const r = Math.random() * total;
-        let acc = 0;
-        for (const k in weights) {
-          acc += weights[k as T];
-          if (r <= acc) return k as T;
-        }
-        return Object.keys(weights)[0] as T;
-      }
-
-  
-
-
-
-    
-
-      function idxToXY(i: number) { return { x: i % COLS, y: Math.floor(i / COLS) }; }
-      function xyToIdx(x: number, y: number) { return y * COLS + x; }
-
-    
-      
-
-
-
-      
-
-  
-
-
-      function makeGrid(weights: Record<SymbolId, number>): Cell[] {
-        return Array.from({ length: CELL_COUNT }, () => ({ id: rngChoiceWeighted(weights) }));
-      }
 
     
 
@@ -544,6 +809,8 @@ function computeCellSize() {
   // SPLASH BACKGROUND WATCHDOG (prevents black frame)
   // =====================
   addSystem(() => {
+    if (!bgBase || !bgFree) return;
+
     if (!state.overlay.splash) return;
 
     const baseOn = bgBase.visible && bgBase.alpha > 0.02;
@@ -575,13 +842,14 @@ function computeCellSize() {
 // PORTRAIT-ONLY LOCK (MOBILE)
 // =====================
 const LOCK_MOBILE_TO_PORTRAIT = true;
+const __layoutDeps = { app, LOCK_MOBILE_TO_PORTRAIT, IS_TOUCH };
 
 
       // =====================
     // HIDE SYSTEM CURSOR (GLOBAL)
     // =====================
   // ✅ Hide OS cursor only on desktop (mobile should keep normal cursor behavior)
-if (!disableCustomCursorOnMobile()) {
+if (!disableCustomCursorOnMobile(__layoutDeps)) {
   (app.canvas as any).style.cursor = "none";
   document.body.style.cursor = "none";
   (document.getElementById("stage") as any)?.style &&
@@ -609,18 +877,22 @@ rotateBlocker.eventMode = "static";
 rotateBlocker.cursor = "default";
 root.addChild(rotateBlocker);
 
-const rotateText = new Text("PLEASE ROTATE\nBACK TO PORTRAIT", {
-  fontFamily: "Micro5",
-  fontSize: 36,
-  fill: 0xffffff,
-  align: "center",
-  letterSpacing: 2,
-  stroke: { color: 0x000000, width: 4 },
-});
+const rotateText = new Text(t("ui.rotateBackPortrait"), {
+  ...localizeStyle({
+    fontFamily: "Micro5",
+    fontSize: 36,
+    fill: 0xffffff,
+    align: "center",
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 4 },
+  } as any),
+} as any);
 rotateText.anchor.set(0.5);
 rotateBlocker.addChild(rotateText);
 
 function layoutRotateBlocker() {
+  rotateText.text = t("ui.rotateBackPortrait");
+
   const W = app.screen.width;
   const H = app.screen.height;
   
@@ -661,37 +933,46 @@ function layoutRotateBlocker() {
     fsCounterWrap.scale.set(1, 1.1); // your original
 
     const fsCounterTitle = new Text({
-      text: "FREE SPINS",
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffffff,
-        fontSize: 40,
-        fontWeight: "100",
-        align: "center",
-        dropShadow: true,
-      
-        dropShadowDistance: 7,
-      } as any,
-    });
-    fsCounterTitle.anchor.set(0.5);
+  text: t("ui.freeSpins"),
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffffff,
+    fontSize: 40,
+    fontWeight: "100",
+    align: "center",
+    dropShadow: true,
+    dropShadowDistance: 7,
+  } as any),
+} as any);
 
-    const fsCounterValue = new Text({
-      text: "0/0",
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffd36a,
-        fontSize: 50,
-        fontWeight: "100",
-        align: "center",
-        dropShadow: true,
-        
-        dropShadowDistance: 7,
-      } as any,
-    });
+const fsCounterValue = new Text({
+  text: "0/0",
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffd36a,
+    fontSize: 50,
+    fontWeight: "100",
+    align: "center",
+    dropShadow: true,
+    dropShadowDistance: 7,
+  } as any),
+} as any);
+
     fsCounterValue.anchor.set(0.5);
+    // ✅ center both texts inside the counter wrap (prevents "label drift" when fonts/lang change)
+fsCounterTitle.anchor.set(0.5);
+fsCounterTitle.x = 0;
+fsCounterValue.x = 0;
+
+
+
+// (optional) makes pixel text feel more stable
+fsCounterTitle.roundPixels = true;
+fsCounterValue.roundPixels = true;
+
 
     fsCounterTitle.y = 0;
-    fsCounterValue.y = 34;
+    fsCounterValue.y = 40;
 
     fsCounterWrap.addChild(fsCounterTitle, fsCounterValue);
     fsCounterWrap.scale.set(1, 1.1);
@@ -702,7 +983,7 @@ function layoutFsCounter() {
   const H = app.renderer.height;
 
   // ✅ MOBILE PORTRAIT ONLY
-  if (isMobilePortraitUILayout()) {
+  if (isMobilePortraitUILayout(__layoutDeps)) {
   // 🔧 portrait scale tuning
   const S = 0.62;          // try 0.65–0.80
   const SY = 1.1;         // slightly taller so text stays readable
@@ -718,7 +999,7 @@ function layoutFsCounter() {
 
 
   // ✅ MOBILE LANDSCAPE ONLY (NEW)
-  if (isMobileLandscapeUILayout()) {
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
     fsCounterWrap.scale.set(0.65, 0.75);          // 🔧 smaller
     fsCounterWrap.position.set(
       Math.round(W * 0.78),                       // 🔧 move left/right
@@ -739,6 +1020,7 @@ function layoutFsCounter() {
 
 
     function refreshFsCounter() {
+      fsCounterTitle.text = t("ui.freeSpins");
       // ✅ show whenever we're in FREE_SPINS (even when remaining hits 0)
     const show = (state.game.mode === "FREE_SPINS") || state.overlay.fsOutroPending;
 
@@ -888,513 +1170,64 @@ function __buildSceneGraphOnce() {
     loadingLayer.cursor = "default";
     root.addChild(loadingLayer);
     root.sortChildren();
-    // =====================
-    // MAGIC CURSOR (LOADER ONLY) — ribbon + sparks + wand + starburst
-    // =====================
-
-    (app.canvas as any).style.cursor = "none"; // hide system cursor during loader
-
-   const loaderCursorLayer = new Container();
-loaderCursorLayer.zIndex = 1000000;
-loaderCursorLayer.eventMode = "none";
-root.addChild(loaderCursorLayer);
-root.sortChildren();
-
-const CURSOR_SPARKS_IN_GAME = false;
-
-// ✅ Mobile: disable the entire loader cursor system (no square cursor)
-if (disableCustomCursorOnMobile()) {
-  loaderCursorLayer.visible = false;
-}
-if (disableCustomCursorOnMobile()) {
-  // Force Pixi to NEVER show a custom cursor
-  app.renderer.events.cursorStyles.default = "default";
-  app.renderer.events.cursorStyles.pointer = "default";
-
-  app.stage.cursor = "default";
-}
-
-
-
-    // ---- Ribbon trail (soft glow) ----
-    const ribbonG = new Graphics();
-    (ribbonG as any).blendMode = "none";
-    //loaderCursorLayer.addChild(ribbonG);
-
-    // ---- Pixel sparks (8-bit shower) ----
-    const sparkLayer = new Container();
-    sparkLayer.eventMode = "none";
-    sparkLayer.zIndex = 2;
-    loaderCursorLayer.addChild(sparkLayer);
-
-    // ---- Starbursts (click pop) ----
-    const burstLayer = new Container();
-    burstLayer.eventMode = "none";
-    burstLayer.zIndex = 3;
-    loaderCursorLayer.addChild(burstLayer);
-
-    // ---- Wand tip ----
-    const wandTip = new Graphics();
-    (wandTip as any).blendMode = "normal";
-    loaderCursorLayer.addChild(wandTip);
-
-    function drawWandTip() {
-      wandTip.clear();
-
-      // hard pixel square (no glow)
-      // tweak SIZE to taste: 2, 3, 4
-      const SIZE = 12;
-
-      // draw centered square
-    wandTip.rect(-Math.floor(SIZE / 2), -Math.floor(SIZE / 2), SIZE, SIZE).fill(0xffffff);
-
-
-      // crisp rendering
-      wandTip.roundPixels = true;
-    wandTip.x = Math.round(wandTip.x);
-    wandTip.y = Math.round(wandTip.y);
-
-
-      
-    }
-
-    drawWandTip();
-
-    type Pt = { x: number; y: number };
-    const trail: Pt[] = [];
-    const TRAIL_MAX = 40;
-
-    // cursor smoothing
-    let loaderCursorOn = true;
-    let targetX = app.screen.width / 2;
-    let targetY = app.screen.height / 1.5;
-    let curX = targetX;
-    let curY = targetY;
-
-    function clamp(n: number, a: number, b: number) { return Math.max(a, Math.min(b, n)); }
-
-    // =========
-    // 8-bit sparks (pool)
-    // =========
-    type Spark = {
-      g: Graphics;
-      vx: number;
-      vy: number;
-      vr: number;
-      life: number;
-      life0: number;
-      s0: number;
-    };
-
-    const sparkPool: Spark[] = [];
-    const sparkLive: Spark[] = [];
-
-    function spawnSpark(x: number, y: number, burst = false) {
-      let p = sparkPool.pop();
-      if (!p) {
-        const g = new Graphics();
-        (g as any).blendMode = "add";
-        p = { g, vx: 0, vy: 0, vr: 0, life: 0, life0: 0, s0: 1 };
-      }
-
-      const g = p.g;
-      g.clear();
-
-      // chunky pixel blocks
-      const vox = burst ? (4 + ((Math.random() * 3) | 0)) : (3 + ((Math.random() * 2) | 0));
-      const blocks = burst ? (4 + ((Math.random() * 4) | 0)) : (2 + ((Math.random() * 3) | 0));
-
-    const cols = [
-      
-      0x2a9df4, // deeper electric blue
-    ];
-
-
-  for (let i = 0; i < blocks; i++) {
-    const ox = ((-2 + Math.random() * 4) * vox) | 0;
-    const oy = ((-2 + Math.random() * 4) * vox) | 0;
-
-    g
-      .rect(ox, oy, vox, vox)
-      .fill({ color: cols[(Math.random() * cols.length) | 0], alpha: 1 });
-  }
-
-      g.x = x + (-6 + Math.random() * 12);
-      g.y = y + (-6 + Math.random() * 12);
-      g.rotation = Math.random() * Math.PI * 2;
-
-      const ang = Math.random() * Math.PI * 2;
-      const sp = (burst ? 240 : 140) + Math.random() * (burst ? 340 : 220);
-      p.vx = Math.cos(ang) * sp;
-      p.vy = Math.sin(ang) * sp - (burst ? (260 + Math.random() * 220) : (120 + Math.random() * 160));
-      p.vr = (-1 + Math.random() * 2) * (burst ? 10 : 7);
-
-      p.life0 = (burst ? 0.55 : 0.35) + Math.random() * (burst ? 0.35 : 0.22);
-      p.life = p.life0;
-
-      p.s0 = 0.9 + Math.random() * 0.9;
-      g.scale.set(p.s0);
-      g.alpha = burst ? 1.0 : 0.85;
-
-      sparkLayer.addChild(g);
-      sparkLive.push(p);
-    }
-
-    // =========
-    // Starburst (click pop)
-    // =========
-    type Burst = {
-      g: Graphics;
-      life: number;
-      life0: number;
-      rot: number;
-      s0: number;
-    };
-
-    const burstPool: Burst[] = [];
-    const burstLive: Burst[] = [];
-
-  function spawnLoaderClickBurst(x: number, y: number) {
-      // Starburst pop
-      spawnStarburst(x, y);
-
-      // Chunky voxel sparks burst
-      const BURST_COUNT = 30; // tweak 10..30
-      for (let i = 0; i < BURST_COUNT; i++) {
-        spawnSpark(x, y, true); // burst=true makes them chunkier + faster
-      }
-    }
-
-    function spawnStarburst(x: number, y: number) {
-      let p = burstPool.pop();
-      if (!p) {
-        const g = new Graphics();
-        (g as any).blendMode = "add";
-        p = { g, life: 0, life0: 0, rot: 0, s0: 1 };
-      }
-      // =========
-    // Loader-only click burst (voxel-y)
-    // =========
-    
-
-
-      const g = p.g;
-      g.clear();
-
-      // 8-point-ish star lines
-      const spokes = 0;
-      const r0 = 10;
-      const r1 = 42;
-
-      for (let i = 0; i < spokes; i++) {
-        const a = (i / spokes) * Math.PI * 2;
-        const x0 = Math.cos(a) * r0;
-        const y0 = Math.sin(a) * r0;
-        const x1 = Math.cos(a) * r1;
-        const y1 = Math.sin(a) * r1;
-
-        // alternating colors gives it a “spell” feel
-        const col = (i % 2 === 0) ? 0xffffff : 0xffd36a;
-
-        g.moveTo(x0, y0);
-        g.lineTo(x1, y1);
-        g.stroke({ width: 3, color: col, alpha: 0.9 });
-      }
-
-  g
-    .circle(0, 0, 6)
-    .fill({ color: 0xffffff, alpha: 1 });
-
-      g.x = x;
-      g.y = y;
-      g.alpha = 1;
-
-      p.life0 = 0.28 + Math.random() * 0.10;
-      p.life = p.life0;
-      p.rot = (-1 + Math.random() * 2) * 2.2;
-      p.s0 = 0.85 + Math.random() * 0.25;
-
-      g.scale.set(p.s0);
-      burstLayer.addChild(g);
-      burstLive.push(p);
-    }
-
-    // =========
-    // Ribbon drawing (soft trail)
-    // =========
-    function drawRibbon(points: Pt[]) {
-      ribbonG.clear();
-      if (points.length < 2) return;
-
-      // Draw multiple passes to fake a “glowy gradient”
-      // Pass 1: wide soft white
-      for (let pass = 0; pass < 2; pass++) {
-        const isInner = pass === 1;
-        const baseCol = isInner ? 0x4fc3ff : 0xcfefff;
-
-        for (let i = 1; i < points.length; i++) {
-          const p0 = points[i - 1];
-          const p1 = points[i];
-
-          const t = i / (points.length - 1); // 0..1 from head->tail
-          const tail = 1 - t;
-
-          const a = (isInner ? 0.38 : 0.22) * (tail * tail); // fade toward tail
-          if (a < 0.01) continue;
-
-          const w = (isInner ? 6 : 14) * tail + (isInner ? 2.5 : 4.0);
-
-          ribbonG.moveTo(p0.x, p0.y);
-          ribbonG.lineTo(p1.x, p1.y);
-          ribbonG.stroke({
-            width: w,
-            color: baseCol,
-            alpha: a,
-            cap: "round",
-            join: "round",
-          } as any);
-        }
-      }
-    }
-
-    // =========
-    // input wiring (loader blocks input anyway, so attach here)
-    // =========
-    // make sure the stage receives pointer events everywhere
-    app.stage.eventMode = "static";
-    app.stage.hitArea = app.screen;
-
-    // =====================
-// Optional: request OS/browser portrait lock (best-effort)
+   // =====================
+// MAGIC CURSOR (LOADER ONLY) — moved to src/ui/loaderMagicCursor.ts
 // =====================
-function tryLockPortrait() {
-  if (!LOCK_MOBILE_TO_PORTRAIT) return;
-
-  const anyScreen: any = screen as any;
-  const lock = anyScreen?.orientation?.lock;
-  if (typeof lock !== "function") return;
-
-  lock.call(anyScreen.orientation, "portrait").catch(() => {
-    // ignored (iOS often blocks this)
-  });
-}
-
-// must be called from a user gesture on many browsers:
-window.addEventListener("pointerdown", tryLockPortrait, { once: true, passive: true });
-
-window.addEventListener(
-  "pointerdown",
-  () => audio?.initFromUserGesture(),
-  { once: true, passive: true }
-);
-
-    // =====================
-    // MAGIC CURSOR OFFSET
-    // =====================
-    const CURSOR_OFFSET_X = -2;  // px right
-    const CURSOR_OFFSET_Y = -2;  // px down
-
-    // --- retro snap settings ---
-    const CURSOR_STEP = 8; // 4,6,8,10
-
-    function snapToStep(v: number, step: number) {
-      return Math.round(v / step) * step;
-    }
-
- app.stage.on("pointermove", (e: any) => {
-  // ✅ no custom cursor on mobile
-  if (disableCustomCursorOnMobile()) return;
-
-  const p = e.global;
-  targetX = snapToStep(p.x + CURSOR_OFFSET_X, CURSOR_STEP);
-  targetY = snapToStep(p.y + CURSOR_OFFSET_Y, CURSOR_STEP);
+installLoaderMagicCursor({
+  app,
+  root,
+  layoutDeps: __layoutDeps,
+  isLoadingVisible: () => loadingLayer.visible,
+  sparksInGame: false, // matches your old CURSOR_SPARKS_IN_GAME = false
 });
 
-
-
-
-
-    app.stage.on("pointerdown", (e: any) => {
-      // ✅ click burst ONLY during loader
-      if (!loadingLayer.visible) return;     // loader-only gate
-      if (!loaderCursorOn) return;
-
-      spawnLoaderClickBurst(targetX, targetY); // use snapped/offset cursor position
-    });
-
-
-
-
-    // =========
-    // stop / cleanup
-    // =========
-    function stopLoaderMagicCursor() {
-      loaderCursorOn = false;
-      (app.canvas as any).style.cursor = "none"; // keep hidden in-game too
-
-
-      // clear sparks
-      for (let i = sparkLive.length - 1; i >= 0; i--) {
-        const p = sparkLive[i];
-        p.g.removeFromParent();
-        sparkPool.push(p);
-        sparkLive.splice(i, 1);
-      }
-      
-
-      
-
-      ribbonG.clear();
-      loaderCursorLayer.removeFromParent();
-    }
-
-    // =========
-    // ticker update
-    // =========
-    let sparkAcc = 0;
-
-   addSystem((dt) => {
-  if (!loaderCursorOn) return;
-
-  // ✅ no custom cursor on mobile
-  if (disableCustomCursorOnMobile()) return;
-      // ✅ don't stop when loader hides — keep running for the whole game
-
-
-    
-
-    // =====================
-    // RETRO STEPPED CURSOR (NO LAG)
-    // =====================
-    // targetX/targetY are already snapped in pointermove.
-    // So just follow instantly.
-    curX = targetX;
-    curY = targetY;
-
-
-
-      // wand tip
-      wandTip.position.set(curX, curY);
-      wandTip.x = Math.round(wandTip.x);
-    wandTip.y = Math.round(wandTip.y);
-
-      // add points to trail
-      trail.unshift({ x: curX, y: curY });
-      if (trail.length > TRAIL_MAX) trail.pop();
-
-      
-
-      drawRibbon(trail);
-
-      // soft pulse at tip
-      const tt = performance.now() * 0.0032;
-      wandTip.scale.set(1 + Math.sin(tt) * 0.06);
-
-    const allowSparks = loadingLayer.visible || CURSOR_SPARKS_IN_GAME;
-    if (allowSparks) {
-      const sparksPerSec = 28;
-      sparkAcc += sparksPerSec * dt;
-      const n = Math.floor(sparkAcc);
-      if (n > 0) sparkAcc -= n;
-
-      for (let i = 0; i < n; i++) {
-        const idx = Math.min(trail.length - 1, 6 + ((Math.random() * 6) | 0));
-        const tp = trail[idx] ?? trail[trail.length - 1];
-        spawnSpark(tp.x, tp.y, false);
-      }
-    }
-
-
-      // update sparks
-      // update sparks
-for (let i = sparkLive.length - 1; i >= 0; i--) {
-  const p = sparkLive[i];
-  const g = p.g;
-
-  p.vy += 620 * dt;
-
-  g.x += p.vx * dt;
-  g.y += p.vy * dt;
-  g.rotation += p.vr * dt;
-
-  p.life -= dt;
-  const k = clamp(p.life / p.life0, 0, 1);
-
-  g.alpha = 0.95 * k * k;
-  const s = p.s0 * (0.85 + 0.15 * k);
-  g.scale.set(s);
-
-  if (p.life <= 0) {
-    g.removeFromParent();
-    sparkLive.splice(i, 1);
-    sparkPool.push(p);
-  }
-}
-
-// ✅ update starbursts (always runs)
-for (let i = burstLive.length - 1; i >= 0; i--) {
-  const p = burstLive[i];
-  const g = p.g;
-
-  p.life -= dt;
-  const k = clamp(p.life / p.life0, 0, 1);
-
-  g.alpha = k * k;
-  g.rotation += p.rot * dt;
-
-  const s = p.s0 * (0.92 + 0.08 * k);
-  g.scale.set(s);
-
-  if (p.life <= 0) {
-    g.removeFromParent();
-    burstLive.splice(i, 1);
-    burstPool.push(p);
-  }
-}
-
-
-      
-
-      
-    });
-
-    // expose to loader hide function
-    (window as any).__stopLoaderMagicCursor = stopLoaderMagicCursor;
 
 
 
     const loadingDim = new Graphics();
     loadingLayer.addChild(loadingDim);
 
-    const loadingTitle = new Text({
-      text: "LOADING SPELLS",
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffffff,
-        fontSize: 48,
-        fontWeight: "900",
-        letterSpacing: 2,
-        dropShadow: true,
-        dropShadowAlpha: 0.6,
-        dropShadowDistance: 3,
-      } as any,
-    });
+const loadingTitle = new Text({
+  text: t("ui.loading"),
+  style: localizeStyle({
+    fontFamily: "Micro5", // base (will be overridden per-language)
+    fill: 0xffffff,
+    fontSize: 48,
+    fontWeight: "900",
+    letterSpacing: 2,
+    dropShadow: true,
+    dropShadowAlpha: 0.6,
+    dropShadowDistance: 3,
+  } as any),
+} as any);
+
     loadingTitle.anchor.set(0.5);
     loadingLayer.addChild(loadingTitle);
 
-    const loadingPct = new Text({
-      text: "0%",
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffd36a,
-        fontSize: 28,
-        fontWeight: "900",
-        letterSpacing: 1,
-        dropShadow: true,
-        dropShadowAlpha: 0.5,
-        dropShadowDistance: 2,
-      } as any,
-    });
+  const loadingPct = new Text({
+  text: `${t("ui.loadingPct")} 0%`,
+  style: localizeStyle({
+    fontFamily: "Micro5", // base (will be overridden per-language)
+    fill: 0xffd36a,
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: 1,
+    dropShadow: true,
+    dropShadowAlpha: 0.5,
+    dropShadowDistance: 2,
+  } as any),
+} as any);
+
+loadingTitle.anchor.set(0.5);
+loadingLayer.addChild(loadingTitle);
+
+loadingPct.anchor.set(0.5);
+loadingLayer.addChild(loadingPct);
+
+// ✅ Apply loader-only font rule (Latin => Micro5, else glyph-safe)
+forceLoaderFont(loadingTitle);
+forceLoaderFont(loadingPct);
+
     loadingPct.anchor.set(0.5);
     loadingLayer.addChild(loadingPct);
 
@@ -1607,7 +1440,8 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
   studioLogoHouse.zIndex = 10;
   studioIntroLayer.addChild(studioLogoHouse);
   studioIntroLayer.sortableChildren = true;
-
+// optional: cache direct textures to avoid Assets.get warnings
+let studioLogoHouseTex: Texture | null = null;
 
   function layoutStudioIntro() {
   const W = app.screen.width;
@@ -1992,48 +1826,76 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
     // clearStudioTiles();
   }
 
-    
+    function splashTitleFontFamilyFor(lang: string) {
+
+  // If you want the logo to stay "brand" in Latin languages, keep Pixeldown.
+  // If non-latin, switch to the language font so glyphs exist.
+  return isLatinUiLang(lang) ? '"Pixeldown"' : uiFontFamilyFor(lang);
+}
+// -----------------------------
+// OVERLAY FONT OVERRIDES (Big Win + FS retrigger)
+// -----------------------------
+function overlayBrandFontFamilyFor(lang: string) {
+  const base = (lang || "en").toLowerCase();
+  const isTr = base === "tr" || base.startsWith("tr-");
+
+  // ✅ Turkish should NOT use Pixeldown brand font
+  if (isTr) return uiFontFamilyFor(lang as any);
+
+  // Latin-script: keep the brand font
+  if (isLatinUiLang(lang)) return '"Pixeldown"';
+
+  // Non-latin / “problematic”: use glyph-safe per-language font
+  return uiFontFamilyFor(lang as any);
+}
+
     // =====================
     // SPLASH LOGO: split into 2 parts (BLOCKY + FARM)
     // =====================
-    const splashLogoStyle = {
-      fontFamily: "pixeldown",
-      fill: 0xffffff,
-      fontSize: 100,
-      fontWeight: "200",
-      letterSpacing: 0,
-      align: "center",
-
-      // outline + shadow
-    stroke: { color: 0x000000, width: 14 },
-
-      dropShadow: true,
-      dropShadowColor: 0x000000,
-      dropShadowAngle: -Math.PI / 5,
-      dropShadowAlpha: 0.9,
-      dropShadowDistance: 20,
-    } as any;
+const splashLogoStyle = {
+  fontFamily: splashTitleFontFamilyFor(getLang()),
+  fill: 0xffffff,
+  fontSize: 100,
+  fontWeight: "200",
+  letterSpacing: 0,
+  align: "center",
+  stroke: { color: 0x000000, width: 14 },
+  dropShadow: true,
+  dropShadowColor: 0x000000,
+  dropShadowAngle: -Math.PI / 5,
+  dropShadowAlpha: 0.9,
+  dropShadowDistance: 20,
+} as any;
 
 
 
-    const splashLogoBlocky = new Text({ text: "BLOCKY", style: splashLogoStyle });
-    splashLogoBlocky.anchor.set(0.5);
-    splashLogoBlocky.skew.set(0, 0.45);
+ const splashLogoBlocky = new Text({
+  text: applyUiTextCase(t("splash.titleBlocky")),
+  style: splashLogoStyle,
+} as any);
+splashLogoBlocky.anchor.set(0.5);
+splashLogoBlocky.skew.set(0, 0.45);
 
-    const splashLogoFarm = new Text({ text: "FARM", style: splashLogoStyle });
-    // remember the responsive "base" logo scales (set inside layoutSplash)
-    let splashBlockyBaseSX = 1, splashBlockyBaseSY = 1;
-    let splashFarmBaseSX  = 1, splashFarmBaseSY  = 1;
+const splashLogoFarm = new Text({
+  text: applyUiTextCase(t("splash.titleFarm")),
+  style: splashLogoStyle,
+} as any);
+splashLogoFarm.anchor.set(0.5);
+splashLogoFarm.skew.set(0, 0.45);
+
 
     // final (layout) targets for the logo pieces
     let splashBlockyTargetX = 0, splashBlockyTargetY = 0;
     let splashFarmTargetX  = 0, splashFarmTargetY  = 0;
-
+    
+    // base (layout) scales for the logo pieces (used by drop/settle)
+let splashBlockyBaseSX = 1, splashBlockyBaseSY = 1;
+let splashFarmBaseSX   = 1, splashFarmBaseSY   = 1;
 
     splashLogoFarm.anchor.set(0.5);
     splashLogoFarm.skew.set(0, 0.45);
-
-    // --- FLOATING "GROUND" SHADOW (clone texts) ---
+    
+// --- FLOATING "GROUND" SHADOW (clone texts) ---
     function makeGroundShadow(src: Text) {
       // ✅ clone style so we don't mutate the original text style
       const baseStyle = (src.style as any).clone
@@ -2056,6 +1918,7 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
       sh.zIndex = 5;
       return sh;
     }
+    
 
 
     const splashShadowBlocky = makeGroundShadow(splashLogoBlocky);
@@ -2085,7 +1948,7 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
 
 // ---- SPLASH INFO FRAME TUNING ----
 const SPLASH_BOX_TARGET_W_N = 0.24;  // ✅ revert: each box ~24% of screen
-const SPLASH_BOX_MAX_W = 315;        // ✅ revert: slightly tighter
+const SPLASH_BOX_MAX_W = 350;        // ✅ revert: slightly tighter
 const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
 
     // ---- POSITION TUNING ----
@@ -2098,13 +1961,11 @@ const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
     splashInfoLayer.zIndex = 40;
     splashLayer.addChild(splashInfoLayer);
 
-    const SPLASH_INFO = [
-      { title: "BONUS MODE", subtitle: "LAND 3 BONUS SYMBOLS\nTO ENTER BONUS MODE" },
-      { title: "+ MULTIPLIER", subtitle: "MULTIPLIER COMPOUNDS\nON EVERY CLUSTER WIN" },
-      { title: "BOUNCING WILD", subtitle: "SECOND CHANCE WILDS" },
-    ];
-
-
+const SPLASH_INFO = [
+  { titleKey: "splash.card1.title", bodyKey: "splash.card1.body" },
+  { titleKey: "splash.card2.title", bodyKey: "splash.card2.body" },
+  { titleKey: "splash.card3.title", bodyKey: "splash.card3.body" },
+];
 
 
 
@@ -2121,49 +1982,52 @@ const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
 
       // --- TITLE ---
     const title = new Text({
-      text: SPLASH_INFO[i].title,
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffd36a,
-        fontSize: 50,
-        align: "center",
-        letterSpacing: 1,
+      text: applyUiTextCase(t(SPLASH_INFO[i].titleKey)),
+    style: localizeStyle({
+  fontFamily: "pixeldown",
+  fill: 0xffd36a,
+  fontSize: 50,
+  align: "center",
+  letterSpacing: 1,
+  stroke: { color: 0x000000, width: 6 },
+  dropShadow: true,
+  dropShadowColor: 0x000000,
+  dropShadowAlpha: 0.9,
+  dropShadowDistance: 4,
+  dropShadowAngle: -Math.PI / 4,
+} as any),
 
-      stroke: { color: 0x000000, width: 6 },
-
-
-        dropShadow: true,
-        dropShadowColor: 0x000000,
-        dropShadowAlpha: 0.9,
-        dropShadowDistance: 4,
-        dropShadowAngle: -Math.PI / 4,
-      } as any,
     });
     title.anchor.set(0.5, 0);
     box.addChild(title);
 
-    // --- SUBTITLE ---
-    const subtitle = new Text({
-      text: SPLASH_INFO[i].subtitle,
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffffff,
-        fontSize: 36,
-        align: "center",
-        letterSpacing: 1,
 
-      stroke: { color: 0x000000, width: 4 },
+  // --- SUBTITLE ---
+const subtitleStyleObj: any = localizeStyle({
+  // keep all your styling the same
+  fontFamily: "Micro5", // placeholder
+  fill: 0xffffff,
+  fontSize: 36,
+  align: "center",
+  letterSpacing: 1,
+  stroke: { color: 0x000000, width: 4 },
+  dropShadow: false,
+  dropShadowColor: 0x000000,
+  dropShadowAlpha: 0.6,
+  dropShadowDistance: 3,
+  dropShadowAngle: -Math.PI / 4,
+} as any);
+
+// ✅ override AFTER localizeStyle
+subtitleStyleObj.fontFamily = splashSubtitleFontFamilyFor(getLang());
 
 
-        dropShadow:false,
-        dropShadowColor: 0x000000,
-        dropShadowAlpha: 0.6,
-        dropShadowDistance: 3,
-        dropShadowAngle: -Math.PI / 4,
-      } as any,
-    });
-    subtitle.anchor.set(0.5, 0);
-    box.addChild(subtitle);
+  const subtitle = new Text({
+  text: applyUiTextCase(t(SPLASH_INFO[i].bodyKey)),
+  style: subtitleStyleObj,
+} as any);
+subtitle.anchor.set(0.5, 0);
+box.addChild(subtitle);
 
     // --- ART WRAP (below subtitle) ---
     const artWrap = new Container();
@@ -2255,7 +2119,7 @@ const SPLASH_PORTRAIT_CONTINUE_GAP_PX = 26; // 🔧 try 18..40
     }
 
     // Click-to-continue (reuse your shared style)
-    const splashContinue = new Text({ text: "CLICK TO CONTINUE", style: {} as any });
+    const splashContinue = new Text({ text: t("ui.clickToContinue"), style: {} as any });
     applyClickToContinueStyle(splashContinue);
     // 🔧 SPLASH-ONLY drop shadow direction
     (splashContinue.style as any).dropShadowAngle = -Math.PI / 4;
@@ -2277,8 +2141,8 @@ const FARM_X_OFFSET_DESKTOP_DROP = -50; // +right, -left
 
     // layout
     function layoutSplash() {
-      const portrait = isMobilePortraitUILayout();
-const landscapeMobile = isMobileLandscapeUILayout();
+      const portrait = isMobilePortraitUILayout(__layoutDeps);
+const landscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
       const W = app.screen.width;
       const H = app.screen.height;
 
@@ -2288,7 +2152,7 @@ const landscapeMobile = isMobileLandscapeUILayout();
 
       splashPresents.position.set(W * 0.5, H * 0.08);
 // ✅ PORTRAIT ONLY: hide "8-BIT WIZARDRY PRESENTS"
-splashPresents.visible = !isMobilePortraitUILayout();
+splashPresents.visible = !isMobilePortraitUILayout(__layoutDeps);
 
 
 
@@ -2296,7 +2160,7 @@ splashPresents.visible = !isMobilePortraitUILayout();
     // ----- SPLASH LOGO (BLOCKY + FARM) layout -----
     // tuning knobs
     const SPLASH_TARGET_W = Math.min(W * 0.80, 1200);
-const SPLASH_LOGO_SCALE = isMobileLandscapeUILayout()
+const SPLASH_LOGO_SCALE = isMobileLandscapeUILayout(__layoutDeps)
   ? 0.35   // 👈 MOBILE LANDSCAPE FINAL SETTLE (try 0.45–0.52)
   : 0.60;  // desktop + portrait unchanged
     const SPLASH_LOGO_SQUASH_X = 0.82;
@@ -2332,7 +2196,7 @@ const leftX = W * 0.5 - pairW / 2;
 splashLogoBlocky.x = leftX + blockyW / 2;
 splashLogoFarm.x   = splashLogoBlocky.x + blockyW / 2 + SPLASH_FINAL_GAP_PX + farmW / 2;
 
-const isDesktop = !isMobilePortraitUILayout() && !isMobileLandscapeUILayout();
+const isDesktop = !isMobilePortraitUILayout(__layoutDeps) && !isMobileLandscapeUILayout(__layoutDeps);
 if (isDesktop) splashLogoFarm.x += FARM_X_OFFSET_DESKTOP;
 
 
@@ -2360,10 +2224,10 @@ let FARM_Y_OFFSET_PORTRAIT = 10;
 let LOGO_Y_N: number;
 let FARM_Y_OFFSET: number;
 
-if (isMobilePortraitUILayout()) {
+if (isMobilePortraitUILayout(__layoutDeps)) {
   LOGO_Y_N = LOGO_Y_N_PORTRAIT;
   FARM_Y_OFFSET = FARM_Y_OFFSET_PORTRAIT;
-} else if (isMobileLandscapeUILayout()) {
+} else if (isMobileLandscapeUILayout(__layoutDeps)) {
   LOGO_Y_N = LOGO_Y_N_LANDSCAPE;
   FARM_Y_OFFSET = FARM_Y_OFFSET_LANDSCAPE;
 } else {
@@ -2382,26 +2246,25 @@ const FARM_LANDSCAPE_FINAL_Y_OFFSET_PX = landscapeMobile
 splashLogoFarm.y   = H * LOGO_Y_N + FARM_Y_OFFSET + FARM_LANDSCAPE_FINAL_Y_OFFSET_PX;
 
 
-    // --- shadow follow (layout) ---
-    const SHADOW_OFF_X = 46;  // right
-    const SHADOW_OFF_Y = 150; // down
-    const SHADOW_SQUASH_Y = .100; // flatten (0.15..0.30)
+  // --- shadow follow (layout) ---
+const SHADOW_OFF_X = 46;  // right
+const SHADOW_OFF_Y = 150; // down
+const SHADOW_SQUASH_Y = 0.16; // was 0.10 (0.14..0.22 is a good range)
 
-    // BLOCKY shadow
-    splashShadowBlocky.x = splashLogoBlocky.x + SHADOW_OFF_X;
-    splashShadowBlocky.y = splashLogoBlocky.y + SHADOW_OFF_Y;
-    splashShadowBlocky.scale.set(
-      splashLogoBlocky.scale.x * 1.05,
-      splashLogoBlocky.scale.y * SHADOW_SQUASH_Y
-    );
+// ✅ Use UNIFORM scale for the shadow so it can’t stretch wide
+// (Base it on logo Y scale, not logo X scale / text width)
+const blockyShadowS = splashLogoBlocky.scale.y * 1.05;
+const farmShadowS   = splashLogoFarm.scale.y   * 1.05;
 
-    // FARM shadow
-    splashShadowFarm.x = splashLogoFarm.x + SHADOW_OFF_X;
-    splashShadowFarm.y = splashLogoFarm.y + SHADOW_OFF_Y;
-    splashShadowFarm.scale.set(
-      splashLogoFarm.scale.x * 1.05,
-      splashLogoFarm.scale.y * SHADOW_SQUASH_Y
-    );
+// BLOCKY shadow
+splashShadowBlocky.x = splashLogoBlocky.x + SHADOW_OFF_X;
+splashShadowBlocky.y = splashLogoBlocky.y + SHADOW_OFF_Y;
+splashShadowBlocky.scale.set(blockyShadowS, blockyShadowS * SHADOW_SQUASH_Y);
+
+// FARM shadow
+splashShadowFarm.x = splashLogoFarm.x + SHADOW_OFF_X;
+splashShadowFarm.y = splashLogoFarm.y + SHADOW_OFF_Y;
+splashShadowFarm.scale.set(farmShadowS, farmShadowS * SHADOW_SQUASH_Y);
 
 
     // ✅ store final layout targets for animation
@@ -2438,7 +2301,7 @@ if (landscapeMobile) {
 
 
 // desired box width based on screen
-const isLandscapeMobile = isMobileLandscapeUILayout();
+const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
 // 🔧 TUNING
 const SPLASH_CARD_PORTRAIT_SCALE = 1.0; // try 0.85–1.05
@@ -2465,7 +2328,7 @@ const targetW = Math.max(
 
 
 // portrait needs shorter cards
-const boxH = Math.round(targetW * (portrait ? 0.60 : SPLASH_BOX_H_MULT));
+const boxH = Math.round(targetW * (portrait ? 0.7 : SPLASH_BOX_H_MULT));
 
 
 
@@ -2518,7 +2381,7 @@ for (let i = 0; i < splashInfoBoxes.length; i++) {
 // SPLASH CARD TEXT SCALE
 // =====================
 
-const isLandscapeMobile = isMobileLandscapeUILayout();
+const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
 if (portrait) {
   // 📱 Mobile portrait (already correct)
@@ -2740,14 +2603,28 @@ const SPLASH_LAND_FARM_DROP_PX = 18;
     retargetAmbientForSplash(420);
 
 
-    // ✅ keep existing ambient FX (no snap). Just ensure spawning starts immediately.
-    cloudSpawnAcc = 0;
-    leafSpawnAcc = 0;
+// ✅ SPLASH: ENABLE CLOUDS
+cloudFxEnabled = true;
 
-    // (optional) if they were disabled somewhere earlier, re-enable here:
-    cloudFxEnabled = true;
-    leafFxEnabled = true;
+// if any clouds already exist, retarget them into the splash band
+retargetAmbientForSplash(420);
 
+// ensure we have some clouds immediately
+cloudSpawnAcc = 0;
+if (cloudLive.length === 0) seedCloudFx(6);
+
+
+// ✅ SPLASH: disable LEAVES
+leafFxEnabled = false;
+leafSpawnAcc = 0;
+
+// clear any leaves that were already alive so none remain visible/frozen
+for (let i = leafLive.length - 1; i >= 0; i--) {
+  const p = leafLive[i];
+  p.c.removeFromParent();
+  leafPool.push(p);
+}
+leafLive.length = 0;
 
 
 
@@ -2770,8 +2647,8 @@ const SPLASH_LAND_FARM_DROP_PX = 18;
 
   const logoOffY   = -Math.max(splashLogoBlocky.height, splashLogoFarm.height) - 140;
 
-const landscapeMobile = isMobileLandscapeUILayout();
-const portraitMobile  = isMobilePortraitUILayout();
+const landscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
+const portraitMobile  = isMobilePortraitUILayout(__layoutDeps);
 
 const logoDropY = landscapeMobile
   ? H * SPLASH_LAND_DROP_Y_N
@@ -2815,7 +2692,7 @@ splashLogoBlocky.x = dropLeftX + dropBlockyW / 2;
 splashLogoFarm.x   = splashLogoBlocky.x + dropBlockyW / 2 + SPLASH_DROP_GAP_PX + dropFarmW / 2;
 
 // ✅ DESKTOP ONLY: tweak FARM initial drop X (does NOT affect final settle)
-const isDesktopDrop = !isMobilePortraitUILayout() && !isMobileLandscapeUILayout();
+const isDesktopDrop = !isMobilePortraitUILayout(__layoutDeps) && !isMobileLandscapeUILayout(__layoutDeps);
 if (isDesktopDrop) {
   splashLogoFarm.x += FARM_X_OFFSET_DESKTOP_DROP;
 }
@@ -2839,7 +2716,11 @@ if (isDesktopDrop) {
       splashLogoBlocky.y = logoOffY + (logoDropY - logoOffY) * e;
       splashShadowBlocky.x = splashLogoBlocky.x + 46;
     splashShadowBlocky.y = splashLogoBlocky.y + 150;
-    splashShadowBlocky.scale.set(splashLogoBlocky.scale.x * 1.05, splashLogoBlocky.scale.y * 0.22);
+   {
+  const SHADOW_SQUASH_Y = 0.22; // keep same feel as before
+  const s = splashLogoBlocky.scale.y * 1.05; // ✅ uniform base from Y scale
+  splashShadowBlocky.scale.set(s, s * SHADOW_SQUASH_Y);
+}
 
     });
 
@@ -2860,7 +2741,12 @@ if (isDesktopDrop) {
         ((logoDropY + FARM_DROP_Y_OFFSET) - logoOffY) * e;
       splashShadowFarm.x = splashLogoFarm.x + 46;
     splashShadowFarm.y = splashLogoFarm.y + 150;
-    splashShadowFarm.scale.set(splashLogoFarm.scale.x * 1.05, splashLogoFarm.scale.y * 0.22);
+    {
+  const SHADOW_SQUASH_Y = 0.22;
+  const s = splashLogoFarm.scale.y * 1.05; // ✅ uniform base from Y scale
+  splashShadowFarm.scale.set(s, s * SHADOW_SQUASH_Y);
+}
+
       
     });
 
@@ -2895,7 +2781,11 @@ if (isDesktopDrop) {
     splashLogoBlocky.x = fromBlockyX + (splashBlockyTargetX - fromBlockyX) * e;
     splashShadowBlocky.x = splashLogoBlocky.x + 46;
     splashShadowBlocky.y = splashLogoBlocky.y + 150;
-    splashShadowBlocky.scale.set(splashLogoBlocky.scale.x * 1.05, splashLogoBlocky.scale.y * 0.22);
+   {
+  const SHADOW_SQUASH_Y = 0.22; // keep same feel as before
+  const s = splashLogoBlocky.scale.y * 1.05; // ✅ uniform base from Y scale
+  splashShadowBlocky.scale.set(s, s * SHADOW_SQUASH_Y);
+}
 
 
 
@@ -2922,15 +2812,22 @@ if (isDesktopDrop) {
     splashLogoFarm.x = fromFarmX + (splashFarmTargetX - fromFarmX) * e;
     splashShadowFarm.x = splashLogoFarm.x + 46;
     splashShadowFarm.y = splashLogoFarm.y + 150;
-    // ✅ fake height: shadow shrinks as FARM rises
-    const height01 = Math.max(0, Math.min(1, (splashFarmTargetY - splashLogoFarm.y) / 200));
-    const squash = 0.22 + height01 * 0.10; // 0.22..0.32
-    splashShadowFarm.scale.set(
-      splashLogoFarm.scale.x * 1.22,
-      splashLogoFarm.scale.y * squash
-    );
+   // ✅ fake height: shadow changes THICKNESS only (no wide stretch)
+const height01 = Math.max(0, Math.min(1, (splashFarmTargetY - splashLogoFarm.y) / 200));
 
-    splashShadowFarm.scale.set(splashLogoFarm.scale.x * 1.05, splashLogoFarm.scale.y * 0.22);
+// tune these:
+const SHADOW_WIDTH_MUL = 0.98;         // < 1 = narrower shadow (try 0.92..1.05)
+const SHADOW_SQUASH_BASE = 0.28;       // bigger = less flat (try 0.26..0.40)
+const SHADOW_SQUASH_ADD  = 0.10;       // how much it fattens while rising (try 0.06..0.14)
+
+const squash = SHADOW_SQUASH_BASE + height01 * SHADOW_SQUASH_ADD;
+
+// base size ONLY from logo Y scale (prevents wide stretch)
+const base = splashLogoFarm.scale.y * SHADOW_WIDTH_MUL;
+splashShadowFarm.scale.set(base, base * squash);
+
+
+
 
 
 
@@ -3021,6 +2918,15 @@ if (isDesktopDrop) {
     // ✅ Kick off the startup background pan + reveal sequence
     playStartupIntro();
 
+    // ✅ re-enable clouds after splash
+cloudFxEnabled = true;
+cloudSpawnAcc = 0;
+seedCloudFx(6);
+
+// ✅ re-enable leaves after splash
+leafFxEnabled = true;
+leafSpawnAcc = 0;
+
     // ✅ draw the initial board so symbols exist when the game reveals
     bootInitialBoard();
 
@@ -3044,6 +2950,7 @@ if (isDesktopDrop) {
   const BG_BASE_URL = "/assets/backgrounds/bg_candy_landscape.webp";
   const BG_FREE_URL = "/assets/backgrounds/bg_candy_landscape_free.webp";
   const FS_OUTRO_BG_URL = "/assets/ui/fs_outro_bg.webp";
+  const INFINITY_ICON_URL = "/assets/ui/infinity.png";
 
     
 
@@ -3071,8 +2978,7 @@ let reelhouseSheet: any = null;
 let vehiclesSheet: any = null;
 let bigWinItemsSheet: any = null;
 
-// optional: cache direct textures to avoid Assets.get warnings
-let studioLogoHouseTex: Texture | null = null;
+
 
     // =====================
     // SPLASH CARD ART (icons under subtitle)
@@ -3087,7 +2993,7 @@ let studioLogoHouseTex: Texture | null = null;
 
 
       // ✅ MOBILE PORTRAIT: no splash art at all
-  if (isMobilePortraitUILayout()) {
+  if (isMobilePortraitUILayout(__layoutDeps)) {
     // make sure any previously-created art is removed
     for (const box of splashInfoBoxes as any[]) {
       const art: Container | undefined = box?._splashArt;
@@ -3156,7 +3062,7 @@ let studioLogoHouseTex: Texture | null = null;
 
 
 
-    const backgroundLayer = new Container();
+
 
     
 
@@ -3808,7 +3714,7 @@ function getFsCarScale() {
   const base = getCarScale(); // your existing responsive scale
 
   // ✅ only affect FREE SPINS car in mobile landscape
-  if (isMobileLandscapeUILayout()) return base * FS_CAR_LANDSCAPE_SCALE_MUL;
+  if (isMobileLandscapeUILayout(__layoutDeps)) return base * FS_CAR_LANDSCAPE_SCALE_MUL;
 
   return base;
 }
@@ -4055,7 +3961,7 @@ function rescaleLiveCars() {
     }
 
     function spawnFsCar() {
-      if (carsDisabled()) return;
+      if (carsDisabled(__layoutDeps)) return;
       if (state.overlay.splash) return; // ✅ NO car during splash
         // ✅ NEW: block FS car during the "FS ended, outro pending" pause
   if (state.overlay.fsOutroPending) return;
@@ -4119,7 +4025,7 @@ audio?.playSfx?.("car", 0.5, 1.2);
   
 
     function spawnBgCar(force = false) {
-      if (carsDisabled()) return;
+      if (carsDisabled(__layoutDeps)) return;
       // 🚫 never spawn base car during FREE SPINS (even if forced)
     if (state.game.mode === "FREE_SPINS") return;
 
@@ -4231,6 +4137,35 @@ audio?.playSfx?.("car", 0.5, 1.2);
   
 
   function onKeyDown(e: KeyboardEvent) {
+    // =====================
+// DEBUG: FS RETRIGGER
+// =====================
+if (!FINAL_BUILD && e.key.toLowerCase() === "r") {
+  e.preventDefault();
+
+  // modifiers give you fast variants
+  if (e.shiftKey) {
+    debugForceFsRetrigger(10);   // SHIFT+R = +10 FS
+  } else if (e.altKey) {
+    debugForceFsRetrigger(1);    // ALT+R   = +1 FS
+  } else {
+    debugForceFsRetrigger(5);    // R       = +5 FS
+  }
+
+  console.log("[DEBUG] FS retrigger");
+  return;
+}
+
+    // T = test tickhigh (forces unlock + plays)
+if (e.key.toLowerCase() === "t") {
+  __blockEvent(e);
+  audio?.initFromUserGesture?.();
+  console.log("[TEST] tickhigh: play once + start loop");
+  audio?.playSfx?.("tickhigh", 1.0, 1.0);
+  audio?.startTickHighLoop?.(0, 0.35, 1.0);
+  setTimeout(() => audio?.stopTickHighLoop?.(80), 800);
+  return;
+}
     // stop page scroll from Space
     if (e.code === "Space") e.preventDefault();
 
@@ -4466,8 +4401,14 @@ if (e.key.toLowerCase() === "i") {
       // always left -> right, start offscreen
       p.c.x = -220;
 
-      // TOP band only (5%..25%)
-      p.c.y = H * (0.05 + Math.random() * 0.20);
+     const isSplash = state.overlay.splash;
+
+// normal game: 5%..25%
+// splash: 25%..60% (more “in frame” behind logo/cards)
+const yMin = isSplash ? 0.25 : 0.05;
+const yMax = isSplash ? 0.60 : 0.25;
+
+p.c.y = H * (yMin + Math.random() * (yMax - yMin));
 
       // drift across slowly
       const speed = 12 + Math.random() * 22; // px/sec
@@ -4618,8 +4559,12 @@ if (e.key.toLowerCase() === "i") {
 
 
 
-    function tickCloudFx() {
-      if (!cloudFxEnabled) return;
+   function tickCloudFx() {
+  // ✅ allow clouds during splash too
+  if (!cloudFxEnabled) return;
+
+  // optional safety: don’t run clouds during FS overlays if you want
+  if (state.overlay.fsIntro || state.overlay.fsOutro) return;
 
       const W = app.renderer.width;
       const H = app.renderer.height;
@@ -4712,7 +4657,7 @@ if (e.key.toLowerCase() === "i") {
     // ✅ run every frame
 addSystem((dt) => {
   // ✅ portrait mobile: no cars at all
-  if (carsDisabled()) {
+  if (carsDisabled(__layoutDeps)) {
     killCarsNow();
     return;
   }
@@ -5092,32 +5037,63 @@ addSystem((dt) => {
     banner10.anchor.set(0.5);
 
     const bannerFree = new Text({
-      text: "FREE",
-      style: new TextStyle({
-        ...whiteStyleObj,
-        fontSize: 300,           // 🔧 tune
-        align: "center",
-      } as any),
-    } as any);
-    bannerFree.anchor.set(0.5);
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffffff,
+    fontSize: 64,
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 8 },
+  } as any),
+} as any);
 
-    const bannerSpins = new Text({
-      text: "SPINS",
-      style: new TextStyle({
-        ...whiteStyleObj,
-        fontSize: 95,           // 🔧 tune
-        align: "center",
-      } as any),
-    } as any);
-    bannerSpins.anchor.set(0.5);
+const bannerSpins = new Text({
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffffff,
+    fontSize: 64,
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 8 },
+  } as any),
+} as any);
+// 🔧 scale FREE / SPINS slightly smaller than the number
+const FS_WORD_SCALE = 1.2; // try 0.8–0.9
 
-    // layout (center aligned stack)
-    const GAP_10_TO_FREE = 105;   // 🔧 tune
-    const GAP_FREE_TO_SPINS = 92;
+bannerFree.scale.set(FS_WORD_SCALE);
+bannerSpins.scale.set(FS_WORD_SCALE);
 
-    banner10.position.set(0, 0);
-    bannerFree.position.set(0, GAP_10_TO_FREE);
-    bannerSpins.position.set(0, GAP_10_TO_FREE + GAP_FREE_TO_SPINS);
+bannerFree.anchor.set(0.5);
+bannerSpins.anchor.set(0.5);
+
+function centerBannerText(tt: Text) {
+  const b = tt.getLocalBounds();
+  tt.pivot.set(b.x + b.width / 2, b.y + b.height / 2);
+  tt.x = 0;
+}
+
+function setFsIntroBannerText() {
+  const txt = applyUiTextCase(t("ui.freeSpins"));
+  const parts = txt.trim().split(/\s+/);
+
+  bannerFree.text  = parts[0] ?? txt;
+  bannerSpins.text = parts.slice(1).join(" ") || "";
+
+  centerBannerText(bannerFree);
+  centerBannerText(bannerSpins);
+}
+
+// layout (center aligned stack)
+const GAP_10_TO_FREE = 90;
+const GAP_FREE_TO_SPINS = 60;
+
+banner10.position.set(0, 0);
+bannerFree.position.set(0, GAP_10_TO_FREE);
+bannerSpins.position.set(0, GAP_10_TO_FREE + GAP_FREE_TO_SPINS);
+
+// ✅ call once after positions are set
+setFsIntroBannerText();
+
 
     fsTractorBanner.addChild(banner10, bannerFree, bannerSpins);
 
@@ -5126,12 +5102,13 @@ addSystem((dt) => {
 
     // position banner relative to the tractor sprite (local coords)
     // (0,0) is tractor center because anchor=0.5
-   const BANNER_OFF_X = -290;
+const BANNER_OFF_X = -290;
 
-// 🔽 LANDSCAPE-ONLY vertical adjustment
-const BANNER_OFF_Y = isMobileLandscapeUILayout()
-  ? -160   // 👈 move banner DOWN in landscape (try -200 … -260)
-  : -275;  // original portrait/desktop value
+const BANNER_OFF_Y =
+  isMobileLandscapeUILayout(__layoutDeps) ? -160 :   // mobile landscape
+  isMobilePortraitUILayout(__layoutDeps)  ? -275 :   // mobile portrait
+                                          -235;     // ✅ desktop (lower)
+
 
 fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
 
@@ -5145,8 +5122,8 @@ const BANNER_SCALE_PORTRAIT = 1.4;
 const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
 
 (a as any)._bannerScale =
-  isMobileLandscapeUILayout() ? BANNER_SCALE_LAND
-  : isMobilePortraitUILayout() ? BANNER_SCALE_PORTRAIT
+  isMobileLandscapeUILayout(__layoutDeps) ? BANNER_SCALE_LAND
+  : isMobilePortraitUILayout(__layoutDeps) ? BANNER_SCALE_PORTRAIT
   : BANNER_SCALE_DESKTOP;
 
     fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
@@ -5155,6 +5132,7 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
     // store refs so we can update "10" per entry
     (a as any)._banner10 = banner10;
     (a as any)._banner = fsTractorBanner;
+
 
 
     }
@@ -5225,7 +5203,7 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
   let x1 = W + tractorW * 0.8;
 
   // ✅ Mobile LANDSCAPE: push far enough so the trailing banner clears too
-  if (isMobileLandscapeUILayout()) {
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
     const banner = (fsTractor as any)?._banner as Container | undefined;
 
     const offX = (fsTractor as any)?._bannerOffX ?? -290; // banner is usually LEFT of tractor
@@ -5630,7 +5608,7 @@ const x1 =
     const fsAddedAmountText = new Text({
       text: "",
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffd36a,
         fontSize: 120,           // BIG +5
         fontWeight: "100",
@@ -5650,9 +5628,9 @@ const x1 =
     root.addChild(fsAddedAmountText);
 
     const fsAddedLabelText = new Text({
-      text: "FREE SPINS ADDED",
+      text: applyUiTextCase(t("ui.freeSpins")),
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 40,           // smaller subtitle
         fontWeight: "100",
@@ -5674,33 +5652,33 @@ const x1 =
 
 
     // keep this near layoutFsDimmer()
- function layoutFsAddedPopup() {
+function layoutFsAddedPopup() {
   const w = app.renderer.width;
   const h = app.renderer.height;
 
   fsAddedDimmer.clear();
   fsAddedDimmer.rect(0, 0, w, h).fill(0x000000);
 
-  // ✅ define tuning INSIDE the function (prevents TDZ)
-  const LAND_AMOUNT_Y = 0.40; // try 0.36–0.46
-  const LAND_LABEL_Y  = 0.52; // try 0.48–0.60
+  const centerY = h * 0.48;
 
-  if (isMobileLandscapeUILayout()) {
-    fsAddedAmountText.position.set(
-      Math.round(w * 0.5),
-      Math.round(h * LAND_AMOUNT_Y)
-    );
+  // 🔧 THIS IS YOUR GAP CONTROL (pixels)
+ const GAP_PX =
+  isMobilePortraitUILayout(__layoutDeps) ? 90 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 120 :
+  150;
 
-    fsAddedLabelText.position.set(
-      Math.round(w * 0.5),
-      Math.round(h * LAND_LABEL_Y)
-    );
-  } else {
-    // desktop + portrait (your existing)
-    fsAddedAmountText.position.set(Math.round(w * 0.5), Math.round(h * 0.43));
-    fsAddedLabelText.position.set(Math.round(w * 0.5), Math.round(h * 0.52));
-  }
+  fsAddedAmountText.position.set(
+    Math.round(w * 0.5),
+    Math.round(centerY - GAP_PX * 0.5)
+  );
+
+  fsAddedLabelText.position.set(
+    Math.round(w * 0.5),
+    Math.round(centerY + GAP_PX * 0.5)
+  );
 }
+
+
 
 
 
@@ -5962,9 +5940,9 @@ const x1 =
 
     // --- Text: TOTAL WIN (white) ---
     const fsOutroTotalLabel = new Text({
-      text: "TOTAL WIN",
+      text: t("ui.totalWin"),
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 110,
         fontWeight: "100",
@@ -5989,7 +5967,7 @@ const x1 =
     const fsOutroWinAmount = new Text({
       text: "0.00",
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffd36a,
         fontSize: 150,
         fontWeight: "100",
@@ -6017,7 +5995,7 @@ const x1 =
     // If you truly want ONLY "TOTAL WIN + amount", set FS_OUTRO_SHOW_CONTINUE = false.
     const FS_OUTRO_SHOW_CONTINUE = true;
 
-    const fsOutroContinue = new Text({ text: "CLICK TO CONTINUE", style: {} as any });
+    const fsOutroContinue = new Text({ text: t("ui.clickToContinue"), style: {} as any });
     applyClickToContinueStyle(fsOutroContinue);
     (fsOutroContinue.style as any).dropShadowAngle = -Math.PI / 4;
     fsOutroContinue.anchor.set(0.5);
@@ -6036,7 +6014,7 @@ const x1 =
     });
 
     function computeFsOutroPortraitScale(finalAmount: number) {
-  if (!isMobilePortraitUILayout()) return 1;
+  if (!isMobilePortraitUILayout(__layoutDeps)) return 1;
 
   const W = app.screen.width;
 
@@ -6067,7 +6045,7 @@ const x1 =
 }// =====================
 // FS OUTRO — GAP TUNING
 // =====================
-const FS_OUTRO_LABEL_Y_DESKTOP = 0.44;
+const FS_OUTRO_LABEL_Y_DESKTOP = 0.41;
 const FS_OUTRO_AMOUNT_Y_DESKTOP = 0.59;
 
 // ✅ MOBILE LANDSCAPE: bigger gap
@@ -6088,7 +6066,7 @@ const FS_OUTRO_AMOUNT_Y_LAND = 0.70;  // bigger = lower
       fsOutroBg.scale.set(s);
 
       // layout text (match your screenshot vibe)
-const isLand = isMobileLandscapeUILayout();
+const isLand = isMobileLandscapeUILayout(__layoutDeps);
 
 const labelYFrac  = isLand ? FS_OUTRO_LABEL_Y_LAND  : FS_OUTRO_LABEL_Y_DESKTOP;
 const amountYFrac = isLand ? FS_OUTRO_AMOUNT_Y_LAND : FS_OUTRO_AMOUNT_Y_DESKTOP;
@@ -6109,10 +6087,10 @@ fsOutroWinAmount.position.set(
         // =====================
   // PORTRAIT: LOCKED FIT-TO-WIDTH SCALE (prevents snapping during count-up)
   // =====================
-  if (isMobilePortraitUILayout() && fsOutroPortraitScaleLocked) {
+  if (isMobilePortraitUILayout(__layoutDeps) && fsOutroPortraitScaleLocked) {
     fsOutroTotalLabel.scale.set(fsOutroPortraitScale);
     fsOutroWinAmount.scale.set(fsOutroPortraitScale);
-  } else if (!isMobilePortraitUILayout()) {
+  } else if (!isMobilePortraitUILayout(__layoutDeps)) {
     // non-portrait: normal
     fsOutroTotalLabel.scale.set(1, 1);
     fsOutroWinAmount.scale.set(1, 1);
@@ -6600,6 +6578,18 @@ let bigWinPortraitScaleLocked = false;
       
     type BigWinTier = "BIG" | "SUPER" | "MEGA" | "EPIC" | "MAX";
 
+    function bigWinTitleKeyForTier(tier: BigWinTier): string {
+  if (tier === "SUPER") return "ui.bigWin.super";
+  if (tier === "MEGA") return "ui.bigWin.mega";
+  if (tier === "EPIC") return "ui.bigWin.epic";
+  if (tier === "MAX") return "ui.bigWin.max";
+  return "ui.bigWin.big";
+}
+
+function setBigWinTitleForTier(tier: BigWinTier) {
+  bigWinTitle.text = applyUiTextCase(t(bigWinTitleKeyForTier(tier)));
+}
+
     function bigWinTierForX(x: number): BigWinTier {
       if (x >= MAX_WIN_X)   return "MAX";
       if (x >= EPIC_WIN_X)  return "EPIC";
@@ -6621,7 +6611,7 @@ let bigWinPortraitScaleLocked = false;
     // =====================
     function makeBigWinTitleStyle() {
       return new TextStyle({
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 110,
         fontWeight: "100",
@@ -6644,7 +6634,7 @@ let bigWinPortraitScaleLocked = false;
 
     function makeBigWinAmountStyle() {
       return new TextStyle({
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffd36a,
         fontSize: 170,
         fontWeight: "100",
@@ -6665,7 +6655,7 @@ let bigWinPortraitScaleLocked = false;
 
     function makeBigWinContinueStyle() {
       return new TextStyle({
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 42,
         fontWeight: "100",
@@ -6768,7 +6758,7 @@ let bigWinPortraitScaleLocked = false;
 
 
     const bigWinContinue = new Text({
-      text: "CLICK TO CONTINUE",
+      text: t("ui.clickToContinue"),
       style: makeBigWinContinueStyle(),
     } as any);
     bigWinContinue.anchor.set(0.5);
@@ -6911,24 +6901,28 @@ let bigWinPortraitScaleLocked = false;
     bigWinContinue.cursor = "pointer";
 
 function computeBigWinPortraitScale(finalAmount: number) {
-  if (!isMobilePortraitUILayout()) return 1;
+  if (!isMobilePortraitUILayout(__layoutDeps)) return 1;
 
   const W = app.screen.width;
+
+  // leave padding at screen edges
   const PAD = Math.round(W * 0.10);
   const maxW = Math.max(1, W - PAD * 2);
 
-  // reset to measure cleanly
-  bigWinTitle.scale.set(1, 1);
-  bigWinAmount.scale.set(1, 1);
+  // ✅ start from your desired portrait "overall smaller" size
+  const base = BIGWIN_PORTRAIT_BASE_SCALE;
 
-  // temporarily set to FINAL text (widest)
+  // measure at base scale (so we fit from the correct starting size)
+  bigWinTitle.scale.set(base, base);
+  bigWinAmount.scale.set(base, base);
+
+  // temporarily set to widest possible text
   const oldTitle = bigWinTitle.text;
   const oldAmt = bigWinAmount.text;
 
-  bigWinTitle.text = "EPIC WIN";               // widest-ish title (safe)
-  bigWinAmount.text = fmtMoney(finalAmount);   // final amount is the widest number
+  bigWinTitle.text = "EPIC WIN";            // widest-ish title
+  bigWinAmount.text = fmtMoney(finalAmount); // widest number
 
-  // measure
   const widest = Math.max(
     bigWinTitle.getBounds().width,
     bigWinAmount.getBounds().width
@@ -6938,11 +6932,16 @@ function computeBigWinPortraitScale(finalAmount: number) {
   bigWinTitle.text = oldTitle;
   bigWinAmount.text = oldAmt;
 
-  if (widest <= maxW) return 1;
+  // if it fits at base size, use base
+  if (widest <= maxW) return base;
 
-  const s = maxW / widest;
-  return Math.max(0.58, Math.min(1, s));
+  // otherwise shrink further, but don't go microscopic
+  const fit = maxW / widest; // < 1
+  const s = base * fit;
+
+  return Math.max(base * 0.58, Math.min(base, s));
 }
+
 
     function layoutBigWin() {
       const cx = app.screen.width / 2;
@@ -6950,7 +6949,7 @@ function computeBigWinPortraitScale(finalAmount: number) {
         // =====================
   // MOBILE LANDSCAPE: SCALE DOWN BIG WIN
   // =====================
-if (isMobileLandscapeUILayout()) {
+if (isMobileLandscapeUILayout(__layoutDeps)) {
   // ✅ scale down for landscape
   bigWinTitle.scale.set(BIGWIN_LAND_SCALE);
   bigWinAmount.scale.set(BIGWIN_LAND_SCALE);
@@ -7008,45 +7007,25 @@ if (isMobileLandscapeUILayout()) {
 
     
   // =====================
-  // PORTRAIT: FIT BIG WIN TEXT TO DEVICE WIDTH
-  // =====================
-  if (isMobilePortraitUILayout()) {
-    const W = app.screen.width;
-
-    // how much padding to leave at screen edges
-    const PAD = Math.round(W * 0.10); // 10% each side (tweak 0.07..0.14)
-    const maxW = Math.max(1, W - PAD * 2);
-
-    // reset to "designed" scale before measuring
-    bigWinTitle.scale.set(1, 1);
-    bigWinAmount.scale.set(1, 1);
-
-    // measure widest element (title OR amount)
-    const titleW = bigWinTitle.getBounds().width;
-    const amountW = bigWinAmount.getBounds().width;
-    const widest = Math.max(titleW, amountW);
-
-    // scale down only if needed
-    if (widest > maxW) {
-      const s = maxW / widest;
-
-      // clamp so it doesn't get microscopic
-      const sClamped = Math.max(0.58, Math.min(1, s));
-
-      bigWinTitle.scale.set(sClamped, sClamped);
-      bigWinAmount.scale.set(sClamped, sClamped);
-    }
-  } else {
-    // non-portrait: ensure normal size
-    bigWinTitle.scale.set(1, 1);
-    bigWinAmount.scale.set(1, 1);
-  }
+// ✅ BIG WIN SCALE RULES
+// - Mobile landscape: handled earlier (BIGWIN_LAND_SCALE branch)
+// - Mobile portrait: always smaller (base), and use locked scale if available
+// - Desktop: normal (1)
+// =====================
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  const s = bigWinPortraitScaleLocked ? bigWinPortraitScale : BIGWIN_PORTRAIT_BASE_SCALE;
+  bigWinTitle.scale.set(s, s);
+  bigWinAmount.scale.set(s, s);
+} else {
+  bigWinTitle.scale.set(1, 1);
+  bigWinAmount.scale.set(1, 1);
+}
 
 // ✅ Portrait: apply LOCKED scale (prevents snapping during count-up)
-if (isMobilePortraitUILayout() && bigWinPortraitScaleLocked) {
+if (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked) {
   bigWinTitle.scale.set(bigWinPortraitScale);
   bigWinAmount.scale.set(bigWinPortraitScale);
-} else if (!isMobilePortraitUILayout()) {
+} else if (!isMobilePortraitUILayout(__layoutDeps)) {
   // non-portrait: normal
   bigWinTitle.scale.set(1, 1);
   bigWinAmount.scale.set(1, 1);
@@ -7058,6 +7037,9 @@ if (isMobilePortraitUILayout() && bigWinPortraitScaleLocked) {
 // BIG WIN — MOBILE LANDSCAPE SCALE
 // =====================
 const BIGWIN_LAND_SCALE = 0.6;     // 🔧 try 0.62–0.82
+// ✅ BIG WIN — MOBILE PORTRAIT SCALE (TITLE + AMOUNT ONLY)
+const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smaller)
+
 
     // =====================
     // BIG WIN TITLE DROP IN/OUT (TITLE ONLY)
@@ -7140,7 +7122,7 @@ const BIGWIN_LAND_SCALE = 0.6;     // 🔧 try 0.62–0.82
     bigWinTitle.alpha = 0;
     bigWinTitle.y = bigWinTitleOffY();
 
-    bigWinTitle.text = `${nextTier} WIN`;
+ setBigWinTitleForTier(nextTier);
 
     // tier color swap (title + amount)
     const col = BIGWIN_TIER_COLORS[nextTier];
@@ -8027,7 +8009,7 @@ audio?.apply?.();
 
     // start with BIG immediately (no fly-out first)
     layoutBigWin();
-    bigWinTitle.text = "BIG WIN";
+    setBigWinTitleForTier("BIG");
     (bigWinTitle.style as any).fill = BIGWIN_TIER_COLORS.BIG;
     (bigWinAmount.style as any).fill = BIGWIN_AMOUNT_GOLD;
 
@@ -8302,7 +8284,7 @@ setTimeout(() => {
 
       // snap title to final tier immediately (no fly-out/in)
       bigWinShownTier = bigWinFinalTier;
-      bigWinTitle.text = `${bigWinFinalTier} WIN`;
+      setBigWinTitleForTier(bigWinFinalTier);
 
     // ✅ Don’t kill the spawner on skip.
     // Just switch tier and burst the new items so you SEE them.
@@ -8482,7 +8464,7 @@ setTimeout(() => {
 
       void (async () => {
         // ✅ Portrait: tractor + banner exit completely offscreen
-if (isMobilePortraitUILayout()) {
+if (isMobilePortraitUILayout(__layoutDeps)) {
   await playFsTractorExitPortrait(3000); // ✅ same timing as desktop
 } else {
   await playFsTractorExit(3000);
@@ -8523,7 +8505,7 @@ if (isMobilePortraitUILayout()) {
     // "CLICK TO CONTINUE" (slides up from below screen)
     // =====================
     const fsContinueText = new Text({
-      text: "CLICK TO CONTINUE",
+      text: t("ui.clickToContinue"),
       style: {
         
       } as any,
@@ -8577,7 +8559,7 @@ if (isMobilePortraitUILayout()) {
 
     // --- WHITE TEXT WITH BLACK STROKE (FRONT) ---
     const fsIntroLabel = new Text({
-      text: "FREE SPINS",
+      text: t("ui.freeSpins"),
       style: (fsOutroTotalLabel.style as any), // original FS outro style
     } as any);
     fsIntroLabel.anchor.set(0.5);
@@ -8762,8 +8744,14 @@ if (isMobilePortraitUILayout()) {
     // =====================
 // FS RETRIGGER — LANDSCAPE TUNING
 // =====================
-const FS_ADDED_LAND_AMOUNT_SCALE = 0.75;   // try 0.65–0.85
-const FS_ADDED_LAND_LABEL_SCALE  = 0.75;
+const FS_ADDED_LAND_AMOUNT_SCALE = 1;   // try 0.65–0.85
+const FS_ADDED_LAND_LABEL_SCALE  = 1;
+
+const FS_ADDED_DESK_AMOUNT_SCALE = 2;
+const FS_ADDED_DESK_LABEL_SCALE  = 2;
+
+const FS_ADDED_PORT_AMOUNT_SCALE = 0.75;
+const FS_ADDED_PORT_LABEL_SCALE  = 0.80;
 
 
     async function showFsAddedPopup(added: number) {
@@ -8783,16 +8771,21 @@ const FS_ADDED_LAND_LABEL_SCALE  = 0.75;
     fsAddedAmountText.alpha = 0;
     fsAddedLabelText.alpha = 0;
 
-  const amountBaseScale = isMobileLandscapeUILayout()
-  ? FS_ADDED_LAND_AMOUNT_SCALE
-  : 0.85;
+function getFsAddedBaseScales() {
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    return { amount: FS_ADDED_LAND_AMOUNT_SCALE, label: FS_ADDED_LAND_LABEL_SCALE };
+  }
+  if (isMobilePortraitUILayout(__layoutDeps)) {
+    return { amount: FS_ADDED_PORT_AMOUNT_SCALE, label: FS_ADDED_PORT_LABEL_SCALE };
+  }
+  return { amount: FS_ADDED_DESK_AMOUNT_SCALE, label: FS_ADDED_DESK_LABEL_SCALE };
+}
 
-const labelBaseScale = isMobileLandscapeUILayout()
-  ? FS_ADDED_LAND_LABEL_SCALE
-  : 0.95;
+
+const { amount: amountBaseScale, label: labelBaseScale } = getFsAddedBaseScales();
 
 fsAddedAmountText.scale.set(amountBaseScale, amountBaseScale * 1.15);
-fsAddedLabelText.scale.set(labelBaseScale, labelBaseScale * 1.15);
+fsAddedLabelText.scale.set(labelBaseScale,  labelBaseScale  * 1.15);
 
 
       const dimTarget = 0.55;
@@ -8824,7 +8817,7 @@ fsAddedLabelText.scale.set(
   labelBaseScale * 1.15 * s
 );
 
-      fsAddedLabelText.scale.set(0.95 * s, 1.15 * s);
+      
     });
 
 
@@ -8842,9 +8835,17 @@ fsAddedLabelText.scale.set(
       fsAddedAmountText.alpha = startAA * e;
       fsAddedLabelText.alpha  = startAL * e;
 
-      const s = 0.98 + 0.02 * e;
-      fsAddedAmountText.scale.set(0.85 * s, 1.15 * s);
-      fsAddedLabelText.scale.set(0.95 * s, 1.15 * s);
+     const s = 0.98 + 0.02 * e;
+
+fsAddedAmountText.scale.set(
+  amountBaseScale * s,
+  amountBaseScale * 1.15 * s
+);
+
+fsAddedLabelText.scale.set(
+  labelBaseScale * s,
+  labelBaseScale * 1.15 * s
+);
     });
 
     fsAddedDimmer.visible = false;
@@ -9405,6 +9406,7 @@ gameCore.sortChildren();
 
       } as any,
     });
+    forceMicro5(studioTag);
     studioTag.anchor.set(0.5);
     studioTag.zIndex = 1600; // inside gameCore; above reelhouse/grid if needed
     studioTag.eventMode = "none";
@@ -9469,7 +9471,7 @@ let titleScaleLocked = false;
    if (gameTitle) {
 if (!titleScaleLocked) {
   const inv = 1 / gameCore.scale.x;
-  const titleMul = isMobileLandscapeUILayout()
+  const titleMul = isMobileLandscapeUILayout(__layoutDeps)
     ? MOBILE_LANDSCAPE_TITLE_MUL
     : 1.0;
 
@@ -9491,7 +9493,7 @@ if (!titleScaleLocked) {
     function applyGameTitleScaleFromBase() {
   if (!gameTitle) return;
 
-  const titleMul = isMobileLandscapeUILayout() ? MOBILE_LANDSCAPE_TITLE_MUL : 1.0;
+  const titleMul = isMobileLandscapeUILayout(__layoutDeps) ? MOBILE_LANDSCAPE_TITLE_MUL : 1.0;
   const inv = 1 / Math.max(0.0001, gameCore.scale.x);
 
   // if locked, keep using the last locked base scale
@@ -9656,7 +9658,7 @@ audio?.setBaseMusicIntensity?.(0.25, 400);
   function layoutReelFlash() {
   const b = reelHouse.getBounds(); // global bounds (root coords)
 
-  const isPortrait = isMobilePortraitUILayout();
+  const isPortrait = isMobilePortraitUILayout(__layoutDeps);
 
   // 🔧 TUNING
   const PAD_Y = 18;                 // vertical padding stays “reel-ish”
@@ -9845,6 +9847,7 @@ addSystem(() => {
       } as any,
     });
 
+forcePlaquePixeldown(label);
 
 
       label.anchor.set(0.5);
@@ -9905,6 +9908,10 @@ addSystem(() => {
     } as any,
 
     });
+    
+
+    forcePlaquePixeldown(plaqueArrow);
+
     plaqueArrow.anchor.set(0.5);
     plaqueArrow.x = PLAQUE_RIGHT_X + 4;
     plaqueArrow.y = 2 * PLAQUE_STEP + PLAQUE_H / 2; // active row (3rd row)
@@ -9912,10 +9919,17 @@ addSystem(() => {
     plaqueArrow.alpha = 0.9;
     multPlaque.addChild(plaqueArrow);
 
-    function formatMult(v: number) {
-      const isInt = Math.abs(v - Math.round(v)) < 1e-6;
-      return (isInt ? String(Math.round(v)) : v.toFixed(2)) + "x";
-    }
+  // Forces LTR so RTL languages can't flip the order
+const LTR = "\u200E";
+
+function formatMult(v: number) {
+  const isInt = Math.abs(v - Math.round(v)) < 1e-6;
+  const n = isInt ? String(Math.round(v)) : v.toFixed(2);
+
+  // OLD was: "1x"   ->   NEW is: "x1" (always, and forced LTR)
+  return `${LTR}x${n}`;
+}
+
 
     // --- slide state ---
     let plaqueIdx = 0;                 // index into LADDER of CURRENT multiplier
@@ -9964,7 +9978,7 @@ addSystem(() => {
       if (hide) continue;
 
       row.label.text = formatMult(v);
-
+forcePlaquePixeldown(row.label);
       const maxVal = LADDER[LADDER.length - 1];
       row.label.style.fill = (v === maxVal) ? 0xffd36a : 0xffffff;
 
@@ -10487,7 +10501,7 @@ function layoutMultiplierPlaque() {
 
   
 // ---- GAME TITLE POSITION ----
-const isDesktop = !isMobilePortraitUILayout() && !isMobileLandscapeUILayout();
+const isDesktop = !isMobilePortraitUILayout(__layoutDeps) && !isMobileLandscapeUILayout(__layoutDeps);
 
 
 const ox = isDesktop ? TITLE_OFFSET_X_DESKTOP : TITLE_OFFSET_X;
@@ -10507,7 +10521,7 @@ if (!titleDropActive) {
 
 
  // ✅ MOBILE PORTRAIT — PIN TO TOP-RIGHT OF SCREEN
-if (isMobilePortraitUILayout()) {
+if (isMobilePortraitUILayout(__layoutDeps)) {
   multPlaqueLayer.visible = true;
 
   const W = app.screen.width;
@@ -10541,7 +10555,7 @@ if (isMobilePortraitUILayout()) {
 
 
   // ✅ MOBILE LANDSCAPE: place ladder at top-right (screen space)
-if (isMobileLandscapeUILayout()) {
+if (isMobileLandscapeUILayout(__layoutDeps)) {
   multPlaqueLayer.visible = true;
 
   const b = reelHouse.getBounds(); // reel house bounds in screen/root space
@@ -10813,49 +10827,29 @@ function centerPivot(c: Container) {
 
 
 
-    // =====================
-    // MONEY FORMATTER
-    // =====================
-    const moneyFmt = new Intl.NumberFormat("en-AU", {
-      style: "currency",
-      currency: "AUD",
-      minimumFractionDigits: 2,
-    });
-
-    function fmtMoney(v: number) {
-      return moneyFmt.format(v);
-    }
-
 
 
 
     // =====================
     // UI PANEL TEXT STYLES (shared)
     // =====================
-    const UI_TITLE_STYLE = {
-      fontFamily: "Micro5",
-      fill: 0xffd36a,         // gold
-      fontSize: 32,
-      fontWeight: "200",
-      letterSpacing: 2,
+    const UI_TITLE_STYLE = localizeStyle({
+  fontFamily: "Micro5",
+  fill: 0xffd36a,
+  fontSize: 32,
+  fontWeight: "200",
+  letterSpacing: 2,
+} as any);
 
-    
+const UI_VALUE_STYLE = localizeStyle({
+  fontFamily: "Micro5",
+  fill: 0xffffff,
+  fontSize: 40,
+  fontWeight: "200",
+  letterSpacing: 1,
+  stroke: { color: 0x000000, width: 4 },
+} as any);
 
-
-    } as any;
-
-    const UI_VALUE_STYLE = {
-      fontFamily: "Micro5",
-      fill: 0xffffff,
-      fontSize: 40,
-      fontWeight: "200",
-      letterSpacing: 1,
-
-      stroke: { color: 0x000000, width: 4 },
-
-
-      
-    } as any;
 
 
     const balanceLabel = new Text({
@@ -10867,7 +10861,7 @@ function centerPivot(c: Container) {
 
 
     const balanceTitleLabel = new Text({
-      text: "BALANCE",
+      text: t("ui.balance"),
       style: UI_TITLE_STYLE,
     });
     balanceTitleLabel.anchor.set(0.5);
@@ -10881,7 +10875,7 @@ function centerPivot(c: Container) {
     uiPanel.addChild(balanceLabel);
     // --- MULT display ---
     const multTitleLabel = new Text({
-      text: "MULT",
+      text: t("ui.mult"),
       style: {
         fill: 0xffd36a,
         fontSize: 17,
@@ -10911,14 +10905,19 @@ function centerPivot(c: Container) {
     function setMult(v: number) {
       // keep it clean (2dp only if needed)
       const isInt = Math.abs(v - Math.round(v)) < 1e-6;
-      multAmountLabel.text = "x" + (isInt ? String(Math.round(v)) : v.toFixed(2));
+      multAmountLabel.text = `${LTR}x${isInt ? String(Math.round(v)) : v.toFixed(2)}`;
+
     }
+
+
+
+
 
     // --- WIN display ---
 
 
     const winTitleLabel = new Text({
-      text: "WIN",
+      text: t("ui.win"),
       style: UI_TITLE_STYLE,
     });
     winTitleLabel.anchor.set(0.5);
@@ -10968,7 +10967,7 @@ function centerPivot(c: Container) {
     betAmountText.anchor.set(0.5);
 
     const betTitleLabel = new Text({
-      text: "BET",
+      text: t("ui.bet"),
       style: UI_TITLE_STYLE,
     });
    betTitleLabel.anchor.set(0.5);
@@ -11160,7 +11159,7 @@ function restoreUiAfterFsOutro() {
  const padY = 16;
 
 // ✅ Desktop-only pill tightening
-const isDesktop = !isMobilePortraitUILayout();
+const isDesktop = !isMobilePortraitUILayout(__layoutDeps);
 const padX = isDesktop ? 14 : 28; // 👈 smaller = shorter pill (desktop only)
 
 const w = Math.max(90, betAmountText.width + padX);
@@ -11547,8 +11546,8 @@ h = Math.round(h * BET_PILL_H_SCALE_DESKTOP);
       c.addChild(up, hover, down);
 
       c.eventMode = "static";
-      if (!disableCustomCursorOnMobile()) {
-  setCursorSafe(c, "pointer");
+      if (!disableCustomCursorOnMobile(__layoutDeps)) {
+  setCursorSafe(__layoutDeps,c, "pointer");
 }
 
       c.on("pointerover", () => {
@@ -11710,8 +11709,8 @@ return c as Container & {
       showState("up");
 
       c.eventMode = "static";
-      if (!disableCustomCursorOnMobile()) {
-  setCursorSafe(c, "pointer");
+      if (!disableCustomCursorOnMobile(__layoutDeps)) {
+  setCursorSafe(__layoutDeps,c, "pointer");
 }
 
       c.on("pointerover", () => showState("hover"));
@@ -11810,8 +11809,8 @@ return c as Container & {
       c.addChild(bg, t);
 
       c.eventMode = "static";
-      if (!disableCustomCursorOnMobile()) {
-  setCursorSafe(c, "pointer");
+      if (!disableCustomCursorOnMobile(__layoutDeps)) {
+  setCursorSafe(__layoutDeps,c, "pointer");
 }
       c.on("pointertap", onClick);
 
@@ -11990,6 +11989,7 @@ studioLogoHouseTex = (Assets.get(STUDIO_LOGO_HOUSE_URL) as Texture) || null;
 
         // ✅ Still-real PNGs (not in atlases yet)
         FS_OUTRO_BG_URL,
+           INFINITY_ICON_URL,
 
       ],
       (p: number) => updateLoadingProgress(0.5 + p * 0.5)
@@ -12272,6 +12272,14 @@ autoSpinCountText.roundPixels = true;
 autoSpinCountText.eventMode = "none";
 autoSpinCountText.visible = false;
 spinBtnPixi.addChild(autoSpinCountText);
+// ✅ Infinity icon (replaces "∞" text when rounds === -1)
+const autoSpinInfinityIcon = new Sprite(Texture.from(INFINITY_ICON_URL));
+autoSpinInfinityIcon.anchor.set(0.5);
+autoSpinInfinityIcon.roundPixels = true;
+autoSpinInfinityIcon.eventMode = "none";
+autoSpinInfinityIcon.visible = false;
+spinBtnPixi.addChild(autoSpinInfinityIcon);
+
 
 function layoutAutoSpinCountText() {
   // default: centered
@@ -12286,9 +12294,22 @@ function layoutAutoSpinCountText() {
     oy = o.y + COUNTDOWN_Y_NUDGE_PX; // 🔧 optical nudge
   }
 
+  // position text
   autoSpinCountText.x = Math.round(ox);
   autoSpinCountText.y = Math.round(oy);
+
+  // position icon at same place
+  autoSpinInfinityIcon.x = autoSpinCountText.x;
+  autoSpinInfinityIcon.y = autoSpinCountText.y;
+
+  // scale icon to match your countdown size (local coords; spinBtnPixi scaling applies on top)
+  // tweak ICON_H until it looks perfect
+  const ICON_H = 20; // 🔧 try 48..64
+  const th = autoSpinInfinityIcon.texture.height || 1;
+  const s = ICON_H / th;
+  autoSpinInfinityIcon.scale.set(s);
 }
+
 
 
 // 🔧 Optical adjustment for countdown text (positive = down)
@@ -12403,19 +12424,32 @@ function refreshAutoSpinSpinButton() {
     const rounds = state.ui.autoRounds ?? -1;
     const left = state.ui.autoLeft ?? 0;
 
-    // If infinite auto (-1), show ∞
-    autoSpinCountText.text = (rounds === -1) ? "∞" : String(Math.max(0, left));
-    autoSpinCountText.visible = true;
+    const isInfinite = (rounds === -1);
+
+    // ✅ show either number OR infinity icon
+    autoSpinCountText.visible = !isInfinite;
+    autoSpinInfinityIcon.visible = isInfinite;
+
+    if (!isInfinite) {
+      autoSpinCountText.text = String(Math.max(0, left));
+    }
+
+    layoutAutoSpinCountText();
     return;
   }
 
   if (autoArmed) {
     setSpinAutoMode("PLAY");
+    autoSpinCountText.visible = false;
+    autoSpinInfinityIcon.visible = false;
     return;
   }
 
   setSpinAutoMode("NORMAL");
+  autoSpinCountText.visible = false;
+  autoSpinInfinityIcon.visible = false;
 }
+
 
 // Keep it correct on resize/layout
 window.addEventListener("resize", () => {
@@ -12430,6 +12464,7 @@ addSystem(() => {
 });
 
 
+refreshLocalizedText();
 
     // =====================
     // SPIN BUTTON "BROKE" SKIN SWAP
@@ -12519,7 +12554,7 @@ addSystem(() => {
     app,
     root,
     state,
-
+t,
     uiDimmer,
     settingsBtnPixi,
 
@@ -12680,6 +12715,7 @@ autoMenuApi = createAutoMenu({
   // uiDimmer,
   audio,
   initialSelectedRounds: -1,
+    t,
   
 onPick: (rounds) => {
   // ✅ arm the selection (do NOT start auto yet)
@@ -12809,7 +12845,7 @@ buyMenuApi = createBuyMenu({
 audio,
   texUI,
   texExtra,
-
+t,
   setScaleToHeight,
   makePngButton,
   makePngToggleButton,
@@ -12866,74 +12902,32 @@ audio,
 
 
 
-    const PANEL_HEIGHT_FRAC = 0.1;
+
     let uiPanelH = 0;              // updated each layoutUI()
 
 
-function safeInsetBottomPx() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue("env(safe-area-inset-bottom)");
-  const n = parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function safeInsetTopPx() {
-  const v = getComputedStyle(document.documentElement).getPropertyValue("env(safe-area-inset-top)");
-  const n = parseFloat(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function isMobilePortraitUILayout() {
-  // ✅ if we lock to portrait, ANY mobile orientation uses portrait layout rules
-  if (LOCK_MOBILE_TO_PORTRAIT && isMobileUILayout()) return true;
-
-  const w = app.screen.width;
-  const h = app.screen.height;
-  const aspect = w / h;
-  return (w < 820 || aspect < 0.90) && h >= w;
-}
 
 
-// =====================
-// MOBILE LANDSCAPE SCALE TUNING
-// =====================
-const MOBILE_LANDSCAPE_REELHOUSE_MUL = 0.5; // outer art smaller (try 0.86–0.94)
-const MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL = 0.48
-function carsDisabled(): boolean {
-  // ✅ only disable cars in MOBILE PORTRAIT
-  return isMobilePortraitUILayout();
-}
 
-function isMobileUILayout() {
-  const w = app.screen.width;
-  const h = app.screen.height;
-  const aspect = w / h;
 
-  // touch OR narrow screens behave as mobile
-  return !!IS_TOUCH || w < 820 || aspect < 0.90;
-}
 
-function isMobileLandscapeUILayout() {
-  // ✅ if we lock to portrait, NEVER allow landscape layout rules
-  if (LOCK_MOBILE_TO_PORTRAIT && isMobileUILayout()) return false;
 
-  return isMobileUILayout() && app.screen.width > app.screen.height;
-}
+
+
+
+
+
 
 
 
 function winPopupScaleMul() {
   // tweak this number
-  return isMobileUILayout() ? 0.72 : 1.0;
+  return isMobileUILayout(__layoutDeps) ? 0.72 : 1.0;
 }
 
 
-function disableCustomCursorOnMobile() {
-  return isMobileUILayout(); // ✅ all mobile views (portrait + landscape)
-}
-function setCursorSafe(c: { cursor?: string }, value: string) {
-  if (!disableCustomCursorOnMobile()) {
-    c.cursor = value;
-  }
-}
+
+
 
 
 
@@ -12942,7 +12936,7 @@ function ensureBetParentingForLayout() {
   // ✅ called during early boot/layout; buttons may not exist yet
   if (!betUpBtnPixi || !betDownBtnPixi || !betAmountUI || !betTitleLabel) return;
 
-  const portrait = isMobilePortraitUILayout();
+  const portrait = isMobilePortraitUILayout(__layoutDeps);
 
   if (portrait) {
     // PORTRAIT: everything goes into betGroup
@@ -13009,8 +13003,8 @@ function ensureBetParentingForLayout() {
 ensureBetParentingForLayout();
 
 // Decide which layout to use
-if (isMobilePortraitUILayout()) layoutUIMobile(panelW, targetH);
-else if (isMobileLandscapeUILayout()) layoutUIMobileLandscape(panelW, targetH);
+if (isMobilePortraitUILayout(__layoutDeps)) layoutUIMobile(panelW, targetH);
+else if (isMobileLandscapeUILayout(__layoutDeps)) layoutUIMobileLandscape(panelW, targetH);
 else layoutUIDesktop(panelW, targetH);
 
   // Keep spinning overlay aligned
@@ -13030,7 +13024,7 @@ function alignGroupTop(
 
 function layoutUIDesktop(panelW: number, targetH: number) {
 
-  const ML = isMobileLandscapeUILayout();
+  const ML = isMobileLandscapeUILayout(__layoutDeps);
   const UI_SCALE = ML ? 0.85 : 1.0;
 
 
@@ -13131,7 +13125,7 @@ setScaleToHeight(settingsBtnPixi, targetH * 0.4 * UI_SCALE);
 // BET (DESKTOP) — scale display group only (NOT arrows)
 // =====================
 
-const BET_ARROW_SCALE = isMobileLandscapeUILayout() ? 0.24 : 0.30;
+const BET_ARROW_SCALE = isMobileLandscapeUILayout(__layoutDeps) ? 0.24 : 0.30;
 
 setScaleToHeight(betUpBtnPixi,   targetH * BET_ARROW_SCALE);
 setScaleToHeight(betDownBtnPixi, targetH * BET_ARROW_SCALE);
@@ -13457,7 +13451,7 @@ const ARROW_H = h * 0.6;  // bet up/down arrows
   setScaleToHeight(betDownBtnPixi, ARROW_H);
 
   // ✅ MOBILE LANDSCAPE: tighten bet +/- hitboxes so they don't overlap neighbors
-if (isMobileLandscapeUILayout()) {
+if (isMobileLandscapeUILayout(__layoutDeps)) {
   const padX = IS_TOUCH ? 14 : 4;   // 🔧 tweak 10..18
   const padY = IS_TOUCH ? 14 : 4;   // 🔧 tweak 10..18
   setTightHitArea(betUpBtnPixi, padX, padY);
@@ -13745,47 +13739,49 @@ turboBtnPixi.y = STACK_CENTER_Y + STACK_GAP_Y;
     root.sortChildren();
 
     const tumbleBannerBg = new Graphics();
-    tumbleBanner.addChild(tumbleBannerBg);
+tumbleBanner.addChild(tumbleBannerBg);
 
-    const tumbleBannerLabel = new Text({
-      text: "TUMBLE WIN",
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffffff, // ✅ white wording
-        fontSize: 64,
-        letterSpacing: 1,
-      stroke: { color: 0x000000, width: 8 },
+// ✅ NEW: content group (label + amount live inside this)
+const tumbleBannerContent = new Container();
+tumbleBanner.addChild(tumbleBannerContent);
 
-        dropShadow: true,
-        dropShadowColor: 0x000000,
-        dropShadowAlpha: 0.75,
-        dropShadowBlur: 0,
-        dropShadowDistance: 8,
-        dropShadowAngle: -Math.PI / 4,
-      } as any,
-    } as any);
-    tumbleBannerLabel.anchor.set(1, 0.5);
-    tumbleBanner.addChild(tumbleBannerLabel);
-
-    const tumbleBannerValue = new Text({
-      text: "",
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffd36a, // gold amount
-        fontSize: 64,
-        letterSpacing: 1,
+const tumbleBannerLabel = new Text({
+  text: t("ui.tumbleWin"),
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffffff,
+    fontSize: 64,
+    letterSpacing: 1,
     stroke: { color: 0x000000, width: 8 },
+    dropShadow: true,
+    dropShadowColor: 0x000000,
+    dropShadowAlpha: 0.75,
+    dropShadowBlur: 0,
+    dropShadowDistance: 8,
+    dropShadowAngle: -Math.PI / 4,
+  } as any),
+} as any);
 
-        dropShadow: true,
-        dropShadowColor: 0x000000,
-        dropShadowAlpha: 0.75,
-        dropShadowBlur: 0,
-        dropShadowDistance: 8,
-        dropShadowAngle: -Math.PI / 4,
-      } as any,
-    } as any);
-    tumbleBannerValue.anchor.set(0, 0.5);
-    tumbleBanner.addChild(tumbleBannerValue);
+const tumbleBannerValue = new Text({
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffd36a,
+    fontSize: 64,
+    letterSpacing: 1,
+    stroke: { color: 0x000000, width: 8 },
+    dropShadow: true,
+    dropShadowColor: 0x000000,
+    dropShadowAlpha: 0.75,
+    dropShadowBlur: 0,
+    dropShadowDistance: 8,
+    dropShadowAngle: -Math.PI / 4,
+  } as any),
+} as any);
+
+// ✅ Put label/value inside the content group
+tumbleBannerContent.addChild(tumbleBannerLabel, tumbleBannerValue);
+
 
 
     // --- TUNING ---
@@ -13794,10 +13790,10 @@ turboBtnPixi.y = STACK_CENTER_Y + STACK_GAP_Y;
     const TUMBLE_BANNER_SCALE = 0.8; // 🔽 try 0.7–0.9
     const TUMBLE_BANNER_BG_ALPHA = 0.35;
     const TUMBLE_BANNER_RADIUS = 0;     // 0 = sharp; try 14 for rounded
-    const TUMBLE_BANNER_Y_OFFSET = 25; // move up/down from reelHouse top
+   
     // Portrait-only tuning (must be in outer scope)
 const TUMBLE_PORTRAIT_SCALE = 0.47;   // tweak this
-const TUMBLE_PORTRAIT_Y_LIFT_PX = 20; // tweak this
+
 
 
     let tumbleBannerToken = 0;
@@ -13807,75 +13803,77 @@ function tumbleBaseScale() {
   let s = TUMBLE_BANNER_SCALE;
 
   // portrait override
-  if (isMobilePortraitUILayout()) s = TUMBLE_PORTRAIT_SCALE;
+  if (isMobilePortraitUILayout(__layoutDeps)) s = TUMBLE_PORTRAIT_SCALE;
 
   // ✅ mobile landscape only override
-  if (isMobileLandscapeUILayout()) s *= MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL;
+  if (isMobileLandscapeUILayout(__layoutDeps)) s *= MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL;
 
   return s;
 }
 
 
     // Call this any time layout changes (resize / reel scaling)
-    function layoutTumbleBanner() {
-      
-      const b = reelHouse.getBounds();
+  function layoutTumbleBanner() {
+  const W = app.screen.width;
+  const H = app.screen.height;
 
-      // banner container origin = center of the banner box
-     tumbleBanner.x = Math.round(b.x + b.width * 0.5);
+  // ✅ Safe-area aware vertical center (good on notched phones)
+  const safeT = safeInsetTopPx?.() ?? 0;
+  const safeB = safeInsetBottomPx?.() ?? 0;
+  const usableH = Math.max(1, H - safeT - safeB);
 
-// banner container origin = center of the banner box
+// ✅ Anchor ABOVE the reel house (still safe-area aware)
+const b = reelHouse.getBounds();
+
+// horizontal: center on the reel house (or keep screen center if you prefer)
 tumbleBanner.x = Math.round(b.x + b.width * 0.5);
 
-// ✅ portrait-only tweaks (banner only)
-const isPortrait = isMobilePortraitUILayout();
+// vertical: place above the reel house top edge
+const ABOVE_REEL_GAP_PX = -60; // 🔧 tweak 10..40
+let y = Math.round(b.y - ABOVE_REEL_GAP_PX);
 
-const yBase = Math.round(b.y + TUMBLE_BANNER_Y_OFFSET);
+// ✅ keep it out of the notch/safe-top
+y = Math.max(y, safeT + 8);
 
-tumbleBanner.y = isPortrait
-  ? Math.round(yBase - TUMBLE_PORTRAIT_Y_LIFT_PX)
-  : yBase;
-
-tumbleBanner.scale.set(tumbleBaseScale());
+tumbleBanner.y = y;
 
 
+  // scale (your existing rules)
+  tumbleBanner.scale.set(tumbleBaseScale());
 
+  // ---- Layout label + value as one centered group ----
+  const GAP = 6;
 
+  // anchors for seam layout
+  tumbleBannerLabel.anchor.set(1, 0.5);
+  tumbleBannerValue.anchor.set(0, 0.5);
 
-      const GAP = 6;
+  // if you still want the content nudged right, keep this:
+  const CONTENT_OFFSET_X = 85; // tweak or set to 0 if you want true center
+  tumbleBannerLabel.x = -GAP / 2 + CONTENT_OFFSET_X;
+  tumbleBannerValue.x = +GAP / 2 + CONTENT_OFFSET_X;
 
-      // anchors (keep your current ones)
-      tumbleBannerLabel.anchor.set(1, 0.5);
-      tumbleBannerValue.anchor.set(0, 0.5);
+  // vertical center in local coords using bounds (handles stroke/shadow)
+  const lb = tumbleBannerLabel.getLocalBounds();
+  const vb = tumbleBannerValue.getLocalBounds();
+  tumbleBannerLabel.y = -(lb.y + lb.height * 0.5);
+  tumbleBannerValue.y = -(vb.y + vb.height * 0.5);
 
-    // ---- Horizontal: center around seam ----
-    const CONTENT_OFFSET_X = 85; // 👈 move text right (try 12–48)
+  // ✅ NOW center the *content group* so its bounds center is at (0,0)
+  const cb = tumbleBannerContent.getLocalBounds();
+  tumbleBannerContent.pivot.set(cb.x + cb.width * 0.5, cb.y + cb.height * 0.5);
+  tumbleBannerContent.position.set(0, 0);
 
-    tumbleBannerLabel.x = -GAP / 2 + CONTENT_OFFSET_X;
-    tumbleBannerValue.x = +GAP / 2 + CONTENT_OFFSET_X;
+  // ---- Draw BG around the content group (in the same local space) ----
+  const totalW = cb.width;
+  const totalH = cb.height;
 
-      // ---- Vertical: true center using local bounds (includes stroke/shadow) ----
-      const lb = tumbleBannerLabel.getLocalBounds();
-      const vb = tumbleBannerValue.getLocalBounds();
+  const w = Math.round(totalW + TUMBLE_BANNER_PAD_X * 2);
+  const h = Math.round(totalH + TUMBLE_BANNER_PAD_Y * 2);
 
-      // Move each text so its bounds center sits at y=0
-      tumbleBannerLabel.y = - (lb.y + lb.height * 0.5);
-      tumbleBannerValue.y = - (vb.y + vb.height * 0.5);
+  tumbleBannerBg.clear();
+  
 
-      // ---- Box size from combined bounds ----
-      const totalW = tumbleBannerLabel.width + GAP + tumbleBannerValue.width;
-
-      const totalH = Math.max(
-        tumbleBannerLabel.height,
-        tumbleBannerValue.height
-      );
-
-      const w = Math.round(totalW + TUMBLE_BANNER_PAD_X * 2);
-      const h = Math.round(totalH + TUMBLE_BANNER_PAD_Y * 2);
-
-    tumbleBannerBg.clear();
-
-  // Pixi v8: shape → fill → stroke
   if (TUMBLE_BANNER_RADIUS > 0) {
     tumbleBannerBg
       .roundRect(-w / 2, -h / 2, w, h, TUMBLE_BANNER_RADIUS)
@@ -13887,15 +13885,20 @@ tumbleBanner.scale.set(tumbleBaseScale());
       .fill({ color: 0x000000, alpha: TUMBLE_BANNER_BG_ALPHA })
       .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
   }
+  // ✅ ensure banner is fully above reelhouse (uses actual bg height)
+const bannerH = tumbleBannerBg.getBounds().height;
+const minTop = b.y - ABOVE_REEL_GAP_PX - bannerH * 0.5;
+tumbleBanner.y = Math.min(tumbleBanner.y, Math.round(minTop));
 
-    }
+}
+
 
 
 
     window.addEventListener("resize", layoutTumbleBanner);
 
     function setTumbleBannerText(totalSoFar: number) {
-      tumbleBannerLabel.text = "TUMBLE WIN";
+      tumbleBannerLabel.text = t("ui.tumbleWin");
       tumbleBannerValue.text = fmtMoney(totalSoFar);
       layoutTumbleBanner();
     }
@@ -14060,7 +14063,7 @@ root.sortChildren();
       // 🔧 MANUAL TUNING CONTROLS
       // =====================
 
-      const isPortrait = isMobilePortraitUILayout();
+      const isPortrait = isMobilePortraitUILayout(__layoutDeps);
 
     // Shrink / expand relative to reel house bounds
 const GLOW_WIDTH_ADJUST  = isPortrait ? -17 : -27;   // ✅ portrait bigger
@@ -14276,19 +14279,19 @@ root.sortChildren();
 
 
     // 🔧 sizing tweaks (px)
-const isPortraitDim = isMobilePortraitUILayout();
+const isPortraitDim = isMobilePortraitUILayout(__layoutDeps);
 
-const REEL_DIM_PAD_X = isPortraitDim ? -22 : (isMobileUILayout() ? -14 : -37);
-const REEL_DIM_PAD_Y = isPortraitDim ? -78 : (isMobileUILayout() ? -60 : -102);
+const REEL_DIM_PAD_X = isPortraitDim ? -22 : (isMobileUILayout(__layoutDeps) ? -14 : -37);
+const REEL_DIM_PAD_Y = isPortraitDim ? -78 : (isMobileUILayout(__layoutDeps) ? -60 : -102);
 
 
 // =====================
 // BOOSTED POPUP (Enchanted Wild)
 // =====================
-const boostedText = new Text({
-  text: "BOOSTED",
+boostedText = new Text({
+  text: applyUiTextCase(t("ui.popup.boosted")),
   style: {
-    fontFamily: "pixeldown",
+    fontFamily: overlayBrandFontFamilyFor(getLang()),
     fill: 0xffd36a,
     fontSize: 88,
     letterSpacing: 2,
@@ -14302,11 +14305,12 @@ const boostedText = new Text({
   } as any,
 });
 boostedText.anchor.set(0.5);
-boostedText.zIndex = 22000;     // above aftershockFxLayer (2080)
+boostedText.zIndex = 22000;
 boostedText.visible = false;
 boostedText.alpha = 0;
 root.addChild(boostedText);
 root.sortChildren();
+
 
 let boostedToken = 0;
 
@@ -14358,10 +14362,10 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
 // =====================
 // INFUSED POPUP (Infused Scatter / Infused event)
 // =====================
-const infusedText = new Text({
-  text: "INFUSED",
+infusedText = new Text({
+  text: applyUiTextCase(t("ui.popup.infused")),
   style: {
-    fontFamily: "pixeldown",
+    fontFamily: overlayBrandFontFamilyFor(getLang()),
     fill: 0xffd36a,
     fontSize: 88,
     letterSpacing: 2,
@@ -14375,11 +14379,12 @@ const infusedText = new Text({
   } as any,
 });
 infusedText.anchor.set(0.5);
-infusedText.zIndex = 22000; // same as boosted
+infusedText.zIndex = 22000;
 infusedText.visible = false;
 infusedText.alpha = 0;
 root.addChild(infusedText);
 root.sortChildren();
+
 
 let infusedToken = 0;
 
@@ -14441,7 +14446,7 @@ root.sortChildren();
 
 function redrawReelDimmer() {
   // ✅ NO reel dimmer on mobile devices
-  if (isMobileUILayout()) {
+  if (isMobileUILayout(__layoutDeps)) {
     reelDimmer.clear();
     reelDimmer.visible = false;
     reelDimmer.alpha = 0;
@@ -14604,7 +14609,7 @@ async function playAftershockSequence(step: SpinStep) {
     // Fade helper
   async function setReelDimmer(on: boolean) {
   // ✅ Hard disable on mobile
-  if (isMobileUILayout()) {
+  if (isMobileUILayout(__layoutDeps)) {
     reelDimmer.clear();
     reelDimmer.visible = false;
     reelDimmer.alpha = 0;
@@ -14634,8 +14639,7 @@ async function playAftershockSequence(step: SpinStep) {
   }
 }
 
-
-
+refreshLocalizedText();
     // --- WIN FRAME (PNG per winning symbol) ---
     type WinFrameView = { s: Sprite };
 
@@ -14867,16 +14871,37 @@ root.sortChildren();
         BASE_MS + baseValue * 18
       );
 
-      function tick(now: number) {
+      // ✅ tickhigh only while the popup amount counts up
+let startedTickHigh = false;
+
+function tick(now: number) {
   const k = Math.min(1, (now - start) / duration);
   const e = k * k * (3 - 2 * k); // smoothstep
   const v = baseValue * e;
 
   amountText.text = v.toFixed(2);
 
-  if (k < 1) requestAnimationFrame(tick);
+  // Start tickhigh the first time we actually tick
+  if (!startedTickHigh) {
+    startedTickHigh = true;
+    audio?.startTickHighLoop?.(40, 0.40, 1.0); // fadeMs, volMul, rate
+  }
+
+  // Optional: ramp pitch/vol with the count-up
+  const rate = 1.0 + 0.55 * Math.pow(k, 1.25);
+  const vol  = 0.30 + 0.35 * Math.pow(k, 1.10);
+  audio?.setTickHighParams?.(vol, rate);
+
+  if (k < 1) {
+    requestAnimationFrame(tick);
+  } else {
+    // ✅ stop exactly when count finishes (NOT during hold/fade)
+    audio?.stopTickHighLoop?.(60);
+  }
 }
+
 requestAnimationFrame(tick);
+
 
 
       return c;
@@ -14893,6 +14918,8 @@ requestAnimationFrame(tick);
     ) {
       clearWinPopups();
       if (!clusters || clusters.length === 0) return;
+      
+
 
       // show one popup per cluster (like the reference)
       const tasks = clusters.map((c, idx) => {
@@ -14966,6 +14993,8 @@ p.scale.set(s);
       });
 
       await Promise.all(tasks);
+      
+
     }
 
     // 👇 tweak these (you asked to increase timing between staggers)
@@ -15087,7 +15116,7 @@ p.scale.set(s);
       // schedule frames with the SAME stagger as pops
       const tasks = winsFiltered.map((i, k) =>
         waitT(WIN_FRAME_STAGGER_MS * k).then(() => {
-          const { x, y } = idxToXY(i);
+          const { x, y } = idxToXY(i, COLS);
 
           const px = ox + x * (cellSize + SYMBOL_GAP);
           const py = oy + y * (cellSize + SYMBOL_GAP);
@@ -15125,16 +15154,16 @@ p.scale.set(s);
     const uiTop = app.screen.height - uiPanelH;
       reelHouse.y = Math.min(reelHouse.y, uiTop / 2);
 
-    const bgBase = new Sprite(Texture.from(BG_BASE_URL));
-    bgBase.anchor.set(0.5);
-    bgBase.alpha = 0.9;
+  bgBase = new Sprite(Texture.from(BG_BASE_URL));
+bgBase.anchor.set(0.5);
+bgBase.alpha = 0.9;
 
-    const bgFree = new Sprite(Texture.from(BG_FREE_URL));
-    bgFree.anchor.set(0.5);
-    bgFree.alpha = 0.9;
+bgFree = new Sprite(Texture.from(BG_FREE_URL));
+bgFree.anchor.set(0.5);
+bgFree.alpha = 0.9;
 
-    backgroundLayer.addChild(bgBase);
-    backgroundLayer.addChild(bgFree);
+backgroundLayer.addChild(bgBase);
+backgroundLayer.addChild(bgFree);
 
 
 
@@ -15158,7 +15187,7 @@ p.scale.set(s);
     app.stage.hitArea = app.screen;
 
    app.stage.on("pointermove", (e) => {
-  if (isMobileUILayout()) return; // ✅ ignore on mobile
+  if (isMobileUILayout(__layoutDeps)) return; // ✅ ignore on mobile
   const y = e.global.y;
   mouseNY = ((y / app.screen.height) - 0.5) * 2;
   mouseNY = Math.max(-1, Math.min(1, mouseNY));
@@ -15169,7 +15198,7 @@ addSystem(() => {
   if (state.overlay.splash) return;
 
   // ✅ NO PARALLAX ON MOBILE (portrait + landscape)
-  if (isMobileUILayout()) {
+  if (isMobileUILayout(__layoutDeps)) {
     parallaxNY = 0;
     bgBase.y = bgBaseHomeY;
     bgFree.y = bgFreeHomeY;
@@ -15229,6 +15258,9 @@ if (IS_MOBILE && isLandscape) {
   rotateBlocker.visible = true;
   layoutRotateBlocker();
 
+  const domText = document.getElementById("rotate-blocker-text");
+if (domText) domText.textContent = t("ui.rotateBackPortrait");
+
   // DOM blocker (covers entire browser viewport incl letterbox)
   if (domBlocker) domBlocker.style.display = "flex";
 
@@ -15238,6 +15270,7 @@ if (IS_MOBILE && isLandscape) {
   uiLayer.visible = false;
 
   root.sortChildren();
+  
   return; // 🔒 STOP layout here
 }
 
@@ -15288,7 +15321,7 @@ uiLayer.eventMode = "auto";
 const screenCx = W / 2;
 const screenCy = H / 2;
 
-const isPortrait = isMobilePortraitUILayout();
+const isPortrait = isMobilePortraitUILayout(__layoutDeps);
 
 // 🔧 TUNING: move the whole board up in portrait
 const PORTRAIT_BOARD_Y_LIFT_PX = Math.round(H * 0.055); // try 0.08..0.18
@@ -15299,7 +15332,7 @@ reelHouse.y = isPortrait
   : screenCy;
 
 
-  const isMob = isMobileUILayout();
+  const isMob = isMobileUILayout(__layoutDeps);
 
   // ----------------------------------------
   // DESKTOP: keep your existing behavior
@@ -15333,8 +15366,8 @@ reelHouse.y = isPortrait
   const texW = reelHouse.texture.width || 1;
   const baseScale = targetOuterW / texW;
 
-  const portraitMul = isMobilePortraitUILayout() ? 1.08 : 1.0;
-  const landscapeMul = isMobileLandscapeUILayout() ? MOBILE_LANDSCAPE_REELHOUSE_MUL : 1.0;
+  const portraitMul = isMobilePortraitUILayout(__layoutDeps) ? 1.08 : 1.0;
+  const landscapeMul = isMobileLandscapeUILayout(__layoutDeps) ? MOBILE_LANDSCAPE_REELHOUSE_MUL : 1.0;
 
   reelHouse.scale.set(baseScale * portraitMul * landscapeMul);
 }
@@ -15407,6 +15440,7 @@ if (isMob) {
 
     layoutAll();
     root.sortChildren();
+    refreshLocalizedText();
     requestAnimationFrame(() => {
       void (async () => {
         try {
@@ -15437,6 +15471,7 @@ await runFinalBootPipelineOnce();
 
 
     function resizeBackground() {
+      if (!bgBase || !bgFree) return;
         // ✅ HARD LOCK background sizing/centering during splash (Solution B)
       if (state.overlay.splash) return;
       const cx = app.screen.width / 2;
@@ -15592,7 +15627,7 @@ await runFinalBootPipelineOnce();
 
 
           // ✅ BASE GAME START: spawn the base car immediately
- if (!carsDisabled()) {
+ if (!carsDisabled(__layoutDeps)) {
   bgCarCooldown = 999;
   spawnBgCar(true);
 }
@@ -15671,7 +15706,7 @@ await runFinalBootPipelineOnce();
     }
 
     function getCellCenterXY(i: number) {
-      const { x, y } = idxToXY(i);
+      const { x, y } = idxToXY(i, COLS);
       const { x: ox, y: oy } = boardOrigin();
       return {
         cx: ox + x * (cellSize + SYMBOL_GAP) + cellSize / 2,
@@ -16026,28 +16061,7 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
       const v = cellViews[i];
       if (!v) return;
     }
-
-
-
-
-
-
-      const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
-    // --- TURBO helpers ---
-    const turboFactor = () => (state.ui.turbo ? 0.5 : 1); // 2× speed when turbo ON
-
-    const waitT = (ms: number) =>
-      wait(Math.round(ms * turboFactor()));
-
-    const durT = (ms: number) =>
-      Math.round(ms * turboFactor());
-
-
-
-
-
-
+const { wait, waitT, durT, turboFactor } = makeTurboTiming(() => !!state.ui.turbo);
 
 
 
@@ -16613,7 +16627,7 @@ applyUiLocks();
         // old survivors in this column, bottom->top
         const oldSurvivorIdx: number[] = [];
         for (let y = ROWS - 1; y >= 0; y--) {
-          const i = xyToIdx(col, y);
+          const i = xyToIdx(col, y, COLS);
           if (!explodeSet.has(i)) oldSurvivorIdx.push(i);
         }
 
@@ -16623,7 +16637,7 @@ applyUiLocks();
         // Bottom part = survivors (same order), Top part = new symbols
         for (let k = 0; k < ROWS; k++) {
           const destY = ROWS - 1 - k;      // bottom->top
-          const destI = xyToIdx(col, destY);
+          const destI = xyToIdx(col, destY, COLS);
           const s = cellViews[destI].sprite;
 
           // Always show destination symbol
@@ -16658,7 +16672,7 @@ applyUiLocks();
     syncEyesToSprite(destI);
   } else {
     const newRank = k - oldSurvivorIdx.length;
-    const topTargetI = xyToIdx(col, 0);
+    const topTargetI = xyToIdx(col, 0, COLS);
     s.y = targets[topTargetI].y - stepY * (newCount - newRank);
 
     applyEyesForCell(destI, id);
@@ -16690,6 +16704,8 @@ applyUiLocks();
     if (anticipation) {
       startAnticipationZoom(520, 1.04);
       audio?.setBaseMusicIntensity?.(0.85, 250);
+      audio?.startTicktockLoop?.(120, 0.4, 1.0);
+
 
     }
 
@@ -16765,6 +16781,7 @@ applyUiLocks();
       await Promise.all(colPromises);
 
     if (anticipation) endAnticipationZoom(260, 1);
+    if (anticipation) audio?.stopTicktockLoop?.(140);
     audio?.setBaseMusicIntensity?.(0.25, 400);
     if (anticipation) stopScatterPulseDuringAnticipation();
 
@@ -16971,16 +16988,23 @@ for (let col = 0; col < COLS; col++) {
     );
 
     // Start zoom right after the 2nd scatter column lands
-    setTimeout(() => {
-      startAnticipationZoom(zoomInMs, 1.05, 1.03);
-      startScatterPulseDuringAnticipation(grid, 700);
-    }, Math.max(0, secondLandAt));
+   setTimeout(() => {
+  startAnticipationZoom(zoomInMs, 1.05, 1.03);
+
+  // ✅ start looping ticktock during anticipation
+  audio?.startTicktockLoop?.(120, 0.55, 1.0);
+
+  startScatterPulseDuringAnticipation(grid, 700);
+}, Math.max(0, secondLandAt));
 
     // End zoom exactly when the whole reveal finishes (so it can’t “end” before it starts)
-    setTimeout(() => {
-      endAnticipationZoom(320, 1);
-      stopScatterPulseDuringAnticipation();
-    }, Math.max(0, revealEndAt));
+setTimeout(() => {
+  endAnticipationZoom(320, 1);
+  stopScatterPulseDuringAnticipation();
+
+  // ✅ stop looping ticktock when anticipation ends
+  audio?.stopTicktockLoop?.(140);
+}, Math.max(0, revealEndAt));
 
 
 
@@ -17198,7 +17222,7 @@ drawGrid(step.grid);
 
     }
 
-    const dimmerInP = isMobileUILayout() ? Promise.resolve() : setReelDimmer(true); // starts after the delay
+    const dimmerInP = isMobileUILayout(__layoutDeps) ? Promise.resolve() : setReelDimmer(true); // starts after the delay
     const glowP = pulseReelHouseGlowOnce();  // glow starts same moment as dimmer
     liftWinningSprites(hiArr);
 
@@ -17261,7 +17285,7 @@ await Promise.all([
     const framesOutP = fadeOutWinFrames(durT(80));
 
     // ✅ turn OFF the black tint as the explosion starts
-  const dimmerOutP = isMobileUILayout() ? Promise.resolve() : setReelDimmer(false);
+  const dimmerOutP = isMobileUILayout(__layoutDeps) ? Promise.resolve() : setReelDimmer(false);
 
   // ✅ If sim forgot to populate explodePositions, derive it from clusters
   const explodePositions =
@@ -17395,7 +17419,7 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
 
     // ---- BOOT: show an initial grid ONCE on startup ----
     function bootInitialBoard() {
-      const bootGrid = makeGrid(WEIGHTS_BASE); // simple random grid
+      const bootGrid = makeGrid(COLS, ROWS, WEIGHTS_BASE);
       modeLabel.text = "MODE: BASE";
       multLabel.text = "MULT: x1";
       winLabel.text  = "WIN: 0";

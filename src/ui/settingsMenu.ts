@@ -1,3 +1,7 @@
+
+import { getLang } from "../i18n/i18n";
+import { micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
+import { applyUiTextCase, localizeStyle } from "../i18n/uiTextStyle";
 // src/ui/settingsMenu.ts
 import { Container, Graphics, Rectangle, Text, TextStyle, Sprite } from "pixi.js";
 
@@ -12,8 +16,8 @@ export type SettingsMenuApi = {
 
 
 export function createSettingsMenu(opts: {
+  t?: (key: string) => string;
 
-  
   
   app: any;
   root: Container;
@@ -83,7 +87,17 @@ export function createSettingsMenu(opts: {
     getMusicValue01,
     setSfxValue01,
     setMusicValue01,
+    t, // ✅ add
   } = opts;
+  const tt = (key: string, fallback: string) => t?.(key) ?? fallback;
+const uiLabel = (key: string, fallback: string) => applyUiTextCase(tt(key, fallback));
+
+// ✅ Settings-menu-only: force Micro5 for Latin-safe languages (no global impact)
+const localizeSettingsStyle = <T extends Record<string, any>>(baseStyle: T): T => {
+  const s: any = localizeStyle(baseStyle);
+  s.fontFamily = micro5ForLatinUiFontFamily(getLang());
+  return s as T;
+};
 
 
   const IS_TOUCH =
@@ -131,14 +145,17 @@ const infoPanel = new Graphics();
 infoLayer.addChild(infoPanel);
 
 // title
-const infoModalTitle = new Text("BLOCKY FARM – GAME INFO", new TextStyle({
+const infoModalTitle = new Text(
+  uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO"),
+  new TextStyle(localizeSettingsStyle({
+    fontSize: 38,
+    fill: 0xffd36a,
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 4 },
+  } as any))
+);
 
-  fontFamily: "Micro5",
-  fontSize: 38,
-  fill: 0xffd36a,
-  letterSpacing: 2,
-  stroke: { color: 0x000000, width: 4 },
-}));
+
 infoModalTitle.anchor.set(0.5, 0);
 infoLayer.addChild(infoModalTitle);
 
@@ -189,14 +206,14 @@ GENERAL TERMS
 `;
 
 const infoBody = new Text(INFO_TEXT, new TextStyle({
-  fontFamily: "Arial",
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
   fontSize: 20,
   fill: 0xffffff,
-  align: "center",        // ✅ center align
+  align: "center",
   wordWrap: true,
-  wordWrapWidth: 760,     // updated in layoutInfo()
+  wordWrapWidth: 760,
   lineHeight: 30,
-}));
+}));  
 infoBody.anchor.set(0.5, 0); // ✅ center horizontally
 
 // ---- Scroll viewport + mask ----
@@ -362,17 +379,18 @@ setInfoScroll(infoScrollY);
   infoIcon.anchor.set(0.5);
   infoIcon.eventMode = "none";
 
-  const infoTitle = new Text({
-    text: "INFO",
-    style: {
-      fontFamily: "Micro5",
-      fill: 0xffd36a,
-      fontSize: 35,
-      fontWeight: "100",
-      letterSpacing: 2,
-      stroke: { color: 0x000000, width: 4 },
-    } as any,
-  });
+const infoTitle = new Text({
+  text: uiLabel("ui.info", "INFO"),
+  style: localizeSettingsStyle({
+    fill: 0xffd36a,
+    fontSize: 35,
+    fontWeight: "100",
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 4 },
+  } as any),
+} as any);
+
+
   infoTitle.anchor.set(0, 0.5);
   infoTitle.eventMode = "none";
 
@@ -622,6 +640,9 @@ musicSlider.layout(sliderX, 0, trackW);
   }
 
   function open() {
+    infoTitle.text = uiLabel("ui.info", "INFO");
+infoModalTitle.text = uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO");
+
     settingsMenuLayer.visible = true;
     layoutSettingsMenu();
   }

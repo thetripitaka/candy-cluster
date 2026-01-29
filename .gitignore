@@ -1,28 +1,5241 @@
-# dependencies
-node_modules
-
-# build output
-dist
-build
-
-# local env files
-.env
-.env.*.local
-
-# logs
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS / editor junk
-.DS_Store
-.vscode
-.idea
-
-# vite / cache
-.vite
-.cache
-
-# coverage
-coverage
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/src/main.ts b/src/main.ts
+index 391d71bd2762892161eec29e5f869b35b55591dd..a30fc72a5eeef04a332aeaa71eb100b3d4b520f4 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -1,52 +1,49 @@
+ 
+ import {
+       Application,
+       Container,
+       Sprite,
+       Texture,
+-      RenderTexture,
+       Assets,
+       BlurFilter,
+       Graphics,
+       Text,
+       TextStyle,
+       Rectangle,
+       AnimatedSprite,
+-      SCALE_MODES,
+     } from "pixi.js";
+ 
+ 
+   import {
+     waitMs,
+     animateMs,
+     tween,
+     easeOutBack,
+     easeOutCubic,
+     easeInCubic,
+     softstep,
+-    linear,
+   } from "./core/timing";
+ 
+   import { addSystem, ensureTickerRouter } from "./core/tickerRouter";
+ 
+   import { simulateSpin } from "./game/simulate";
+ 
+   import { buildSimConfig, LADDER, SYMBOL_FRAMES, WEIGHTS_BASE, } from "./game/simConfig";
+ 
+   import { createSettingsMenu } from "./ui/settingsMenu";
+ 
+   import { createBuyMenu } from "./ui/buyMenu";
+ 
+   import { createAutoMenu } from "./ui/autoMenu";
+ 
+ import { AudioManager } from "./audio/audio.ts";
+ 
+ 
+ import type { SfxKey } from "./audio/audio";
+ 
+ 
+   import type {
+     Mode,
+     SymbolId,
+     Cell,
+     Cluster,
+@@ -260,65 +257,50 @@ if ((window as any).__GAME_BOOTED__) {
+ 
+ // =====================
+ // AUDIO
+ // =====================
+ const audio = new AudioManager({
+   sfxMuted: false,
+   musicMuted: false,
+   sfxVolume01: 0.8,
+   musicVolume01: 0.6,
+ });
+ window.addEventListener("keydown", async (e) => {
+   if (e.key.toLowerCase() !== "m") return;
+   await (audio as any)?.initFromUserGesture?.();
+ 
+   const muted = audio?.getMusicMuted?.() ?? false;
+   audio?.setMusicMuted?.(!muted);
+   audio?.apply?.();
+ 
+   console.log("[M TEST] musicMuted ->", !muted);
+ });
+ 
+ 
+ // =====================
+ // CLUSTER POP PITCH LADDER
+ // =====================
+-let clusterPopRate = 1.0;
+-
+-// how fast it climbs each tumble (tweak 0.02..0.07)
+-const CLUSTER_POP_RATE_STEP = 0.1;
+-
+-// cap so it never gets chipmunk-y (tweak 1.25..1.55)
+-const CLUSTER_POP_RATE_MAX = 2;
+-
+-function resetClusterPopRate() {
+-  clusterPopRate = 1.0;
+-}
+-
+-function bumpClusterPopRate() {
+-  clusterPopRate = Math.min(CLUSTER_POP_RATE_MAX, clusterPopRate + CLUSTER_POP_RATE_STEP);
+-}
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+     function enterFreeSpins(forcedCount = 10, startMult = 2) {
+       // ✅ set ladder based on the chosen start multiplier (buy feature)
+       const idx = LADDER.indexOf(startMult);
+       state.fs.ladderIndex = idx >= 0 ? idx : 0;
+ 
+       const m = LADDER[state.fs.ladderIndex];
+       updateMultiplierPlaque(m);
+       setMult(m);
+ 
+       state.game.mode = "FREE_SPINS";
+ 
+       applyUiLocks();
+     // 🚫 NO BASE CAR DURING FREE SPINS (kill immediately)
+     if (bgCarLive) {
+       bgCarLive.s.removeFromParent();
+       bgCarLive = null;
+     }
+     clearCarExhaustNow();
+@@ -391,51 +373,50 @@ function bumpClusterPopRate() {
+     fsIntroLabel.visible = false;
+     fsIntroAmount.alpha = 0;
+     fsIntroLabel.alpha = 0;
+ 
+ 
+       console.log("🔥 FORCED FREE SPINS", state.fs.remaining);
+     }
+ 
+ 
+ 
+ 
+   
+ 
+ 
+       
+     
+     
+       
+     
+ 
+ 
+ 
+       const COLS = 6;
+       const ROWS = 5;
+       let cellSize = 130;
+-      const gap = 0;          // spacing between symbols (layout)
+     const FRAME_GAP = 4.1;     // affects reel house sizing ONLY
+     const SYMBOL_GAP = 0;    // affects symbol spacing ONLY
+       // what the reel house should assume (usually keep 0)
+       const CELL_COUNT = COLS * ROWS;
+       const SYMBOL_VISUAL_SCALE = 1;   // overall size inside the cell
+     const SYMBOL_INNER_PAD = 6;         // "padding" inside each cell (px)
+ 
+     // =====================
+     // SCATTER / BONUS SYMBOL TUNING (IN-GAME)
+     // =====================
+     const SCATTER_SCALE_MULT = 1.2; // try 1.15 – 1.35
+     const SCATTER_LIFT_Y = 0;       // lift up slightly (px)
+     const WILD_SCALE_MULT = 1.18; // 🔧 try 1.10 – 1.35
+ 
+ 
+ 
+     function fitSpriteToCell(sprite: Sprite) {
+       const texW = sprite.texture.width || 1;
+       const texH = sprite.texture.height || 1;
+ 
+       const innerW = cellSize - SYMBOL_INNER_PAD * 2;
+       const innerH = cellSize - SYMBOL_INNER_PAD * 2;
+ 
+       const s = Math.min(innerW / texW, innerH / texH) * SYMBOL_VISUAL_SCALE;
+       sprite.scale.set(s);
+@@ -458,51 +439,50 @@ function bumpClusterPopRate() {
+ 
+ 
+ 
+ 
+ 
+       function rngChoiceWeighted<T extends string>(weights: Record<T, number>): T {
+         let total = 0;
+         for (const k in weights) total += weights[k as T];
+         const r = Math.random() * total;
+         let acc = 0;
+         for (const k in weights) {
+           acc += weights[k as T];
+           if (r <= acc) return k as T;
+         }
+         return Object.keys(weights)[0] as T;
+       }
+ 
+   
+ 
+ 
+ 
+     
+ 
+       function idxToXY(i: number) { return { x: i % COLS, y: Math.floor(i / COLS) }; }
+       function xyToIdx(x: number, y: number) { return y * COLS + x; }
+-      function inBounds(x: number, y: number) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
+ 
+     
+       
+ 
+ 
+ 
+       
+ 
+   
+ 
+ 
+       function makeGrid(weights: Record<SymbolId, number>): Cell[] {
+         return Array.from({ length: CELL_COUNT }, () => ({ id: rngChoiceWeighted(weights) }));
+       }
+ 
+     
+ 
+       // ---- PIXI ----
+       const stageEl = document.getElementById("stage") as HTMLDivElement | null;
+       if (!stageEl) throw new Error("Missing #stage div. Check index.html.");
+ 
+     const SHOW_TOP_LEFT_HUD = false;
+ 
+ 
+ 
+@@ -527,62 +507,50 @@ await app.init({
+   autoDensity: true,
+ });
+ 
+ ensureTickerRouter(app);
+ stageEl.appendChild(app.canvas);
+ function computeCellSize() {
+   const W = app.screen.width;
+   const H = app.screen.height;
+ 
+   // available height above UI panel (rough estimate)
+   const uiFrac = PANEL_HEIGHT_FRAC; // you already have this
+   const safeB = safeInsetBottomPx();
+   const safeT = safeInsetTopPx();
+ 
+   const availH = H * (1 - uiFrac) - safeT - safeB - 40;
+   const availW = W - 40;
+ 
+   // we want COLS*cell to fit in availW and ROWS*cell to fit in availH
+   const cellFromW = availW / COLS;
+   const cellFromH = availH / ROWS;
+ 
+   // clamp so it doesn’t get microscopic
+   const s = Math.floor(Math.max(72, Math.min(130, Math.min(cellFromW, cellFromH))));
+   return s;
+ }
+-function computeCellSizeFromBoard(boardW: number, boardH: number) {
+-  // boardW/H are the INNER reel window size (already inset)
+-  const pad = 10; // inner breathing room (px) — tweak 0..20
+-  const availW = Math.max(1, boardW - pad * 2);
+-  const availH = Math.max(1, boardH - pad * 2);
+-
+-  const cellFromW = availW / COLS;
+-  const cellFromH = availH / ROWS;
+-
+-  const s = Math.floor(Math.min(cellFromW, cellFromH));
+-  return Math.max(56, Math.min(120, s));
+-}
+ 
+       
+       let maxDt = 0;
+     addSystem(() => {
+     const dtMs = app.ticker.deltaMS;
+     if (dtMs > maxDt) {
+       maxDt = dtMs;
+       if (maxDt > 300) console.log("[HITCH]", Math.round(maxDt), "ms");
+     }
+   });
+ 
+   // =====================
+   // SPLASH BACKGROUND WATCHDOG (prevents black frame)
+   // =====================
+   addSystem(() => {
+     if (!state.overlay.splash) return;
+ 
+     const baseOn = bgBase.visible && bgBase.alpha > 0.02;
+     const freeOn = bgFree.visible && bgFree.alpha > 0.02;
+ 
+     if (!baseOn && !freeOn) {
+       console.warn("[SPLASH BLACK] background sprites both OFF", {
+         bgBaseVisible: bgBase.visible,
+         bgBaseAlpha: bgBase.alpha,
+         bgFreeVisible: bgFree.visible,
+@@ -982,51 +950,50 @@ if (disableCustomCursorOnMobile()) {
+ 
+ 
+       // crisp rendering
+       wandTip.roundPixels = true;
+     wandTip.x = Math.round(wandTip.x);
+     wandTip.y = Math.round(wandTip.y);
+ 
+ 
+       
+     }
+ 
+     drawWandTip();
+ 
+     type Pt = { x: number; y: number };
+     const trail: Pt[] = [];
+     const TRAIL_MAX = 40;
+ 
+     // cursor smoothing
+     let loaderCursorOn = true;
+     let targetX = app.screen.width / 2;
+     let targetY = app.screen.height / 1.5;
+     let curX = targetX;
+     let curY = targetY;
+ 
+     function clamp(n: number, a: number, b: number) { return Math.max(a, Math.min(b, n)); }
+-    function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+ 
+     // =========
+     // 8-bit sparks (pool)
+     // =========
+     type Spark = {
+       g: Graphics;
+       vx: number;
+       vy: number;
+       vr: number;
+       life: number;
+       life0: number;
+       s0: number;
+     };
+ 
+     const sparkPool: Spark[] = [];
+     const sparkLive: Spark[] = [];
+ 
+     function spawnSpark(x: number, y: number, burst = false) {
+       let p = sparkPool.pop();
+       if (!p) {
+         const g = new Graphics();
+         (g as any).blendMode = "add";
+         p = { g, vx: 0, vy: 0, vr: 0, life: 0, life0: 0, s0: 1 };
+       }
+ 
+@@ -1230,51 +1197,50 @@ window.addEventListener(
+     // --- retro snap settings ---
+     const CURSOR_STEP = 8; // 4,6,8,10
+ 
+     function snapToStep(v: number, step: number) {
+       return Math.round(v / step) * step;
+     }
+ 
+  app.stage.on("pointermove", (e: any) => {
+   // ✅ no custom cursor on mobile
+   if (disableCustomCursorOnMobile()) return;
+ 
+   const p = e.global;
+   targetX = snapToStep(p.x + CURSOR_OFFSET_X, CURSOR_STEP);
+   targetY = snapToStep(p.y + CURSOR_OFFSET_Y, CURSOR_STEP);
+ });
+ 
+ 
+ 
+ 
+ 
+     app.stage.on("pointerdown", (e: any) => {
+       // ✅ click burst ONLY during loader
+       if (!loadingLayer.visible) return;     // loader-only gate
+       if (!loaderCursorOn) return;
+ 
+-      const p = e.global;
+       spawnLoaderClickBurst(targetX, targetY); // use snapped/offset cursor position
+     });
+ 
+ 
+ 
+ 
+     // =========
+     // stop / cleanup
+     // =========
+     function stopLoaderMagicCursor() {
+       loaderCursorOn = false;
+       (app.canvas as any).style.cursor = "none"; // keep hidden in-game too
+ 
+ 
+       // clear sparks
+       for (let i = sparkLive.length - 1; i >= 0; i--) {
+         const p = sparkLive[i];
+         p.g.removeFromParent();
+         sparkPool.push(p);
+         sparkLive.splice(i, 1);
+       }
+       
+ 
+       
+ 
+@@ -1574,64 +1540,60 @@ async function runFinalBootPipelineOnce() {
+ 
+     // =====================
+     // NES SEGMENTED LOADING BAR TUNING
+     // =====================
+     const BAR_PAD = 3;        // padding inside the bar frame
+     const SEG_GAP = 3;        // gap between blocks
+     const SEG_H = 18;         // block height (usually = barH, but can be slightly smaller)
+     const MIN_SEG_W = 14;     // minimum block width (controls how many blocks fit)
+ 
+ 
+     layoutLoadingScreen();
+     updateLoadingProgress(0);
+     window.addEventListener("resize", () => {
+       layoutLoadingScreen();
+       // keep the bar consistent with whatever % we’re currently showing
+       const pct = parseInt(loadingPct.text, 10);
+       if (!Number.isNaN(pct)) updateLoadingProgress(pct / 100);
+     });
+ 
+ 
+ 
+     // =====================
+     // SPLASH LOGO FLOAT (idle)
+     // =====================
+     let splashFloatT = 0;
+-    let splashFloatEnabled = false;
+-
+     // tuning (very subtle)
+     const SPLASH_FLOAT_AMP_Y = 10;   // px up/down
+     const SPLASH_FLOAT_AMP_X = 4;    // px left/right
+     const SPLASH_FLOAT_SPD   = 0.18; // cycles/sec
+     const SPLASH_FLOAT_BLEND_IN_MS = 420;
+ 
+     let splashFloatBlend = 0;
+     let splashLogoSettled = false;
+ 
+ 
+-const SPLASH_BOX_MOBILE_LANDSCAPE_MUL = 0.8; // 🔧 try 0.65–0.85
+-
+ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
+ 
+ 
+   const studioIntroLayer = new Container();
+   studioIntroLayer.zIndex = 1000002;     // above loading(999999) + splash(999998)
+   studioIntroLayer.visible = false;
+   studioIntroLayer.alpha = 0;
+   studioIntroLayer.eventMode = "static"; // blocks input
+   studioIntroLayer.cursor = "default";
+   root.addChild(studioIntroLayer);
+   root.sortChildren();
+ 
+   const studioIntroDim = new Graphics();
+   studioIntroLayer.addChild(studioIntroDim);
+ 
+   const STUDIO_KICK_MS = 110;      // 70..140 = “instant kick”
+   const STUDIO_KICK_OVERSHOOT = 2;
+ 
+   const studioLogo = new Sprite(Texture.WHITE); // replaced after Assets.load
+   studioLogo.anchor.set(0.5);
+   studioLogo.alpha = 0;
+   studioLogo.roundPixels = true;
+   studioIntroLayer.addChild(studioLogo);
+ 
+   const studioLogoHouse = new Sprite(Texture.WHITE);
+@@ -1671,88 +1633,50 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
+   const targetH = H * LOGO_H_N;
+ 
+   const s = Math.min(targetW / tw, targetH / th);
+   studioLogo.scale.set(s);
+ 
+   // ✅ HOUSE: always same center, no nudges
+   const houseTex = studioLogoHouseTex ?? null;
+   if (houseTex) {
+     studioLogoHouse.texture = houseTex;
+ 
+     studioLogoHouse.position.set(cx, cy);
+ 
+     // Pick ONE approach for scale:
+     // Option A (simple): match base logo scale
+     studioLogoHouse.scale.set(s);
+ 
+     // Option B (if house art is meant to be larger/smaller than logo):
+     const HOUSE_SCALE_MULT = 2 // tweak if needed
+     studioLogoHouse.scale.set(s * HOUSE_SCALE_MULT);
+ 
+   }
+ }
+ 
+   window.addEventListener("resize", layoutStudioIntro);
+ 
+-  async function playStudioIntro() {
+-    // texture must exist (we loaded it in Assets.load)
+-    const t = Assets.get(STUDIO_LOGO_URL) as Texture | undefined;
+-    if (t) studioLogo.texture = t;
+-
+-    layoutStudioIntro();
+-    root.sortChildren();
+-
+-    state.overlay.studio = true;
+-    studioIntroLayer.visible = true;
+-    studioIntroLayer.alpha = 1;
+-    studioIntroLayer.eventMode = "static";
+-
+-    // start hidden
+-    studioLogo.alpha = 0;
+-
+-    // fade IN
+-    await animateMs(420, (tt) => {
+-      const e = tt * tt * (3 - 2 * tt);
+-      studioLogo.alpha = e;
+-    });
+-
+-    // hold
+-    await waitMs(650);
+-
+-    // fade OUT
+-    await animateMs(420, (tt) => {
+-      const e = tt * tt * (3 - 2 * tt);
+-      studioLogo.alpha = 1 - e;
+-    });
+-
+-    // hide
+-    studioIntroLayer.visible = false;
+-    studioIntroLayer.eventMode = "none";
+-    studioLogo.alpha = 0;
+-    state.overlay.studio = false;
+-  }
+-
+ 
+     const splashLayer = new Container();
+     splashLayer.zIndex = 999998; // below loading (999999), above everything else
+     splashLayer.visible = false;
+     splashLayer.eventMode = "static"; // blocks input
+     splashLayer.cursor = "pointer";
+     root.addChild(splashLayer);
+     root.sortChildren();
+ 
+     // optional dimmer (on top of blurred BG)
+     const splashDim = new Graphics();
+     splashLayer.addChild(splashDim);
+ 
+     const splashPresents = new Text({
+       text: "8-BIT WIZARDRY\nPRESENTS",
+       style: {
+         fontFamily: "Micro5",
+         fill: 0xffffff,
+         fontSize: 35,
+         align: "center",
+         letterSpacing: 1,
+ 
+         
+ 
+         dropShadow:false,
+@@ -1775,57 +1699,50 @@ const SPLASH_CARD_LAND_SCALE = 1; // 🔧 try 0.68–0.85
+   type StudioTile = {
+     s: Sprite;
+     homeX: number;
+     homeY: number;
+     col: number;
+     row: number;
+   };
+ 
+ 
+ 
+   let studioTilesBuilt = false;
+   let studioTiles: StudioTile[] = [];
+   const studioTileLayer = new Container();
+   studioTileLayer.eventMode = "none";
+   studioTileLayer.sortableChildren = false;
+   studioIntroLayer.addChild(studioTileLayer);
+ 
+ 
+ 
+   // TUNING
+   const STUDIO_TILE_PX = 60;          // square tile size IN LOGO TEXTURE PIXELS (try 32/48/64)
+   const STUDIO_SPIN_RPS = 2.8;        // reel spin speed (rows per second feel)
+   const STUDIO_SPIN_TIME_MS = 650;    // how long columns spin BEFORE stopping begins
+   const STUDIO_STOP_STAGGER_MS = 90;  // stop columns one-by-one
+   const STUDIO_STOP_SETTLE_MS = 220;  // snap settle per column
+-  const STUDIO_DROP_FROM_Y = -260;    // where tiles start above the logo (px in screen space)
+-
+-  function clearStudioTiles() {
+-    studioTileLayer.removeChildren();
+-    studioTilesBuilt = false;
+-    studioTiles = [];
+-  }
+ 
+   function buildStudioLogoTiles() {
+     if (studioTilesBuilt) return;
+ 
+     const tex = Assets.get(STUDIO_LOGO_URL) as Texture | undefined;
+     if (!tex) {
+       console.warn("[STUDIO] Missing logo texture:", STUDIO_LOGO_URL);
+       return;
+     }
+ 
+     // use the base texture so all tiles share the same GPU resource
+   const base = tex.source;
+ 
+ 
+     // tile size in texture pixels
+     const tile = Math.max(8, Math.floor(STUDIO_TILE_PX));
+ 
+     // how many full tiles fit
+     const cols = Math.floor((tex.width || 1) / tile);
+     const rows = Math.floor((tex.height || 1) / tile);
+ 
+     if (cols <= 0 || rows <= 0) {
+       console.warn("[STUDIO] Logo too small for tiles.", { w: tex.width, h: tex.height, tile });
+       return;
+     }
+@@ -2353,51 +2270,50 @@ const FARM_X_OFFSET_DESKTOP = -30;  // +right, -left
+ const FARM_Y_OFFSET_DESKTOP = 38; // +down, -up
+ 
+ // ✅ DESKTOP-only FARM nudges (INITIAL DROP only)
+ const FARM_X_OFFSET_DESKTOP_DROP = -50; // +right, -left
+ 
+ 
+     // layout
+     function layoutSplash() {
+       const portrait = isMobilePortraitUILayout();
+ const landscapeMobile = isMobileLandscapeUILayout();
+       const W = app.screen.width;
+       const H = app.screen.height;
+ 
+     splashDim.clear();
+   splashDim.rect(0, 0, W, H).fill(0x000000);
+       splashDim.alpha = 0.18; // subtle dim on top of blur
+ 
+       splashPresents.position.set(W * 0.5, H * 0.08);
+ // ✅ PORTRAIT ONLY: hide "8-BIT WIZARDRY PRESENTS"
+ splashPresents.visible = !isMobilePortraitUILayout();
+ 
+ 
+ 
+ 
+     // ----- SPLASH LOGO (BLOCKY + FARM) layout -----
+-const SPLASH_LANDSCAPE_HORIZONTAL_GAP = -40; // tweak: -120..+80
+     // tuning knobs
+     const SPLASH_TARGET_W = Math.min(W * 0.80, 1200);
+ const SPLASH_LOGO_SCALE = isMobileLandscapeUILayout()
+   ? 0.35   // 👈 MOBILE LANDSCAPE FINAL SETTLE (try 0.45–0.52)
+   : 0.60;  // desktop + portrait unchanged
+     const SPLASH_LOGO_SQUASH_X = 0.82;
+     const SPLASH_FINAL_GAP_PX = -15; // final settled gap (try 80–140)
+ 
+ 
+     // measure UN-SCALED widths
+     const blockyW0 = splashLogoBlocky.getLocalBounds().width;
+     const farmW0 = splashLogoFarm.getLocalBounds().width;
+ 
+     // scale to fit target width (based on unscaled widths)
+     const combinedW0 = blockyW0 + SPLASH_FINAL_GAP_PX + farmW0;
+     const baseS = SPLASH_TARGET_W / Math.max(1, combinedW0);
+ 
+     const sx = baseS * SPLASH_LOGO_SCALE * SPLASH_LOGO_SQUASH_X;
+     const sy = baseS * SPLASH_LOGO_SCALE;
+ 
+     splashLogoBlocky.scale.set(sx, sy);
+     splashLogoFarm.scale.set(sx, sy);
+     // store base scales so animations can return to the "layout" scale
+     splashBlockyBaseSX = sx; splashBlockyBaseSY = sy;
+     splashFarmBaseSX  = sx; splashFarmBaseSY  = sy;
+@@ -2748,65 +2664,55 @@ if (portrait) {
+ 
+   // last card bottom edge in screen coords
+   const lastBox = splashInfoBoxes[splashInfoBoxes.length - 1];
+   const lb = lastBox.getBounds();
+   const lastBottomY = lb.y + lb.height;
+ 
+   // the maximum bottom Y allowed for the last card
+   const maxBottomY = contTopY - SPLASH_PORTRAIT_CONTINUE_GAP_PX;
+ 
+   // if the card stack is too low, push ALL cards up together
+   const shiftUp = Math.max(0, Math.round(lastBottomY - maxBottomY));
+ 
+   if (shiftUp > 0) {
+     for (const box of splashInfoBoxes) {
+       box.y = Math.round(box.y - shiftUp);
+     }
+   }
+ }
+ 
+ 
+ 
+     }
+ 
+     window.addEventListener("resize", layoutSplash);
+ 
+-    // helper: get root-space position of the in-game logo (gameTitle)
+-    function getGameTitleRootTarget() {
+-      // gameTitle lives inside gameCore, so use global->root conversion
+-      const gp = gameTitle.getGlobalPosition();
+-      const lp = root.toLocal(gp);
+-      return { x: lp.x, y: lp.y };
+-    }
+-
+ // =====================
+ // SPLASH TITLE LANDING TUNING (MOBILE LANDSCAPE ONLY)
+ // =====================
+ const SPLASH_LAND_DROP_Y_N = 0.42;
+ const SPLASH_LAND_FARM_DROP_PX = 18;
+-const SPLASH_LAND_FINAL_Y_N = 0.24;
+-const SPLASH_LAND_FINAL_FARM_PX = 30;
+     // MAIN sequence
+     async function startSplashSequence() {
+       // ✅ Splash background starts at TOP of PNG
+     snapBackgroundToTop();
+       state.overlay.splash = true;
+       lockBackgroundForSplash(); // ✅ Solution B lock
+     // ✅ kill any live cars when splash begins
+     if (bgCarLive) {
+       bgCarLive.s.removeFromParent();
+       bgCarLive = null;
+     }
+     if (fsCarLive) {
+       fsCarLive.s.removeFromParent();
+       fsCarLive = null;
+     }
+     clearCarExhaustNow();
+ 
+ 
+ 
+     buildSplashCardArtOnce();
+       // ✅ NO SMOKE during splash
+     smokeFxEnabled = false;
+     clearSmokeNow();
+     smokeSpawnAcc = 0;
+ 
+@@ -2855,52 +2761,50 @@ const SPLASH_LAND_FINAL_FARM_PX = 30;
+       gameCore.alpha = 0;
+       (gameCore as any).eventMode = "none";
+       fadeUiLayerTo(0, 0);
+ 
+       // start positions
+       const W = app.screen.width;
+       const H = app.screen.height;
+ 
+   const logoOffY   = -Math.max(splashLogoBlocky.height, splashLogoFarm.height) - 140;
+ 
+ const landscapeMobile = isMobileLandscapeUILayout();
+ const portraitMobile  = isMobilePortraitUILayout();
+ 
+ const logoDropY = landscapeMobile
+   ? H * SPLASH_LAND_DROP_Y_N
+   : H * 0.48;
+ 
+ // ✅ FARM initial drop landing offset (relative to BLOCKY) — mode-specific
+ const FARM_DROP_Y_OFFSET =
+   landscapeMobile ? SPLASH_LAND_FARM_DROP_PX :
+   portraitMobile  ? 10 :                 // 🔧 PORTRAIT drop Y offset (tweak this)
+   38;                                   // desktop fallback (keep same or tune)
+ 
+ 
+ 
+-    const logoRevealY = H * 0.30;
+-
+     // stagger timing (separate feel for drop vs rise)
+     const DROP_STAGGER_MS = 700; // heavier, more impact
+     const RISE_STAGGER_MS = 60;  // tighter, snappier settle
+ 
+ 
+     // start offscreen + oversized
+     const DROP_OVERSCALE_BLOCKY = 1.25; // tweak 1.15–1.40
+     const DROP_OVERSCALE_FARM   = 1.28; // usually a touch bigger feels nice
+ 
+     // ✅ gap while DROPPING (bigger so oversized words don't collide)
+     const SPLASH_DROP_GAP_PX = -15; // try 180–320
+ 
+     splashLogoBlocky.y = logoOffY;
+     splashLogoFarm.y   = logoOffY;
+ 
+     splashLogoBlocky.scale.set(splashBlockyBaseSX * DROP_OVERSCALE_BLOCKY, splashBlockyBaseSY * DROP_OVERSCALE_BLOCKY);
+     splashLogoFarm.scale.set(splashFarmBaseSX * DROP_OVERSCALE_FARM, splashFarmBaseSY * DROP_OVERSCALE_FARM);
+ 
+     // ✅ compute DROP positions (use current oversized widths)
+     const dropBlockyW = splashLogoBlocky.width;
+     const dropFarmW   = splashLogoFarm.width;
+ 
+     const dropPairW = dropBlockyW + SPLASH_DROP_GAP_PX + dropFarmW;
+     const dropLeftX = W * 0.5 - dropPairW / 2;
+ 
+@@ -3042,77 +2946,75 @@ if (isDesktopDrop) {
+     // ---- SPLASH INFO BOXES FADE IN ----
+     splashInfoBoxes.forEach((b) => {
+       b.alpha = 0;
+       const y0 = b.y;
+ 
+       tween(320, (k) => {
+         const e = k * k * (3 - 2 * k);
+         b.alpha = e;
+         b.y = y0 - 10 * (1 - e); // ✅ no drift
+       });
+     });
+ 
+ 
+ 
+     // snap exact end state (prevents tiny float drift)
+     splashLogoBlocky.x = splashBlockyTargetX;
+     splashLogoBlocky.y = splashBlockyTargetY;
+ 
+     splashLogoFarm.x   = splashFarmTargetX;
+     splashLogoFarm.y   = splashFarmTargetY;
+     splashLogoSettled = true;
+ 
+     // ✅ start idle float after logo settles
+     splashFloatT = 0;
+     splashFloatBlend = 0;
+-    splashFloatEnabled = true;
+ 
+     // blend the float in smoothly
+     tween(
+       SPLASH_FLOAT_BLEND_IN_MS,
+       (k) => {
+         splashFloatBlend = Math.max(0, Math.min(1, k));
+       },
+       () => {
+         splashFloatBlend = 1;
+       }
+     );
+ 
+ 
+     splashLogoBlocky.scale.set(splashBlockyBaseSX, splashBlockyBaseSY);
+     splashLogoFarm.scale.set(splashFarmBaseSX, splashFarmBaseSY);
+ 
+ 
+ 
+ 
+ 
+     // ✅ now that logo + info are in place, slide the continue prompt up ONCE
+     showSplashContinue(true, 320);
+ 
+       const onContinue = async () => {
+         // stop splash logo float immediately
+-    splashFloatEnabled = false;
+     splashFloatBlend = 0;
+     splashLogoSettled = false;
+ 
+ 
+         splashInfoBoxes.forEach((b) => (b.alpha = 0));
+ 
+       if (!state.overlay.splash) return;
+       splashLayer.off("pointertap", onContinue);
+       
+ 
+ 
+       // fade blur down (so the game starts crisp)
+       const b0 = bgBlur.strength;
+       await animateMs(320, (t) => {
+         const e = t * t * (3 - 2 * t);
+         bgBlur.strength = b0 * (1 - e);
+         splashLayer.alpha = 1 - e;
+       });
+ 
+       splashLayer.visible = false;
+       splashLayer.eventMode = "none";
+       state.overlay.splash = false;
+ 
+     // ✅ Kick off the startup background pan + reveal sequence
+     playStartupIntro();
+@@ -3135,123 +3037,50 @@ if (isDesktopDrop) {
+ 
+     }
+ 
+   const STUDIO_LOGO_URL = "/assets/ui/studio_logo.png";
+   const STUDIO_LOGO_HOUSE_URL = "/assets/ui/studio_logo_house.webp";
+   const BG_BASE_URL = "/assets/backgrounds/bg_candy_landscape.webp";
+   const BG_FREE_URL = "/assets/backgrounds/bg_candy_landscape_free.webp";
+   const FS_OUTRO_BG_URL = "/assets/ui/fs_outro_bg.webp";
+ 
+     
+ 
+ 
+ // =====================
+ // GAME TITLE POSITION TWEAKS
+ // =====================
+ 
+ // mobile / shared defaults (keep what you already like)
+ let TITLE_OFFSET_X = 60;   // px (+ right, - left)
+ let TITLE_OFFSET_Y = -80;  // px (+ down, - up)
+ 
+ // ✅ DESKTOP ONLY overrides (tune these)
+ let TITLE_OFFSET_X_DESKTOP = 60;   // start same as current, then tweak
+ let TITLE_OFFSET_Y_DESKTOP = -80;  // start same as current, then tweak
+ 
+ 
+-    
+-
+-    // =====================
+-    // SYMBOL COLOR SAMPLING (cache)
+-    // =====================
+-    const SYMBOL_COLOR_CACHE: Partial<Record<SymbolId, number>> = {};
+-    const _sampleRT = { w: 16, h: 16 };
+-
+-    function sampleSymbolBodyColorFromSprite(s: Sprite): number {
+-      const c = new Container();
+-
+-      const clone = new Sprite(s.texture);
+-      clone.anchor.set(0.5);
+-      clone.position.set(_sampleRT.w / 2, _sampleRT.h / 2);
+-
+-      // scale symbol to fit the tiny RT
+-      const sc = Math.min(
+-        (_sampleRT.w * 0.90) / clone.texture.width,
+-        (_sampleRT.h * 0.90) / clone.texture.height
+-      );
+-      clone.scale.set(sc);
+-
+-      c.addChild(clone);
+-
+-      const rt = RenderTexture.create({ width: _sampleRT.w, height: _sampleRT.h });
+-      app.renderer.render({ container: c, target: rt, clear: true });
+-
+-      const px = app.renderer.extract.pixels(rt) as unknown as Uint8Array;
+-
+-      // Weighted average of "good" colour pixels (high saturation, not too dark/light)
+-      let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
+-
+-      for (let i = 0; i < px.length; i += 4) {
+-        const r = px[i + 0];
+-        const g = px[i + 1];
+-        const b = px[i + 2];
+-        const a255 = px[i + 3];
+-
+-        if (a255 < 25) continue; // ignore transparent
+-
+-        // ignore very dark outlines + very bright highlights
+-        const maxc = Math.max(r, g, b);
+-        const minc = Math.min(r, g, b);
+-        const v = maxc / 255;                  // value 0..1
+-        const s01 = maxc === 0 ? 0 : (maxc - minc) / maxc;  // saturation 0..1
+-
+-        if (v < 0.18) continue;  // too dark (outlines)
+-        if (v > 0.95) continue;  // too bright (highlights)
+-        if (s01 < 0.22) continue; // too grey/neutral
+-
+-        const a = a255 / 255;
+-
+-        // weight toward "colourful" pixels
+-        const w = a * (0.35 + s01 * 1.8);
+-
+-        rSum += r * w;
+-        gSum += g * w;
+-        bSum += b * w;
+-        wSum += w;
+-      }
+-
+-      c.destroy({ children: true });
+-      rt.destroy(true);
+-
+-      if (wSum <= 0.0001) return 0xffffff;
+-
+-      const rr = Math.max(0, Math.min(255, Math.round(rSum / wSum)));
+-      const gg = Math.max(0, Math.min(255, Math.round(gSum / wSum)));
+-      const bb = Math.max(0, Math.min(255, Math.round(bSum / wSum)));
+-
+-      return (rr << 16) | (gg << 8) | bb;
+-    }
+-
+ // =====================
+ // FINAL: atlas handles must be declared EARLY (prevents TDZ crashes)
+ // =====================
+ let uiSheet: any = null;
+ let uiExtraSheet: any = null;
+ let symbolsSheet: any = null;
+ let reelhouseSheet: any = null;
+ let vehiclesSheet: any = null;
+ let bigWinItemsSheet: any = null;
+ 
+ // optional: cache direct textures to avoid Assets.get warnings
+ let studioLogoHouseTex: Texture | null = null;
+ 
+     // =====================
+     // SPLASH CARD ART (icons under subtitle)
+     // =====================
+     let splashArtBuilt = false;
+ 
+     function buildSplashCardArtOnce() {
+       // ✅ wait until atlases are ready
+     if (!uiExtraSheet || !uiExtraSheet.textures) return;
+     if (typeof SYMBOL_TEX === "undefined" || !SYMBOL_TEX) return; // ✅ TDZ-safe
+     if (!SYMBOL_TEX["S1"]) return;
+ 
+ 
+@@ -3575,56 +3404,50 @@ let studioLogoHouseTex: Texture | null = null;
+ 
+       for (let i = 0; i < n; i++) {
+         if (smokeLive.length >= SMOKE_MAX_LIVE) break;
+         spawnSmoke();
+       }
+     }
+ 
+ 
+   function startSmokeFx() {
+     if (smokeTickerAdded) return;
+     smokeTickerAdded = true;
+     addSystem(() => tickSmokeFx());
+   }
+     function clearSmokeNow() {
+       for (let i = smokeLive.length - 1; i >= 0; i--) {
+         const p = smokeLive[i];
+         p.g.removeFromParent();
+         smokeLive.splice(i, 1);
+         smokePool.push(p);
+       }
+       smokeSpawnAcc = 0;
+     }
+ 
+     startSmokeFx();
+ 
+-    // Optional helper if you want to reposition it quickly later
+-    function setSmokeEmitterNorm(xN: number, yN: number) {
+-      SMOKE_EMIT_X_N = Math.max(0, Math.min(1, xN));
+-      SMOKE_EMIT_Y_N = Math.max(0, Math.min(1, yN));
+-    }
+-
+ 
+     // =====================
+     // VOXEL LEAF FX (cheap foreground particles)
+     // =====================
+     const leafFxLayer = new Container();
+     leafFxLayer.sortableChildren = true;
+     leafFxLayer.zIndex = 400;           // inside backgroundLayer ordering
+     leafFxLayer.eventMode = "none";
+ 
+     // ✅ put leaves INSIDE backgroundLayer so bgBlur affects them
+     backgroundLayer.sortableChildren = true;
+     backgroundLayer.addChild(leafFxLayer);
+     backgroundLayer.sortChildren();
+ 
+     type LeafParticle = {
+       c: Container;
+       vx: number;
+       vy: number;
+       vr: number;
+       life: number;
+     };
+ 
+     const leafPool: LeafParticle[] = [];
+     const leafLive: LeafParticle[] = [];
+ 
+@@ -3745,80 +3568,50 @@ let studioLogoHouseTex: Texture | null = null;
+       for (let i = leafLive.length - 1; i >= 0; i--) {
+         const p = leafLive[i];
+         const c = p.c;
+ 
+         c.x += p.vx * dt;
+         c.y += p.vy * dt;
+         c.rotation += p.vr * dt;
+ 
+         // subtle flutter
+         c.y += Math.sin((c.x + i * 13) * 0.02) * 0.25;
+ 
+         // we don't despawn by lifetime — only when the leaf is fully off-screen
+     const off =
+       c.x < -220 || c.x > W + 220 ||
+       c.y < -220 || c.y > H + 220;
+ 
+     if (off) {
+       c.removeFromParent();
+       leafLive.splice(i, 1);
+       leafPool.push(p);
+     }
+ 
+       }
+     }
+ 
+-    function seedLeafFxOnScreen(count = 10) {
+-      const W = app.renderer.width;
+-      const H = app.renderer.height;
+-
+-      for (let i = 0; i < count; i++) {
+-        if (leafLive.length >= LEAF_MAX_LIVE) break;
+-
+-        let p = leafPool.pop();
+-        if (!p) {
+-          const c = makeVoxelLeaf();
+-          p = { c, vx: 0, vy: 0, vr: 0, life: 0 };
+-        }
+-
+-        // ✅ already visible in a mid band
+-        p.c.x = Math.random() * (W + 200) - 100;
+-        p.c.y = H * (0.25 + Math.random() * 0.45);
+-
+-        // keep the same “left -> right” drift feel
+-        const speed = 35 + Math.random() * 55;
+-        p.vx = speed;
+-        p.vy = 10 + Math.random() * 28;
+-        p.vr = (-1 + Math.random() * 2) * 0.35;
+-        p.life = 6.0 + Math.random() * 4.0;
+-        p.c.rotation = Math.random() * Math.PI * 2;
+-
+-        leafFxLayer.addChild(p.c);
+-        leafLive.push(p);
+-      }
+-    }
+-
+ 
+     function startLeafFx() {
+       if (leafTickerAdded) return;
+       leafTickerAdded = true;
+       addSystem(() => tickLeafFx());
+     }
+ 
+     // start immediately
+     startLeafFx();
+ 
+     // =====================
+     // BG CAR — VOXEL EXHAUST TRAIL (cheap)
+     // =====================
+     const bgCarExhaustLayer = new Container();
+     bgCarExhaustLayer.zIndex = 119; // just under bgCarLayer (which is 120)
+     bgCarExhaustLayer.eventMode = "none";
+     (bgCarExhaustLayer as any).blendMode = "normal";
+     backgroundLayer.addChild(bgCarExhaustLayer);
+ 
+     type ExhaustP = {
+       g: Graphics;
+       vx: number;
+       vy: number;
+       life: number;
+       life0: number;
+@@ -3972,64 +3765,61 @@ function killCarsNow() {
+     // =====================
+     // BACKGROUND CAR FX (BASE ONLY)
+     // =====================
+     type BgCar = {
+       s: Sprite;
+       vx: number;      // speed px/sec
+       nx: number;      // normalized dir x
+       ny: number;      // normalized dir y
+       startX: number;  // spawn start (screen-space, backgroundLayer coords)
+       startY: number;
+       endX: number;    // despawn target
+       endY: number;
+       t: number;       // progress-ish (optional)
+     };
+ 
+ 
+ 
+ 
+     let bgCarLive: BgCar | null = null;
+     let bgCarCooldown = 0;
+ 
+     // tuning
+     const BG_CAR_MIN_DELAY = 18; // seconds
+     const BG_CAR_MAX_DELAY = 35;
+     const BG_CAR_SPEED = 200;     // px/sec
+-    const BG_CAR_SCALE = .8;
+-    const BG_CAR_Y_N = 0.78;     // vertical band (0..1 of screen)
+ 
+     // =====================
+     // FREE SPINS BACKGROUND CAR (FS ONLY) — TUNING
+     // =====================
+     let fsCarLive: BgCar | null = null;
+     let fsCarCooldown = 0;
+ 
+     const FS_CAR_MIN_DELAY = 10; // seconds
+     const FS_CAR_MAX_DELAY = 18;
+ 
+     const FS_CAR_SPEED = 260;    // px/sec
+-    const FS_CAR_SCALE = .8;
+ 
+     // ✅ FREE SPINS CAR: extra scale multiplier (LANDSCAPE ONLY)
+ const FS_CAR_LANDSCAPE_SCALE_MUL = 0.78; // 🔧 try 0.70–0.90
+ 
+ function getFsCarScale() {
+   const base = getCarScale(); // your existing responsive scale
+ 
+   // ✅ only affect FREE SPINS car in mobile landscape
+   if (isMobileLandscapeUILayout()) return base * FS_CAR_LANDSCAPE_SCALE_MUL;
+ 
+   return base;
+ }
+ 
+ 
+ function getCarScale() {
+   const W = app.screen.width;
+ 
+   // tune these
+   const BASE_W = 1920;
+   const MIN_S = 0.55;
+   const MAX_S = 1.05;
+ 
+   const s = W / BASE_W;
+   return Math.max(MIN_S, Math.min(MAX_S, s));
+ }
+@@ -4048,56 +3838,50 @@ function rescaleLiveCars() {
+ 
+     const FS_CAR_END_X_N   = -.03;  // exit toward left
+     const FS_CAR_END_Y_N   = 0.71;  // down toward road
+ 
+ 
+     const FS_CAR_PAD = 220;
+     const FS_CAR_END_EXTRA_PAD = 520;
+ 
+ 
+     // =====================
+     // CAR PATH (road line) — top-right -> bottom-left
+     // Tweak these to match your red road line
+     // =====================
+     const BG_CAR_START_X_N = .86; // near top-right
+     const BG_CAR_START_Y_N = -0.08;
+ 
+     const BG_CAR_END_X_N   = -.03 ; // near bottom-left
+     const BG_CAR_END_Y_N   = 0.71;
+ 
+     // extra padding so it starts/ends fully offscreen
+     const BG_CAR_PAD = 220;
+     const BG_CAR_END_EXTRA_PAD = 520; // how far past the end it should keep driving
+ 
+ 
+ 
+-    // ---- cheap motion blur tuning ----
+-    const BG_CAR_BLUR_STRENGTH = 6;   // 4–10
+-    const BG_CAR_BLUR_BACK_PX = 22;   // how far the ghost trails behind
+-    const BG_CAR_BLUR_ALPHA = 0.35;   // 0.2–0.5
+-    const BG_CAR_BLUR_STRETCH = 0.18; // extra X stretch (0.1–0.3)
+-
+ 
+     // =====================
+     // VOXEL CLOUD FX (top band drifting left -> right)
+     // =====================
+     const cloudFxLayer = new Container();
+     cloudFxLayer.sortableChildren = true;
+ 
+     cloudFxLayer.zIndex = 300;          // inside backgroundLayer ordering
+     cloudFxLayer.eventMode = "none";
+ 
+     // ✅ put clouds INSIDE backgroundLayer so bgBlur affects them
+     backgroundLayer.sortableChildren = true;
+     backgroundLayer.addChild(cloudFxLayer);
+     backgroundLayer.sortChildren();
+ 
+ 
+     type CloudParticle = {
+       c: Container;
+       vx: number;
+       vy: number;
+       vr: number;
+     };
+ 
+     const cloudPool: CloudParticle[] = [];
+     const cloudLive: CloudParticle[] = [];
+@@ -4168,52 +3952,50 @@ function rescaleLiveCars() {
+         const b = Math.max(0, Math.min(255, Math.round((hex & 255) * mul)));
+         return (r << 16) | (g << 8) | b;
+       }
+ 
+       function drawIsoCube(px: number, py: number, baseCol: number, alpha: number) {
+         // Top diamond (lighter)
+       const topCol = shade(baseCol, 1.08);
+     const leftCol = shade(baseCol, 0.92);
+     const rightCol = shade(baseCol, 0.84);
+ 
+         // top face points
+         const tx0 = px;
+         const ty0 = py - hh;
+         const tx1 = px + hw;
+         const ty1 = py;
+         const tx2 = px;
+         const ty2 = py + hh;
+         const tx3 = px - hw;
+         const ty3 = py;
+ 
+         // bottom diamond shifted down by h
+         const bx0 = tx0;
+         const by0 = ty0 + h;
+         const bx1 = tx1;
+         const by1 = ty1 + h;
+-        const bx2 = tx2;
+-        const by2 = ty2 + h;
+         const bx3 = tx3;
+         const by3 = ty3 + h;
+ 
+         // TOP
+       g
+     .moveTo(tx0, ty0)
+     .lineTo(tx1, ty1)
+     .lineTo(tx2, ty2)
+     .lineTo(tx3, ty3)
+     .closePath()
+     .fill({ color: topCol, alpha });
+ 
+         // LEFT face (tx3->tx0->bx0->bx3)
+   g
+     .moveTo(tx3, ty3)
+     .lineTo(tx0, ty0)
+     .lineTo(bx0, by0)
+     .lineTo(bx3, by3)
+     .closePath()
+     .fill({ color: leftCol, alpha });
+ 
+         // RIGHT face (tx0->tx1->bx1->bx0)
+     g
+     .moveTo(tx0, ty0)
+     .lineTo(tx1, ty1)
+@@ -4649,51 +4431,50 @@ if (e.key.toLowerCase() === "i") {
+     e.preventDefault();
+ 
+     __spaceDown = false;
+     if (__spaceHoldTimer) {
+       clearTimeout(__spaceHoldTimer);
+       __spaceHoldTimer = null;
+     }
+ 
+     // restore auto state if it was off before hold
+     if (!__autoWasOnBeforeSpace && state.ui.auto) {
+       state.ui.auto = false;
+       autoBtnPixi?.setOn?.(false);
+     }
+   }
+ 
+   // ✅ capture phase so we win over other listeners (now there are none)
+   window.addEventListener("keydown", onKeyDown, true);
+   window.addEventListener("keyup", onKeyUp, true);
+ 
+ 
+ 
+ 
+ 
+ 
+     function spawnCloud() {
+-      const W = app.renderer.width;
+       const H = app.renderer.height;
+ 
+       let p = cloudPool.pop();
+       if (!p) {
+         const c = makeVoxelCloud();
+         p = { c, vx: 0, vy: 0, vr: 0 };
+       }
+ 
+       // always left -> right, start offscreen
+       p.c.x = -220;
+ 
+       // TOP band only (5%..25%)
+       p.c.y = H * (0.05 + Math.random() * 0.20);
+ 
+       // drift across slowly
+       const speed = 12 + Math.random() * 22; // px/sec
+       p.vx = speed;
+       p.vy = -1 + Math.random() * 2;         // tiny vertical drift
+       p.vr = (-1 + Math.random() * 2) * 0.03; // almost no spin
+ 
+     // =====================
+     // CLOUD ROTATION (LOCKED)
+     // =====================
+     const CLOUD_BASE_ROT = -0.12;
+     const CLOUD_ROT_JITTER = 0.10; // very subtle
+@@ -5023,51 +4804,50 @@ addSystem((dt) => {
+       // soft whites (slightly blue)
+       const cols = [0xffffff, 0xffffff, 0xf7fdff, 0xfffbf2]; // a bit brighter + slightly warm sugar
+ 
+ 
+   for (let i = 0; i < blocks; i++) {
+     const x = ((-1 + Math.random() * 2) * vox * 1.2) | 0;
+     const y = ((-1 + Math.random() * 2) * vox * 1.2) | 0;
+ 
+     g
+       .rect(x, y, vox, vox)
+       .fill({ color: cols[(Math.random() * cols.length) | 0], alpha: 1 });
+   }
+ 
+ 
+     g.alpha = 0.75 + Math.random() * 0.25; // brighter baseline
+ 
+ 
+       const s = SNOW_MIN_SCALE + Math.random() * (SNOW_MAX_SCALE - SNOW_MIN_SCALE);
+       g.scale.set(s);
+ 
+       return g;
+     }
+ 
+     function spawnSnow() {
+       const W = app.renderer.width;
+-      const H = app.renderer.height;
+ 
+       let p = snowPool.pop();
+       if (!p) {
+         const g = makeVoxelSnowflake();
+ 
+     // tiny star glint (a small + cross), normally hidden
+   const gl = new Graphics();
+ 
+   gl
+     .rect(-1, -10, 2, 20)
+     .fill({ color: 0xffffff, alpha: 1 });
+ 
+   gl
+     .rect(-10, -1, 20, 2)
+     .fill({ color: 0xffffff, alpha: 1 });
+ 
+   gl.alpha = 0;
+   gl.visible = false;
+ 
+   // ✅ v8: don’t use "add" string
+   // Option A (quick): just set numeric blend mode
+   (gl as any).blendMode = 1; // ADD in Pixi blend modes (works, but a bit “magic number”)
+ 
+   // Option B (clean): import and use constants
+   // import { BLEND_MODES } from "pixi.js";
+@@ -5409,51 +5189,50 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
+ 
+       // scale tuning (change these freely)
+       const TRACTOR_TARGET_W_N = 0.6; // fraction of screen width
+       const targetW = Math.round(W * TRACTOR_TARGET_W_N);
+       const texW = fsTractor.texture.width || 1;
+ 
+       const s = targetW / texW;
+       fsTractor.scale.set(s);
+ 
+ 
+ 
+ 
+       // vertical placement (tweak)
+       const y = Math.round(H * 0.62);
+ 
+       // if not currently animating, keep it centered
+       if (!fsTractorLayer.visible) {
+         fsTractor.x = Math.round(W * 0.5);
+         fsTractor.y = y;
+       }
+     }
+ 
+     window.addEventListener("resize", layoutFsTractor);
+ 
+     function fsTractorOffLeftX() {
+-      const W = app.screen.width;
+       const w = fsTractor?.width || 400;
+       return -w * 0.6;
+     }
+ 
+    function fsTractorOffRightX() {
+   const W = app.screen.width;
+   const tractorW = (fsTractor?.width || 400);
+ 
+   // Default (desktop + non-landscape)
+   let x1 = W + tractorW * 0.8;
+ 
+   // ✅ Mobile LANDSCAPE: push far enough so the trailing banner clears too
+   if (isMobileLandscapeUILayout()) {
+     const banner = (fsTractor as any)?._banner as Container | undefined;
+ 
+     const offX = (fsTractor as any)?._bannerOffX ?? -290; // banner is usually LEFT of tractor
+     const bannerW = banner ? (banner.getBounds().width || 0) : 0;
+ 
+     x1 =
+       W +
+       tractorW * 1.6 +
+       Math.abs(offX) +
+       bannerW * 1.2 +
+       80; // safety pad
+   }
+@@ -5477,83 +5256,81 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
+     }
+ 
+     // Enter: left -> center
+     function showFsTractorEnter(ms = 550) {
+       ensureFsTractor();
+       if (!fsTractor) return;
+ 
+       fsTractorEnterToken++;
+       const token = fsTractorEnterToken;
+ 
+       fsTractorLayer.visible = true;
+ 
+       // show/update banner (dragged in with tractor)
+     const banner = (fsTractor as any)._banner as Container | undefined;
+     const banner10 = (fsTractor as any)._banner10 as Text | undefined;
+     if (banner) banner.visible = true;
+     if (banner10) banner10.text = String(state.fs.remaining); // shows "10"
+ 
+ 
+       // start off left
+       const x0 = fsTractorOffLeftX();
+       const x1 = fsTractorCenterX();
+       const y = fsTractorY();
+ 
+     fsTractorBobBaseY = y;
+-    fsTractorBobBaseX = fsTractorCenterX();
+ 
+ 
+       fsTractor.x = x0;
+       fsTractor.y = y;
+       fsTractor.alpha = 1;
+ 
+       tween(
+         ms,
+         (k) => {
+           if (token !== fsTractorEnterToken) return;
+           const t = Math.max(0, Math.min(1, k));
+     const e = softstep(t, 0.12); // 👈 very mild easing
+     fsTractor!.x = x0 + (x1 - x0) * e;
+     fsTractor!.y = y; 
+         }
+       );
+     }
+ 
+     // Exit: center -> right (awaitable)
+     function playFsTractorExit(ms = 520) {
+       ensureFsTractor();
+       if (!fsTractor) return Promise.resolve();
+ 
+       fsTractorExitToken++;
+       const token = fsTractorExitToken;
+ 
+       const x0 = fsTractor.x;
+       const x1 = fsTractorOffRightX();
+       const y = fsTractorY();
+ 
+       fsTractorBobBaseY = y;
+-    fsTractorBobBaseX = fsTractor.x;
+ 
+       return new Promise<void>((resolve) => {
+         tween(
+           ms,
+           (k) => {
+             if (token !== fsTractorExitToken) return;
+             const e = easeInCubic(Math.max(0, Math.min(1, k)));
+             fsTractor!.x = x0 + (x1 - x0) * e;
+             fsTractor!.y = y;
+           },
+           () => {
+             if (token !== fsTractorExitToken) return resolve();
+             fsTractorLayer.visible = false;
+             clearTractorExhaustNow();
+ 
+             const banner = (fsTractor as any)?._banner as Container | undefined;
+     if (banner) banner.visible = false;
+ 
+ 
+             resolve();
+           }
+         );
+       });
+     }
+ // ✅ PORTRAIT ONLY: force tractor + banner to fully leave the screen cleanly
+@@ -5567,96 +5344,84 @@ function playFsTractorExitPortrait(ms = 620) {
+   // Make sure banner stays visible during exit
+   const banner = (fsTractor as any)._banner as Container | undefined;
+   if (banner) banner.visible = true;
+ 
+   const W = app.screen.width;
+ 
+   const x0 = fsTractor.x;
+ const tractorW = (fsTractor.width || 400);
+ 
+ // banner offset + width matter, because banner trails behind tractor
+ const offX = (fsTractor as any)._bannerOffX ?? -290;
+ const bannerW = banner ? (banner.getBounds().width || 0) : 0;
+ 
+ // ✅ exit target ensures BOTH tractor and trailing banner fully clear screen
+ const x1 =
+   W +
+   tractorW * 1.6 +
+   Math.abs(offX) +
+   bannerW * 1.2 +
+   80; // extra safety pad
+ 
+   const y0 = fsTractor.y;
+ 
+   // lock bob base so bob system doesn’t fight the tween
+   fsTractorBobBaseY = y0;
+-  fsTractorBobBaseX = x0;
+ 
+   return new Promise<void>((resolve) => {
+     tween(
+       ms,
+       (k) => {
+         if (token !== fsTractorExitToken) return;
+         const t = Math.max(0, Math.min(1, k));
+         const e = easeInCubic(t);
+ 
+         // move fully offscreen
+         fsTractor!.x = x0 + (x1 - x0) * e;
+         fsTractor!.y = y0;
+ 
+         // fade banner a touch at the end (feels cleaner)
+         if (banner) banner.alpha = 1 - (e * e * 0.35);
+       },
+       () => {
+         if (token !== fsTractorExitToken) return resolve();
+ 
+         // hide everything
+         fsTractorLayer.visible = false;
+         clearTractorExhaustNow();
+ 
+         if (banner) {
+           banner.visible = false;
+           banner.alpha = 1;
+         }
+ 
+         resolve();
+       }
+     );
+   });
+ }
+ 
+-    // hard hide (safety)
+-    function hideFsTractorNow() {
+-      if (!fsTractor) return;
+-      fsTractorLayer.visible = false;
+-      clearTractorExhaustNow();
+-    const banner = (fsTractor as any)?._banner as Container | undefined;
+-    if (banner) banner.visible = false;
+-
+-
+-    }
+-
+     // =====================
+     // FS TRACTOR — VOXEL EXHAUST (same style as car, but on ROOT layer)
+     // =====================
+     const fsTractorExhaustLayer = new Container();
+     fsTractorExhaustLayer.zIndex = 9450; // under tractor(9451), above fsDimmer(9400)
+     fsTractorExhaustLayer.eventMode = "none";
+     (root as any).addChild(fsTractorExhaustLayer);
+     root.sortChildren();
+ 
+     type TractorExhaustP = {
+       g: Graphics;
+       vx: number;
+       vy: number;
+       life: number;
+       life0: number;
+       s0: number;
+     };
+ 
+     const tractorExhaustPool: TractorExhaustP[] = [];
+     const tractorExhaustLive: TractorExhaustP[] = [];
+     let tractorExhaustAcc = 0;
+ 
+     // tuning (match your car feel)
+     const TRACTOR_EXHAUST_SPAWN_PER_SEC = 26; // 18..40
+     const TRACTOR_EXHAUST_LIFE_MIN = 0.35;
+@@ -5777,51 +5542,50 @@ const x1 =
+     if (!state.overlay.fsIntro) return;
+     if (!fsTractorLayer.visible) return;
+     if (!fsTractor) return;
+ 
+     const b = fsTractor.getBounds();
+     const ex = b.x + b.width * (0.5 + TRACTOR_EXHAUST_BACK_NX);
+     const ey = b.y + b.height * (0.5 + TRACTOR_EXHAUST_BACK_NY);
+ 
+     tractorExhaustAcc += TRACTOR_EXHAUST_SPAWN_PER_SEC * dt;
+     let n = Math.floor(tractorExhaustAcc);
+     if (n > 0) tractorExhaustAcc -= n;
+ 
+     n = Math.min(n, 6);
+ 
+     for (let i = 0; i < n; i++) {
+       spawnTractorExhaustAt(ex, ey);
+     }
+   });
+ 
+ 
+ 
+     // =====================
+     // FS TRACTOR BOB (like car: smooth suspension + gravel chatter)
+     // =====================
+     let fsTractorBobBaseY = 0;
+-    let fsTractorBobBaseX = 0;
+ 
+     const FS_TRACTOR_BOB_ON = true;
+ 
+     // tuning (keep subtle)
+     const FS_TRACTOR_BOB1_AMP = 1.6;   // slow suspension bob (px)
+     const FS_TRACTOR_BOB2_AMP = 0.9;   // fast chatter bob (px)
+     const FS_TRACTOR_XJIT_AMP = 0.5;   // tiny lateral jitter (px) (optional)
+ 
+     // speeds
+     const FS_TRACTOR_BOB1_SPD = 0.006; // slow bob frequency
+     const FS_TRACTOR_BOB2_SPD = 0.045; // chatter base frequency
+ 
+     // Apply bob every frame while tractor is visible
+     addSystem(() => {
+     if (!FS_TRACTOR_BOB_ON) return;
+     if (!fsTractorLayer.visible) return;
+     if (!fsTractor) return;
+ 
+     const now = performance.now();
+ 
+     const bob1 = Math.sin(now * FS_TRACTOR_BOB1_SPD) * FS_TRACTOR_BOB1_AMP;
+ 
+     const bob2 =
+       (Math.sin(now * FS_TRACTOR_BOB2_SPD) * 0.40 +
+       Math.sin(now * (FS_TRACTOR_BOB2_SPD * 1.62)) * 0.50 +
+@@ -6485,52 +6249,50 @@ let fsOutroPortraitScaleLocked = false;
+   fsOutroTickToken++; // cancel RAF
+   audio?.stopTickLoop?.(80);
+ 
+   fsOutroWinAmount.text = fmtMoney(fsOutroFinalAmount);
+   fsOutroCountDone = true;
+ 
+   // ✅ restore music immediately when we hit the final amount (even on skip)
+   restoreMusicAfterFsOutro(350);
+ 
+   // ✅ play finish hit on skip-to-final too
+   audio?.playSfx?.("final_fsoutro_amount", 1.15);
+ 
+   fireFsOutroFinishFX();
+ 
+   startFsOutroIdlePulse();
+ }
+ 
+ 
+ 
+ 
+ 
+     function startFsOutroCountUp(
+       targetAmount: number,
+       durationMs = 1400
+     ) {
+-    const EPSILON = 0.9998;
+-
+     // ✅ max progress change PER SECOND (not per frame)
+     // 0.12 means it can move 12% of the bar per second max.
+     const MAX_STEP_PER_SEC = 0.3;
+ 
+ 
+       fsOutroTickToken++;
+       const token = fsOutroTickToken;
+ 
+       fsOutroFinalAmount = targetAmount;
+     fsOutroCountDone = false;
+     fsOutroBurstDone = false;
+     // ✅ TICK LOOP: start quiet + slow, then ramp during the count
+ audio?.startTickLoop?.(120, 0.38, 1.0);
+ 
+ 
+ 
+ 
+       const start = performance.now();
+       const from = 0;
+     let lastNow = start;
+ 
+       let lastE = 0;
+ 
+     function tick(now: number) {
+       const dt = Math.min(0.05, Math.max(0.001, (now - lastNow) / 1000));
+@@ -6755,139 +6517,117 @@ fsOutroPortraitScale = 1;
+     // ✅ stop any running FS outro count-up
+     fsOutroTickToken++; // stop any running RAF
+     fsOutroCountDone = true;
+     audio?.stopTickLoop?.(0); // ✅ hard kill tick loop if outro is closing
+ 
+ 
+ 
+             state.overlay.fsOutro = false;
+             restoreMusicAfterFsOutro(250);
+             FIREFLY_ON = false;
+     clearFirefliesNow();
+ 
+             fsOutroPulseToken++; // safety kill
+               restoreUiAfterFsOutro();
+           }
+         );
+       }
+     }
+ 
+ 
+     // ================= ====
+     // BIG WIN OVERLAY — click to continue
+     // =====================
+ 
+ 
+-   let bigWinCanContinue = false;
+-
+ let __bigWinPrevMusicVol01: number | null = null;
+ // ✅ Duck current music to 50% during Big Win (BASE + FREE SPINS)
+ const BIGWIN_MUSIC_DUCK = 0.35;
+ 
+ // =====================
+ // FS OUTRO PENDING — MUSIC DUCK TO 50%
+ // =====================
+ let __fsOutroPrevMusicVol01: number | null = null;
+ const FS_OUTRO_MUSIC_DUCK = 0.2; // 50%
+ 
+ function fadeMusicTo(target01: number, ms = 250) {
+   const from = audio?.getMusicVolume01?.() ?? 0.6;
+   const to = Math.max(0, Math.min(1, target01));
+ 
+   // If audio isn't ready, just set it (safe no-op if methods missing)
+   if (!audio?.setMusicVolume01 || !audio?.apply) return;
+ 
+   void animateMs(ms, (t) => {
+     const e = t * t * (3 - 2 * t); // smoothstep
+     audio.setMusicVolume01(from + (to - from) * e);
+     audio.apply();
+   });
+ }
+ 
+ function duckMusicForFsOutroPending(ms = 250) {
+   if (__fsOutroPrevMusicVol01 == null) {
+     __fsOutroPrevMusicVol01 = audio?.getMusicVolume01?.() ?? 0.6;
+   }
+   fadeMusicTo(__fsOutroPrevMusicVol01 * FS_OUTRO_MUSIC_DUCK, ms);
+ }
+ 
+ function restoreMusicAfterFsOutro(ms = 250) {
+   if (__fsOutroPrevMusicVol01 == null) return;
+   fadeMusicTo(__fsOutroPrevMusicVol01, ms);
+   __fsOutroPrevMusicVol01 = null;
+ }
+ 
+ 
+     let bigWinPortraitScale = 1;
+ let bigWinPortraitScaleLocked = false;
+     let bigWinResolve: (() => void) | null = null;
+     let bigWinTickToken = 0;          // cancels the RAF count-up
+     let bigWinCountDone = true;       // false while counting, true once final
+     let bigWinFinalAmount = 0;        // final win amount for snap
+     let bigWinFinalTier: BigWinTier = "BIG"; // final tier for snap
+ 
+-    let bigWinPulseDone = false; // one-shot pulse guard
+-
+ 
+ 
+-    // =====================
+-    // GLOBAL INPUT LOCK (BIG WIN / FS overlays / splash)
+-    // =====================
+-    function inputLocked(): boolean {
+-      // block all game input during overlays
+-      return (
+-        loadingLayer?.visible ||
+-        state.overlay.splash ||
+-        state.overlay.startup ||
+-        state.overlay.fsIntro ||
+-        state.overlay.fsOutro ||
+-        state.overlay.bigWin
+-      );
+-    }
+ 
+ 
+     // tune thresholds (in X of bet)
+     const BIG_WIN_X   = 10;
+     const SUPER_WIN_X = 20;
+     const MEGA_WIN_X  = 35;
+     const EPIC_WIN_X  = 60;
+     const MAX_WIN_X   = 100;
+       
+     type BigWinTier = "BIG" | "SUPER" | "MEGA" | "EPIC" | "MAX";
+ 
+     function bigWinTierForX(x: number): BigWinTier {
+       if (x >= MAX_WIN_X)   return "MAX";
+       if (x >= EPIC_WIN_X)  return "EPIC";
+       if (x >= MEGA_WIN_X)  return "MEGA";
+       if (x >= SUPER_WIN_X) return "SUPER";
+       return "BIG";
+     }
+ 
+-    function bigWinLabelForX(x: number) {
+-      return `${bigWinTierForX(x)} WIN`;
+-    }
+-
+ 
+     // =====================
+     // BIG WIN TITLE SWAP STATE
+     // =====================
+     let bigWinTitleAnimActive = false;            // prevents layout fighting the animation
+     let bigWinTitleSwapToken = 0;                 // cancels older swaps
+     let bigWinShownTier: BigWinTier | null = null; // what is currently displayed
+ 
+     // =====================
+     // BIG WIN STYLES (STRAIGHT / NO SKEW)
+     // =====================
+     function makeBigWinTitleStyle() {
+       return new TextStyle({
+         fontFamily: "pixeldown",
+         fill: 0xffffff,
+         fontSize: 110,
+         fontWeight: "100",
+         letterSpacing: 2,
+         align: "center",
+ 
+         // bold outline
+     stroke: { color: 0x000000, width: 14 },
+ 
+ 
+         // punchy shadow
+@@ -7042,51 +6782,50 @@ let bigWinPortraitScaleLocked = false;
+     const bigWinSpotlight = new Graphics();
+     bigWinSpotlight.zIndex = 9464; // ✅ above dimmer(9400), below apples(9465) + text(9470)
+     bigWinSpotlight.visible = false;
+     bigWinSpotlight.alpha = 0;
+     bigWinSpotlight.eventMode = "none";
+     (bigWinSpotlight as any).blendMode = "add"; // ✅ glow feel
+     bigWinSpotlight.filters = [new BlurFilter({ strength: 40 })];
+     root.addChild(bigWinSpotlight);
+     root.sortChildren();
+ 
+     // tuning knobs
+     let BIGWIN_SPOTLIGHT_ON = true;
+     let BIGWIN_SPOTLIGHT_COLOR = 0x7CFF6B;  // bright green
+     let BIGWIN_SPOTLIGHT_ALPHA = 0.42;      // overall strength
+     let BIGWIN_SPOTLIGHT_TOP_W = 300;       // width near the top
+     let BIGWIN_SPOTLIGHT_BOTTOM_W = 900;    // width near bottom
+     let BIGWIN_SPOTLIGHT_HEIGHT = 1400;      // cone height
+     let BIGWIN_SPOTLIGHT_FADE_STEPS = 14;      // 8..20 (more = smoother fade)
+     let BIGWIN_SPOTLIGHT_FADE_POWER = 1.8;     // 1.0 linear, 2.0+ stronger fade down
+     let BIGWIN_SPOTLIGHT_BOTTOM_FADE = 0.06;   // alpha at the bottom (0.0..0.15)
+ 
+     let BIGWIN_SPOTLIGHT_TOP_Y = -40;       // where it starts (above screen)
+ 
+     function redrawBigWinSpotlight() {
+       const W = app.screen.width;
+-      const H = app.screen.height;
+ 
+       const cx = Math.round(W * 0.5);
+       const y0 = BIGWIN_SPOTLIGHT_TOP_Y;
+       const y1 = Math.round(y0 + BIGWIN_SPOTLIGHT_HEIGHT);
+ 
+       const topW = BIGWIN_SPOTLIGHT_TOP_W;
+       const botW = BIGWIN_SPOTLIGHT_BOTTOM_W;
+ 
+       // clear + draw a soft cone
+       bigWinSpotlight.clear();
+ 
+       // MAIN cone (stacked slices -> fades out as it goes down)
+     const steps = Math.max(3, BIGWIN_SPOTLIGHT_FADE_STEPS | 0);
+     const pwr = Math.max(0.5, BIGWIN_SPOTLIGHT_FADE_POWER);
+     const aBot = Math.max(0, Math.min(1, BIGWIN_SPOTLIGHT_BOTTOM_FADE));
+ 
+   for (let i = 0; i < steps; i++) {
+     const t0 = i / steps;         // 0..1
+     const t1 = (i + 1) / steps;   // 0..1
+ 
+     const yy0 = y0 + (y1 - y0) * t0;
+     const yy1 = y0 + (y1 - y0) * t1;
+ 
+     const w0 = topW + (botW - topW) * t0;
+     const w1 = topW + (botW - topW) * t1;
+@@ -7188,53 +6927,50 @@ function computeBigWinPortraitScale(finalAmount: number) {
+   bigWinAmount.text = fmtMoney(finalAmount);   // final amount is the widest number
+ 
+   // measure
+   const widest = Math.max(
+     bigWinTitle.getBounds().width,
+     bigWinAmount.getBounds().width
+   );
+ 
+   // restore
+   bigWinTitle.text = oldTitle;
+   bigWinAmount.text = oldAmt;
+ 
+   if (widest <= maxW) return 1;
+ 
+   const s = maxW / widest;
+   return Math.max(0.58, Math.min(1, s));
+ }
+ 
+     function layoutBigWin() {
+       const cx = app.screen.width / 2;
+       const cy = app.screen.height / 2;
+         // =====================
+   // MOBILE LANDSCAPE: SCALE DOWN BIG WIN
+   // =====================
+ if (isMobileLandscapeUILayout()) {
+-  const BIGWIN_LAND_GAP = app.screen.height * 0.5; // 🔧 try 0.18–0.28
+-const BIGWIN_LAND_CENTER_Y = Math.round(app.screen.height * 0.5);
+-
+   // ✅ scale down for landscape
+   bigWinTitle.scale.set(BIGWIN_LAND_SCALE);
+   bigWinAmount.scale.set(BIGWIN_LAND_SCALE);
+   bigWinContinue.scale.set(BIGWIN_LAND_SCALE);
+ 
+   // ✅ LANDSCAPE ONLY: explicit centered positions
+   // (tweak these 3 numbers)
+   const BIGWIN_LAND_TITLE_Y  = Math.round(cy - app.screen.height * 0.2);
+   const BIGWIN_LAND_AMOUNT_Y = Math.round(cy + app.screen.height * 0.1);
+   const BIGWIN_LAND_CONT_Y   = Math.round(app.screen.height * 0.92);
+ 
+   bigWinTitle.position.set(cx, BIGWIN_LAND_TITLE_Y);
+   bigWinAmount.position.set(cx, BIGWIN_LAND_AMOUNT_Y);
+   bigWinContinue.position.set(cx, BIGWIN_LAND_CONT_Y);
+ 
+   // ✅ keep continue hit area sane after scale
+   const b = bigWinContinue.getLocalBounds();
+   bigWinContinue.hitArea = new Rectangle(
+     b.x - 60,
+     b.y - 24,
+     b.width + 120,
+     b.height + 48
+   );
+ 
+   return; // ✅ prevent desktop/portrait logic from overriding
+@@ -7298,51 +7034,50 @@ const BIGWIN_LAND_CENTER_Y = Math.round(app.screen.height * 0.5);
+       bigWinTitle.scale.set(sClamped, sClamped);
+       bigWinAmount.scale.set(sClamped, sClamped);
+     }
+   } else {
+     // non-portrait: ensure normal size
+     bigWinTitle.scale.set(1, 1);
+     bigWinAmount.scale.set(1, 1);
+   }
+ 
+ // ✅ Portrait: apply LOCKED scale (prevents snapping during count-up)
+ if (isMobilePortraitUILayout() && bigWinPortraitScaleLocked) {
+   bigWinTitle.scale.set(bigWinPortraitScale);
+   bigWinAmount.scale.set(bigWinPortraitScale);
+ } else if (!isMobilePortraitUILayout()) {
+   // non-portrait: normal
+   bigWinTitle.scale.set(1, 1);
+   bigWinAmount.scale.set(1, 1);
+ }
+ 
+     }
+ 
+ // =====================
+ // BIG WIN — MOBILE LANDSCAPE SCALE
+ // =====================
+ const BIGWIN_LAND_SCALE = 0.6;     // 🔧 try 0.62–0.82
+-const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spacing
+ 
+     // =====================
+     // BIG WIN TITLE DROP IN/OUT (TITLE ONLY)
+     // =====================
+     const BIGWIN_TITLE_DROP_PAD = 180;  // how far above the screen it starts
+     const BIGWIN_TITLE_DROP_IN_MS = 520;
+     const BIGWIN_TITLE_DROP_OUT_MS = 360;
+ 
+     function bigWinTitleOffY() {
+       // ensure bounds/height is up-to-date
+       // (layoutBigWin already calls this often, but this is safe)
+       const h = Math.max(1, bigWinTitle.height || bigWinTitle.getBounds().height || 1);
+ 
+       // fully offscreen above the top (height/2 because anchor=0.5)
+       return -h / 2 - BIGWIN_TITLE_DROP_PAD;
+     }
+ 
+     function animateBigWinTitleIn(ms = BIGWIN_TITLE_DROP_IN_MS, targetY?: number) {
+       bigWinTitleAnimActive = true;
+ 
+       // ensure layout has calculated the "rest" y
+       layoutBigWin();
+       const ty = (typeof targetY === "number") ? targetY : bigWinTitle.y;
+ 
+       // start offscreen
+@@ -7420,55 +7155,50 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+       });
+     }
+ 
+ 
+ 
+     window.addEventListener("resize", layoutBigWin);
+ 
+     // Atlas frame names (must match keys inside bigwin_items.json)
+     const APPLE_BIGWIN   = "apple_big_win.png";
+     const PEAR_BIGWIN    = "pear_big_win.png";
+     const GRAPES_BIGWIN  = "grapes_big_win.png";
+ 
+     const RAKE_SUPER     = "rake_super_win.png";
+     const SHEEP_SUPER    = "sheep_super_win.png";
+     const WATERCAN_SUPER = "wateringcan_super_win.png";
+ 
+     const COW_MEGA         = "cow_mega_win.png";
+     const SPADE_MEGA       = "spade_mega_win.png";
+     const WHEELBARROW_MEGA = "wheelbarrow_mega_win.png";
+ 
+     const TRACTOR_EPIC    = "tractor_epic_win.png";
+     const AXE_EPIC        = "axe_epic_win.png";
+     const WATERMELON_EPIC = "watermelon_epic_win.png";
+ 
+ 
+-
+-
+-    const PEAR_SCALE_MULT = 10; // 🍐 size tweak
+-
+-
+     // =====================
+     // BIG WIN FRUIT SET
+     // =====================
+     const BIGWIN_FRUITS = [
+       { frame: APPLE_BIGWIN,  weight: 0.55 },
+       { frame: PEAR_BIGWIN,   weight: 0.30 },
+       { frame: GRAPES_BIGWIN, weight: 0.20 },
+     ];
+ 
+     const SUPERWIN_ITEMS = [
+       { frame: WATERCAN_SUPER, weight: 0.20 },
+       { frame: RAKE_SUPER,     weight: 0.20 },
+       { frame: SHEEP_SUPER,    weight: 0.55 },
+     ];
+ 
+     const MEGAWIN_ITEMS = [
+       { frame: COW_MEGA,         weight: 0.20 },
+       { frame: SPADE_MEGA,       weight: 0.20 },
+       { frame: WHEELBARROW_MEGA, weight: 0.10 },
+     ];
+ 
+     const EPICWIN_ITEMS = [
+       { frame: TRACTOR_EPIC,    weight: 0.45 },
+       { frame: AXE_EPIC,        weight: 0.35 },
+       { frame: WATERMELON_EPIC, weight: 0.20 },
+@@ -7536,82 +7266,74 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+     // =====================
+     // BIG WIN APPLE FLOAT FX (BIG tier only)
+     // =====================
+     let appleFxLayer: Container | null = null;
+     let appleActive = false;
+     let bigWinFloatTier: BigWinTier = "BIG";
+     let appleFlyOut = false;
+     let appleTickerAdded = false;
+ 
+     let appleSpawnAcc = 0;
+ 
+     type AppleP = {
+       s: Sprite;
+       vx: number;
+       vy: number;
+       vr: number;
+       life: number;
+     };
+ 
+     const applePool: AppleP[] = [];
+     const appleLive: AppleP[] = [];
+ 
+     // tuning
+     const APPLE_MAX_LIVE = 16;
+     const APPLE_SPAWN_PER_SEC = 2;      // how many per second while active
+-    const APPLE_LIFE_MIN = 2.2;
+-    const APPLE_LIFE_MAX = 3.6;
+ 
+     // =====================
+     // BIG WIN FLOAT SCALE MULTIPLIERS
+     // =====================
+     const BIG_FLOAT_SCALE_MULT   = 2;
+     const SUPER_FLOAT_SCALE_MULT = 2;  // 🔥 increase this (1.4–1.8 sweet spot)
+     const MEGA_FLOAT_SCALE_MULT  = 1.75;
+     const EPIC_FLOAT_SCALE_MULT  = 1.9;
+     const MAX_FLOAT_SCALE_MULT   = 1.9;
+ 
+ 
+     function ensureAppleFxLayer() {
+       if (appleFxLayer) return;
+ 
+       appleFxLayer = new Container();
+       appleFxLayer.sortableChildren = true;
+ 
+       // put apples under big win texts (9470), above dimmer
+       appleFxLayer.zIndex = 9465;
+ 
+       root.addChild(appleFxLayer);
+       root.sortChildren();
+     }
+ 
+-    // 0..1 but clustered toward 0.5
+-    function randCentered01(): number {
+-      // average of 3 uniforms gives a nice “bell” around 0.5
+-      return (Math.random() + Math.random() + Math.random()) / 3;
+-    }
+-
+     function spawnApple() {
+       if (!appleFxLayer) return;
+ 
+     const picked = pickBigWinFloatItem(bigWinFloatTier);
+     if (!picked) return;
+ 
+     const tex = picked.tex;
+     const pickedFrame = picked.frame;
+ 
+ 
+       if (appleLive.length >= APPLE_MAX_LIVE) return;
+ 
+       let p = applePool.pop();
+       if (!p) {
+         const s = new Sprite(tex);
+         s.anchor.set(0.5);
+         s.roundPixels = true;
+         p = { s, vx: 0, vy: 0, vr: 0, life: 0 };
+       } else {
+         p.s.texture = tex;
+       }
+     (p.s as any).__itemFrame = pickedFrame;
+ 
+       const s = p.s;
+       const W = app.renderer.width;
+@@ -7754,62 +7476,50 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+       appleFlyOut = false;
+       appleSpawnAcc = 0;
+ 
+       // small initial burst
+       for (let i = 0; i < 8; i++) spawnApple();
+ 
+       if (!appleTickerAdded) {
+     appleTickerAdded = true;
+     addSystem(() => tickAppleFx());
+   }
+     }
+ 
+     // triggers the "fly out above" behavior, then drains
+     function flyOutAndStopApples() {
+       if (!appleFxLayer) return;
+ 
+       appleActive = false;   // stop spawning
+       appleFlyOut = true;    // accelerate/fade upward
+ 
+       // safety: if nothing is live, just reset mode
+       if (appleLive.length === 0) {
+         appleFlyOut = false;
+       }
+     }
+ 
+-    function hardStopApples() {
+-      appleActive = false;
+-      appleFlyOut = false;
+-      appleSpawnAcc = 0;
+-
+-      for (let i = appleLive.length - 1; i >= 0; i--) {
+-        const p = appleLive[i];
+-        p.s.removeFromParent();
+-        appleLive.splice(i, 1);
+-        applePool.push(p);
+-      }
+-    }
+     // =====================
+     // MAX WIN — RAINBOW VOXEL CONFETTI (cubes)
+     // =====================
+     let maxConfettiLayer: Container | null = null;
+     let maxConfettiActive = false;
+     let maxConfettiTickerAdded = false;
+     let maxConfettiSpawnAcc = 0;
+ 
+     type MaxConfettiP = {
+       g: Graphics;
+       vx: number;
+       vy: number;
+       vr: number;
+       life: number;
+       life0: number;
+       s0: number;
+     };
+ 
+     const maxConfettiPool: MaxConfettiP[] = [];
+     const maxConfettiLive: MaxConfettiP[] = [];
+ 
+     function ensureMaxConfettiLayer() {
+       if (maxConfettiLayer) return;
+       maxConfettiLayer = new Container();
+       maxConfettiLayer.eventMode = "none";
+@@ -7871,51 +7581,50 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+     .moveTo(hw, 0)
+     .lineTo(0, hh)
+     .lineTo(0, hh + h)
+     .lineTo(hw, h)
+     .closePath()
+     .fill({ color: rightCol, alpha: 1 });
+ 
+     }
+ 
+     function spawnMaxConfettiOne() {
+       if (!maxConfettiLayer) return;
+ 
+       let p = maxConfettiPool.pop();
+       if (!p) {
+         p = {
+           g: new Graphics(),
+           vx: 0, vy: 0, vr: 0,
+           life: 0, life0: 0,
+           s0: 1,
+         };
+       }
+ 
+       const g = p.g;
+ 
+       const W = app.renderer.width;
+-      const H = app.renderer.height;
+ 
+       // spawn ACROSS the screen (no center source)
+       const x = -60 + Math.random() * (W + 120);
+       const y = -120 - Math.random() * 180;
+ 
+       // cube size
+       const vox = 4 + ((Math.random() * 5) | 0); // 4..8
+       const col = MAX_CONFETTI_COLS[(Math.random() * MAX_CONFETTI_COLS.length) | 0];
+       drawIsoCube(g, vox, col);
+ 
+       g.x = x;
+       g.y = y;
+       g.alpha = 0.95;
+       g.rotation = Math.random() * Math.PI * 2;
+ 
+       // motion (falling + drift)
+       p.vy = 160 + Math.random() * 360; // fall speed
+       p.vx = (-1 + Math.random() * 2) * 90;  // sideways drift
+       p.vr = (-1 + Math.random() * 2) * 3.2; // spin
+ 
+       // lifetime
+       p.life0 = 2.2 + Math.random() * 1.6;
+       p.life = p.life0;
+ 
+       // slight scale variance
+@@ -8047,51 +7756,50 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+       coinFxLayer.sortableChildren = true;
+ 
+       // Put coins above the dimmer, but below the big win texts
+       // (Adjust zIndex if your scene differs)
+       coinFxLayer.zIndex = 9005;
+ 
+       // Add it wherever your overlays live.
+       // Search for where you add bigWinTitle/bigWinAmount/bigWinContinue to the stage,
+       // and add this layer next to them.
+         // Add it where your big win overlay lives (same parent as the texts)
+       root.addChild(coinFxLayer);
+ 
+       // Put coins under the big-win texts (9470), but above the dimmer
+     coinFxLayer.zIndex = 9601; // ✅ above outro layer
+     root.sortChildren();
+ 
+     }
+ 
+     function spawnCoin(intensity = 1) {
+       if (!coinFxLayer) return;
+ 
+       const tex = getCoinTextures();
+       if (!tex.length) return;
+ 
+       const W = app.renderer.width;
+-      const H = app.renderer.height;
+ 
+       let p = coinPool.pop();
+ 
+       if (!p) {
+         const a = new AnimatedSprite(tex);
+         a.anchor.set(0.5);
+         a.loop = true;
+ 
+         // IMPORTANT: animated frames
+         a.animationSpeed = 0.28 + Math.random() * 0.25; // ✅ slightly calmer (tweak)
+         a.play();
+         (a as any).autoUpdate = true;
+ 
+         a.roundPixels = true;
+ 
+         p = { s: a, vx: 0, vy: 0, vr: 0, life: 0 };
+       } else {
+         // reuse
+         p.s.textures = tex;
+         p.s.animationSpeed = 0.28 + Math.random() * 0.25;
+         p.s.gotoAndPlay(0);
+       }
+ 
+       const s = p.s;
+ 
+@@ -8129,58 +7837,50 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+ 
+       coinActive = true;
+       coinSpawnAcc = 0;
+ 
+ 
+       // initial burst
+       for (let i = 0; i < 0.1 + Math.floor(intensity * 1); i++) spawnCoin(intensity);
+ 
+ 
+       // ensure ticker is running
+       if (!coinTickerAdded) {
+         coinTickerAdded = true;
+         addSystem(() => tickCoinShower());
+       }
+ 
+       // keep spawning while active (handled in tick)
+       (startCoinShower as any)._intensity = intensity;
+     }
+ 
+     function burstCoins(intensity: number, multiplier = 1) {
+       // quick burst without restarting the whole system
+       const count = Math.floor((12 + intensity * 10) * multiplier);
+       for (let i = 0; i < count; i++) spawnCoin(intensity);
+     }
+ 
+-    function intensityForTier(tier: BigWinTier) {
+-      return tier === "MAX"  ? 3.2 :
+-            tier === "EPIC" ? 2.6 :
+-            tier === "MEGA" ? 2.0 :
+-            tier === "SUPER"? 1.5 :
+-            1.0; // BIG
+-    }
+-
+ 
+     function stopCoinShower(drain = true) {
+       // stop any new spawns
+       coinActive = false;
+       coinSpawnAcc = 0;
+ 
+         if (drain) {
+         // ✅ Let existing coins fall out naturally.
+         // Prevent mid-air "life" expiry from snapping them away.
+         for (const p of coinLive) {
+           p.life = 9999; // effectively infinite until offscreen recycle
+         }
+         return;
+       }
+ 
+ 
+       // hard stop (old behavior)
+       for (const p of coinLive) {
+         // if these are AnimatedSprites
+         (p.s as any).stop?.();
+         p.s.removeFromParent();
+         coinPool.push(p);
+       }
+       coinLive.length = 0;
+     }
+@@ -8244,182 +7944,169 @@ const BIGWIN_LAND_Y_MUL = 0.92;     // optional: slightly tighten vertical spaci
+   if (tier === "SUPER") audio?.playSfx?.("bigwin_super", 1.0);
+   else if (tier === "MEGA") audio?.playSfx?.("bigwin_mega", 1.0);
+   else if (tier === "EPIC") audio?.playSfx?.("bigwin_epic", 1.0);
+   else if (tier === "MAX") audio?.playSfx?.("bigwin_max", 1.0);
+ }
+ 
+ 
+ function playBigWinTierPitch(tier: BigWinTier) {
+   const rate =
+     tier === "SUPER" ? 1.08 :
+     tier === "MEGA"  ? 1.16 :
+     tier === "EPIC"  ? 1.24 :
+     tier === "MAX"   ? 1.34 :
+     1.0;
+ 
+   // ✅ Only pitch for tier-ups (not BIG)
+   if (tier === "SUPER" || tier === "MEGA" || tier === "EPIC" || tier === "MAX") {
+     // ✅ hard safety: ensure finite + sane range for Howler
+     const safeRate = Number.isFinite(rate) ? Math.max(0.5, Math.min(4.0, rate)) : 1.0;
+ 
+     // ✅ your AudioManager signature expects a NUMBER rate as arg #3
+     audio?.playSfx?.("bigwin_hit", 1.0, safeRate);
+   }
+ }
+ 
+-let bigWinFinalSoundPlayed = false;
+-
+     function showBigWin(on: boolean, winAmountValue: number, winX: number, ms = 520) {
+       
+       layoutBigWin();
+ 
+       if (on) {
+       state.overlay.bigWin = true;
+- bigWinFinalSoundPlayed = false;
+ // ✅ one hit at overlay start
+ audio?.playSfx?.("bigwin_hit", 1.0);
+ 
+ // ✅ BASE + FS: keep whatever music is playing, just duck volume
+ if (__bigWinPrevMusicVol01 == null) {
+   __bigWinPrevMusicVol01 = audio?.getMusicVolume01?.() ?? 0.6;
+ }
+ 
+ const ducked = Math.max(0, Math.min(1, __bigWinPrevMusicVol01 * BIGWIN_MUSIC_DUCK));
+ audio?.setMusicVolume01?.(ducked);
+ audio?.apply?.();
+ 
+ 
+ 
+-        bigWinPulseDone = false;
+       lockInputForBigWin(true);
+ 
+     // ✅ BIG WIN FRUITS: always start at BIG when the overlay starts
+     bigWinFloatTier = "BIG";   // ✅ fruits for BIG
+     startAppleFloat();
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+         // lock input: only dimmer click works
+         state.ui.auto = false;
+         (gameCore as any).eventMode = "none";
+ 
+         layoutFsDimmer();
+         fsDimmer.visible = true;
+         fsDimmer.eventMode = "static";
+     // ✅ Spotlight on
+     if (BIGWIN_SPOTLIGHT_ON) {
+       redrawBigWinSpotlight();
+       bigWinSpotlight.visible = true;
+       bigWinSpotlight.alpha = 0;
+ 
+       const start = bigWinSpotlight.alpha;
+       tween(ms, (k) => {
+         const e = Math.max(0, Math.min(1, k));
+         bigWinSpotlight.alpha = start + (BIGWIN_SPOTLIGHT_ALPHA - start) * e;
+       });
+     }
+ 
+-        bigWinCanContinue = false;
+     showBigWinContinue(false, 0); // keep it hidden until count-up finishes
+ 
+ 
+     bigWinShownTier = null;
+ 
+     // start with BIG immediately (no fly-out first)
+     layoutBigWin();
+     bigWinTitle.text = "BIG WIN";
+     (bigWinTitle.style as any).fill = BIGWIN_TIER_COLORS.BIG;
+     (bigWinAmount.style as any).fill = BIGWIN_AMOUNT_GOLD;
+ 
+ 
+     animateBigWinTitleIn(BIGWIN_TITLE_DROP_IN_MS);
+     bigWinShownTier = "BIG";
+ 
+         
+         // =====================
+     // BIG WIN COUNT-UP + TIER PROGRESSION
+     // =====================
+     const bet = state.bank.betLevels[state.bank.betIndex];
+     const targetAmount = winAmountValue;
+     const targetX = winX;
+ 
+     bigWinFinalAmount = targetAmount;
+     bigWinFinalTier = bigWinTierForX(targetX);
+     // ✅ lock portrait scale ONCE using the final amount (prevents snapping)
+ bigWinPortraitScaleLocked = false;
+ bigWinPortraitScale = computeBigWinPortraitScale(bigWinFinalAmount);
+ bigWinPortraitScaleLocked = true;
+ layoutBigWin(); // apply it immediately
+ 
+     bigWinCountDone = false;
+-    bigWinCanContinue = false;
+ 
+ 
+     // timing (bigger wins count longer)
+     const BASE_MS = 1400;
+     const duration = Math.min(6500, BASE_MS + targetX * 45);
+ 
+ 
+     bigWinTickToken++;
+     const token = bigWinTickToken;
+ 
+     const start = performance.now();
+ 
+     let lastTier: BigWinTier | null = null;
+ 
+ 
+     function tickBigWin(now: number) {
+       if (token !== bigWinTickToken) return;
+ 
+         const rawT = Math.min(1, (now - start) / duration);
+ 
+       // Your MAX tier threshold (matches your intensity/tier logic)
+       const MAX_WIN_X = 200;
+ 
+       // How far through the win we are, relative to MAX tier (0 → 1)
+       const maxProgress = Math.min(1, (targetX * rawT) / MAX_WIN_X);
+ 
+       // slowdown factor: 1 → 0.35 near MAX
+     const slowdown = 1 - Math.pow(maxProgress, 2.8) * 0.65;
+ 
+     // apply slowdown to progress
+     const t = Math.min(1, rawT * slowdown + rawT * (1 - slowdown));
+ 
+     // smooth visuals
+-    const e = t * t * (3 - 2 * t);
+-
+       // ✅ normal-ish at the start, slows more toward the end
+       // (bigger p = faster early + slower late)
+-      const p = 2.0 + maxProgress * 5.0; // 2..7
+-      const easedT = 1 - Math.pow(1 - rawT, p);
+-
+-
+-
+       const currentAmount = targetAmount * t;
+       const currentX = currentAmount / bet;
+ 
+       bigWinAmount.text = fmtMoney(currentAmount);
+       // ✅ TICK LOOP ramp (BIG WIN): faster + louder as it climbs
+ const p01 = Math.max(0, Math.min(1, rawT)); // ✅ 0..1 progress
+ 
+ 
+ // 🔊 loudness compensation for higher pitch
+ 
+ 
+ // final volume
+ 
+ 
+ const rate = 0.98 + 0.65 * Math.pow(p01, 1.45);
+ const loudnessComp = 1.0 + 0.25 * (rate - 1.0);
+ 
+ const vol = (0.22 + 0.45 * Math.pow(p01, 1.2)) * loudnessComp;
+ audio?.setTickParams?.(vol, rate);
+ 
+       const tier = bigWinTierForX(currentX);
+ 
+ 
+    if (tier !== lastTier) {
+   lastTier = tier;
+@@ -8454,73 +8141,71 @@ playBigWinTierPitch(tier);
+ 
+ 
+     // Amount can still use the tier colour (already applied in swap)
+     // If you want the amount to stay gold the whole time, delete this line:
+     // (bigWinAmount.style as any).fill = BIGWIN_TIER_COLORS[tier];
+ 
+ 
+ 
+       if (rawT < 1) {
+         // ✅ TICK LOOP: start for Big Win count-up
+ audio?.startTickLoop?.(120, 0.22, 1.0);
+         requestAnimationFrame(tickBigWin);
+       } else {
+ 
+ 
+ 
+       // snap exact final values
+       bigWinAmount.text = fmtMoney(targetAmount);
+     pulseBigWinAmount(); // ✅ pulse when amount lands (like fsOutro)
+    audio?.stopTickLoop?.(0); // kill tick immediately
+     audio?.playSfx?.("final_amount", 1.15, 1.0); // volMul=1.15, rate=1.0
+ 
+ 
+ 
+       // ✅ now allow click-to-continue
+-      bigWinCanContinue = true;
+       showBigWinContinue(true, 360);
+       bigWinCountDone = true;
+       startBigWinIdlePulse();
+ 
+     }
+ 
+     }
+ 
+     lastTier = "BIG";
+ 
+     requestAnimationFrame(tickBigWin);
+ 
+ 
+         // show
+         [bigWinTitle, bigWinAmount, bigWinContinue].forEach((t) => {
+           t.visible = true;
+           t.alpha = 0;
+         });
+ 
+         // blur + dim in (reuse your overlay look)
+         const startA = fsDimmer.alpha;
+-        const startB = bgBlur.strength;
+ 
+         
+         
+ 
+         tween(ms, (k) => {
+           const e = Math.max(0, Math.min(1, k));
+           fsDimmer.alpha = startA + (0.8 - startA) * e; // tweak darkness
+           
+ 
+           bigWinTitle.alpha = e;
+           bigWinAmount.alpha = e;
+           bigWinContinue.alpha = e;
+         });
+       } else {
+           // ✅ RESET portrait big win scaling
+   bigWinPortraitScaleLocked = false;
+   bigWinPortraitScale = 1;
+ 
+ 
+         stopBigWinIdlePulse();
+           // ✅ Apples fly out upward only if they were active (BIG tier case)
+       flyOutAndStopApples();
+       stopMaxConfetti(true); // let cubes fall away nicely
+ 
+         const startA = fsDimmer.alpha;
+@@ -8620,51 +8305,50 @@ setTimeout(() => {
+     // ✅ Don’t kill the spawner on skip.
+     // Just switch tier and burst the new items so you SEE them.
+     bigWinFloatTier = bigWinFinalTier;
+     // ✅ If we skipped to the end and it's MAX, force-start the confetti now
+     if (bigWinFinalTier === "MAX") {
+       startMaxConfetti(1.35); // tweak intensity 1.0..2.0
+     }
+ 
+ 
+     if (appleActive && !appleFlyOut) {
+       const burst = (bigWinFinalTier === "SUPER") ? 8 : (bigWinFinalTier === "MEGA") ? 10 : (bigWinFinalTier === "EPIC") ? 12 : 14;
+       for (let i = 0; i < burst; i++) spawnApple();
+     }
+ 
+ 
+ 
+     const col = BIGWIN_TIER_COLORS[bigWinFinalTier];
+     (bigWinTitle.style as any).fill = col;
+ 
+     // ✅ keep amount gold forever
+     (bigWinAmount.style as any).fill = BIGWIN_AMOUNT_GOLD;
+ 
+ 
+       // allow close now
+       bigWinCountDone = true;
+-      bigWinCanContinue = true;
+ 
+       // show continue prompt if you hide it during count
+       showBigWinContinue(true, 180);
+       startBigWinIdlePulse();
+     }
+ 
+ 
+     function showBigWinAndWait(winAmountValue: number, winX: number) {
+       return new Promise<void>((resolve) => {
+         bigWinResolve = resolve;
+         showBigWin(true, winAmountValue, winX, 520);
+         
+         bigWinContinue.removeAllListeners?.("pointertap");
+     bigWinContinue.on("pointertap", (e) => {
+   (e as any).stopPropagation?.();
+ 
+   if (!state.overlay.bigWin) return;
+ 
+   // 1st click: skip to final (NO click sfx)
+   if (!bigWinCountDone) {
+     finishBigWinCountUp();
+     return;
+   }
+ 
+   // 2nd click: continue/close (PLAY click sfx)
+@@ -8904,196 +8588,50 @@ if (isMobilePortraitUILayout()) {
+ 
+     function layoutFsIntroAward() {
+       const W = app.screen.width;
+       const H = app.screen.height;
+ 
+       const cx = Math.round(W * 0.5);
+ 
+       // =====================
+       // GAP TUNING (THIS IS WHAT YOU WANT)
+       // =====================
+       const FS_INTRO_CENTER_Y = H * 0.52; // overall center of the group
+       const FS_INTRO_GAP = 250;           // 👈 increase this (try 80–160)
+ 
+       fsIntroAmount.position.set(
+         cx,
+         Math.round(FS_INTRO_CENTER_Y - FS_INTRO_GAP / 2)
+       );
+ 
+       fsIntroLabel.position.set(
+         cx,
+         Math.round(FS_INTRO_CENTER_Y + FS_INTRO_GAP / 2)
+       );
+     }
+ 
+ 
+-    // =====================
+-    // FS INTRO AWARD: DROP IN / FLY OUT
+-    // =====================
+-    const FS_INTRO_AWARD_OFFSCREEN_PAD = 120;
+-
+-    function fsIntroAwardOffY() {
+-      // start above top edge
+-      return -FS_INTRO_AWARD_OFFSCREEN_PAD;
+-    }
+-
+-    // =====================
+-    // FS INTRO "10" SIZE TUNING
+-    // =====================
+-    const FS_INTRO_AMOUNT_SCALE = 3; // try 1.3–2.2
+-
+-    function showFsIntroAward(on: boolean, ms = 720) {
+-      // make sure target positions are up to date
+-      layoutFsIntroAward();
+-
+-      const offY = fsIntroAwardOffY();
+-
+-      const targetAmountY = fsIntroAmount.y;
+-      const targetLabelY  = fsIntroLabel.y;
+-
+-      // tuning
+-      const STAGGER_MS = 120; // delay between "10" and "FREE SPINS" (try 120–220)
+-
+-      if (on) {
+-        // ensure visible and start OFFSCREEN
+-        fsIntroAmount.visible = true;
+-        fsIntroLabel.visible = true;
+-
+-          // ✅ FORCE the "10" to be bigger (reliable)
+-      fsIntroAmount.scale.set(FS_INTRO_AMOUNT_SCALE);
+-      fsIntroLabel.scale.set(FS_INTRO_AMOUNT_SCALE);
+-
+-
+-        // start hidden
+-        fsIntroAmount.alpha = 0;
+-        fsIntroLabel.alpha = 0;
+-        
+-
+-        // start above screen
+-        fsIntroAmount.y = offY;
+-        fsIntroLabel.y = offY;
+-      
+-
+-        // 1) DROP "10" first (slow + heavy)
+-        // 1) DROP "FREE SPINS" first
+-    tween(
+-      ms,
+-      (k) => {
+-        const t = Math.max(0, Math.min(1, k));
+-
+-        const SLOW_PORTION = 0.92;
+-        const tt = Math.min(1, t / SLOW_PORTION);
+-        const eased = tt * tt * (3 - 2 * tt); // smoothstep
+-        const e = easeOutBack(eased, 0.18);
+-
+-        fsIntroLabel.alpha = t;
+-
+-        fsIntroLabel.y = offY + (targetLabelY - offY) * e;
+-      
+-      },
+-      undefined,
+-      linear
+-    );
+-
+-    // 2) DROP "10" after a small delay
+-    setTimeout(() => {
+-      tween(
+-        ms,
+-        (k) => {
+-          const t = Math.max(0, Math.min(1, k));
+-
+-          const SLOW_PORTION = 0.92;
+-          const tt = Math.min(1, t / SLOW_PORTION);
+-          const eased = tt * tt * (3 - 2 * tt); // smoothstep
+-          const e = easeOutBack(eased, 0.18);
+-
+-          fsIntroAmount.alpha = t;
+-          fsIntroAmount.y = offY + (targetAmountY - offY) * e;
+-        },
+-        undefined,
+-        linear
+-      );
+-    }, STAGGER_MS);
+-
+-
+-      } else {
+-      if (!fsIntroAmount.visible && !fsIntroLabel.visible) return;
+-
+-      const startAY = fsIntroAmount.y;
+-      const startLY = fsIntroLabel.y;
+-
+-      const startA  = fsIntroAmount.alpha;
+-      const startL  = fsIntroLabel.alpha;
+-
+-
+-      const OUT_MS = Math.max(420, Math.floor(ms * 0.65)); // slightly quicker out
+-
+-      // 1) ✅ FLY OUT "10" FIRST
+-      tween(
+-        OUT_MS,
+-        (k) => {
+-          const t = Math.max(0, Math.min(1, k));
+-          const e = easeInCubic(t);
+-
+-          fsIntroAmount.alpha = startA * (1 - e);
+-          fsIntroAmount.y = startAY + (offY - startAY) * e;
+-        }
+-      );
+-
+-      // 2) ✅ FLY OUT "FREE SPINS" AFTER STAGGER
+-      setTimeout(() => {
+-        tween(
+-          OUT_MS,
+-          (k) => {
+-            const t = Math.max(0, Math.min(1, k));
+-            const e = easeInCubic(t);
+-
+-            fsIntroLabel.alpha = startL * (1 - e);
+-        
+-
+-            fsIntroLabel.y = startLY + (offY - startLY) * e;
+-          
+-          },
+-          () => {
+-            // hide after both are done
+-            fsIntroAmount.visible = false;
+-            fsIntroLabel.visible = false;
+-        
+-
+-            fsIntroAmount.alpha = 0;
+-            fsIntroLabel.alpha = 0;
+-
+-            fsIntroAmount.scale.set(1);
+-    fsIntroLabel.scale.set(1);
+-          
+-          }
+-        );
+-      }, STAGGER_MS);
+-    }
+-
+-    }
+-
+ 
+ 
+ 
+     window.addEventListener("resize", layoutFsIntroAward);
+ 
+ 
+     // ✅ Make the "CLICK TO CONTINUE" text area clickable too
+     fsContinueText.eventMode = "static";
+     fsContinueText.cursor = "pointer";
+ 
+     // bigger hit area so it's easy to click (tweak if you want)
+     fsContinueText.hitArea = new Rectangle(-340, -60, 680, 120);
+ 
+     fsContinueText.on("pointertap", (e: any) => {
+       e.stopPropagation?.();
+       // run the exact same logic as clicking the dimmer
+       fsDimmer.emit("pointertap", {} as any);
+     });
+ 
+ 
+     const FS_CONTINUE_TARGET_Y_N = 0.95; // 0..1 (lower = higher up)
+     const FS_CONTINUE_OFFSCREEN_PAD = 90;
+ 
+     function fsContinueOffY() {
+       return app.screen.height + FS_CONTINUE_OFFSCREEN_PAD;
+@@ -9138,104 +8676,50 @@ if (isMobilePortraitUILayout()) {
+         tween(ms, (k) => {
+           const e = Math.max(0, Math.min(1, k));
+           bigWinContinue.alpha = e;
+           bigWinContinue.y = offY + (targetY - offY) * e;
+         });
+       } else {
+         const startY = bigWinContinue.y;
+         const startA = bigWinContinue.alpha;
+ 
+         tween(
+           ms,
+           (k) => {
+             const e = Math.max(0, Math.min(1, k));
+             bigWinContinue.alpha = startA * (1 - e);
+             bigWinContinue.y = startY + (offY - startY) * e;
+           },
+           () => {
+             bigWinContinue.alpha = 0;
+             bigWinContinue.y = offY;
+             bigWinContinue.visible = false;
+           }
+         );
+       }
+     }
+ 
+-    // =====================
+-    // FS OUTRO "CLICK TO CONTINUE" (slides up from below screen)
+-    // =====================
+-    const FS_OUTRO_CONTINUE_TARGET_Y_N = 0.95; // tweak: 0.78–0.90
+-    const FS_OUTRO_CONTINUE_OFFSCREEN_PAD = 90;
+-
+-    function fsOutroContinueOffY() {
+-      return app.screen.height + FS_OUTRO_CONTINUE_OFFSCREEN_PAD;
+-    }
+-
+-    function fsOutroContinueTargetY() {
+-      return app.screen.height * FS_OUTRO_CONTINUE_TARGET_Y_N;
+-    }
+-
+-    function layoutFsOutroContinueX() {
+-      fsOutroContinue.x = app.screen.width / 2;
+-    }
+-
+-    function showFsOutroContinue(on: boolean, ms = 320) {
+-      layoutFsOutroContinueX();
+-
+-      const offY = fsOutroContinueOffY();
+-      const targetY = fsOutroContinueTargetY();
+-
+-      if (on) {
+-        fsOutroContinue.visible = true;
+-        fsOutroContinue.alpha = 0;
+-        fsOutroContinue.y = offY;
+-
+-        tween(ms, (k) => {
+-          const e = Math.max(0, Math.min(1, k));
+-          fsOutroContinue.alpha = e;
+-          fsOutroContinue.y = offY + (targetY - offY) * e;
+-        });
+-      } else {
+-        const startY = fsOutroContinue.y;
+-        const startA = fsOutroContinue.alpha;
+-
+-        tween(
+-          ms,
+-          (k) => {
+-            const e = Math.max(0, Math.min(1, k));
+-            fsOutroContinue.alpha = startA * (1 - e);
+-            fsOutroContinue.y = startY + (offY - startY) * e;
+-          },
+-          () => {
+-            fsOutroContinue.alpha = 0;
+-            fsOutroContinue.y = offY;
+-            fsOutroContinue.visible = false;
+-          }
+-        );
+-      }
+-    }
+-
+     function showFsContinue(on: boolean, ms = 320) {
+       layoutFsContinueX();
+ 
+       const offY = fsContinueOffY();
+       const targetY = fsContinueTargetY();
+ 
+       if (on) {
+         fsContinueText.visible = true;
+         fsContinueText.alpha = 0;
+         fsContinueText.y = offY;
+ 
+         tween(
+           ms,
+           (k) => {
+             const e = Math.max(0, Math.min(1, k));
+             fsContinueText.alpha = e;
+             fsContinueText.y = offY + (targetY - offY) * e;
+           }
+         );
+       } else {
+         const startY = fsContinueText.y;
+         const startA = fsContinueText.alpha;
+ 
+         tween(
+           ms,
+@@ -9248,64 +8732,59 @@ if (isMobilePortraitUILayout()) {
+             fsContinueText.alpha = 0;
+             fsContinueText.y = offY;
+             fsContinueText.visible = false;
+           }
+         );
+       }
+     }
+ 
+ 
+     function layoutFsDimmer() {
+       // draw in ROOT coords (since fsDimmer is a child of root)
+       const w = app.screen.width;
+       const h = app.screen.height;
+ 
+   fsDimmer.clear();
+   fsDimmer.rect(0, 0, w, h).fill(0x000000);
+ 
+     }
+ 
+ 
+     layoutFsAddedPopup();
+ 
+     // =====================
+     // OVERLAY TIMING PRESETS
+     // =====================
+-    const FS_RETRIGGER_PAUSE_MS = 1400; // extra pause so player can read “Free spins added”
+-
+     const FS_OVERLAY_FADE_IN_MS  = 550;  // slower, more cinematic
+     const FS_OVERLAY_FADE_OUT_MS = 260;  // quicker exit feels snappy
+ 
+     // =====================
+ // FS RETRIGGER — LANDSCAPE TUNING
+ // =====================
+ const FS_ADDED_LAND_AMOUNT_SCALE = 0.75;   // try 0.65–0.85
+ const FS_ADDED_LAND_LABEL_SCALE  = 0.75;
+ 
+-const FS_ADDED_LAND_AMOUNT_Y = 0.20; // % of screen height
+-const FS_ADDED_LAND_LABEL_Y  = 0.52;
+-
+ 
+     async function showFsAddedPopup(added: number) {
+       // Ensure geometry is correct
+       layoutFsAddedPopup();
+         // 🔊 FS RETRIGGER SFX (plays immediately when popup appears)
+   audio?.playSfxThrottled?.("fstrigger", 200, 1.0, 1.0);
+ 
+       fsAddedAmountText.text = `+${added}`;
+ 
+ 
+ 
+       // start state
+     fsAddedAmountText.visible = true;
+     fsAddedLabelText.visible = true;
+ 
+     fsAddedAmountText.alpha = 0;
+     fsAddedLabelText.alpha = 0;
+ 
+   const amountBaseScale = isMobileLandscapeUILayout()
+   ? FS_ADDED_LAND_AMOUNT_SCALE
+   : 0.85;
+ 
+ const labelBaseScale = isMobileLandscapeUILayout()
+   ? FS_ADDED_LAND_LABEL_SCALE
+   : 0.95;
+@@ -9791,140 +9270,78 @@ layoutMultiplierPlaque();
+ 
+         sh.x = g.x;
+         sh.y = g.y + (VOX * 0.85); // “touch” under the cube
+ 
+         // ✅ random direction with outward bias
+         const ang = Math.random() * Math.PI * 2;
+         const sp = SPEED_MIN + Math.random() * (SPEED_MAX - SPEED_MIN);
+ 
+         let vx = Math.cos(ang) * sp;
+         let vy = Math.sin(ang) * sp - (300 + Math.random() * 200);
+ 
+         // blend in bias direction (outward)
+         if (biasDir) {
+           vx = vx * (1 - BIAS) + (bdx * sp) * BIAS;
+           vy = vy * (1 - BIAS) + (bdy * sp) * BIAS;
+         }
+ 
+         const rotV = (-1 + Math.random() * 2) * 7.5;
+         g.alpha = START_ALPHA;
+ 
+         // add shadow first so it sits behind cube
+         voxelExplodeLayer.addChild(sh);
+         voxelExplodeLayer.addChild(g);
+ 
+         // ===== per-voxel physics loop =====
+-        const start = performance.now();
+-        let last = start;
+-
+-        
+-
+         voxelExplodeLive.push({
+       g,
+       sh,
+       vx,
+       vy,
+       rotV,
+       life: LIFE_MS / 1000,
+       life0: LIFE_MS / 1000,
+     });
+       }
+ 
+     }
+ 
+ 
+     type VoxelParticle = {
+       g: Graphics;
+       vx: number;
+       vy: number;
+       vr: number;
+       life: number;
+       life0: number;
+       grav: number;
+     };
+ 
+     const voxelPool: VoxelParticle[] = [];
+     const voxelLive: VoxelParticle[] = [];
+     let voxelTickerAdded = false;
+ 
+-    function spawnVoxelBurst(x: number, y: number, color: number) {
+-      const COUNT = 22;            // burst amount
+-      const MIN_VOX = 4;           // voxel size px
+-      const MAX_VOX = 7;
+-      const SPEED = 420;           // px/sec-ish
+-
+-      for (let i = 0; i < COUNT; i++) {
+-        let p = voxelPool.pop();
+-        if (!p) {
+-          const g = new Graphics();
+-          p = { g, vx: 0, vy: 0, vr: 0, life: 0, life0: 0, grav: 0 };
+-        }
+-
+-        const vox = (MIN_VOX + Math.random() * (MAX_VOX - MIN_VOX)) | 0;
+-
+-        const g = p.g;
+-        g.clear();
+-
+-        // small shade variance so it looks “chunky”
+-        const shade = 0.85 + Math.random() * 0.35;
+-        const a = 0.95;
+-
+-      g
+-    .rect(0, 0, vox, vox)
+-    .fill({ color, alpha: a });
+-
+-
+-        // center the voxel
+-        g.pivot.set(vox * 0.5, vox * 0.5);
+-
+-        // spawn at symbol position + slight jitter
+-        g.x = x + (-10 + Math.random() * 20);
+-        g.y = y + (-10 + Math.random() * 20);
+-
+-        // velocity: burst outward + slight upward bias
+-        const ang = Math.random() * Math.PI * 2;
+-        const sp = SPEED * (0.35 + Math.random() * 0.75);
+-        p.vx = Math.cos(ang) * sp;
+-        p.vy = Math.sin(ang) * sp - (120 + Math.random() * 140);
+-
+-        // gravity + spin
+-        p.grav = 980 + Math.random() * 540;
+-        p.vr = (-1 + Math.random() * 2) * 7.0;
+-
+-        // lifetime
+-        p.life0 = 0.55 + Math.random() * 0.35;
+-        p.life = p.life0;
+-
+-        g.rotation = Math.random() * Math.PI * 2;
+-        g.alpha = shade; // reuse as a “brightness” multiplier
+-        g.scale.set(1);
+-
+-        voxelExplodeLayer.addChild(g);
+-        voxelLive.push(p);
+-      }
+-    }
+-
+     function tickVoxelExplodeFx() {
+       const dt = app.ticker.deltaMS / 1000;
+ 
+       for (let i = voxelLive.length - 1; i >= 0; i--) {
+         const p = voxelLive[i];
+         const g = p.g;
+ 
+         p.vy += p.grav * dt;
+ 
+         g.x += p.vx * dt;
+         g.y += p.vy * dt;
+         g.rotation += p.vr * dt;
+ 
+         // fade out
+         p.life -= dt;
+         const k = Math.max(0, p.life / p.life0); // 1 -> 0
+         g.alpha = k;
+ 
+         // tiny shrink near the end
+         const s = 0.9 + 0.1 * k;
+         g.scale.set(s);
+ 
+         if (p.life <= 0) {
+           g.removeFromParent();
+           voxelLive.splice(i, 1);
+@@ -10317,51 +9734,50 @@ addSystem(() => {
+ });
+ 
+ 
+ 
+     const multPlaque = new Container();
+ 
+ 
+     multPlaqueLayer.addChild(multPlaque);
+ 
+     type PlaqueRow = {
+       row: Container;
+       bg: Graphics;
+       outline: Graphics;
+       label: Text;
+     };
+ 
+     const plaqueRows: PlaqueRow[] = [];
+ 
+     // Base (unscaled) plaque metrics
+     const PLAQUE_W = 108;
+     // Right-alignment reference (right edge of the plaque)
+     const PLAQUE_RIGHT_X = PLAQUE_W;
+ 
+     const PLAQUE_H = 88;
+     const PLAQUE_GAP = 0;
+-    const PLAQUE_R = 0;
+ 
+ 
+ 
+     const PLAQUE_STEP = PLAQUE_H + PLAQUE_GAP;
+ 
+     // Put the moving rows into their own container so we can mask just the “wheel”
+     const multPlaqueWheel = new Container();
+     multPlaque.addChild(multPlaqueWheel);
+ 
+     // ---- MASK (clips the wheel so rows animate in/out cleanly) ----
+     // Visible area: 4 slots (top, mid, active, wrap/max)
+     const wheelMask = new Graphics()
+       .rect(0, 0, PLAQUE_W, PLAQUE_STEP * 4 - PLAQUE_GAP)
+       .fill(0xffffff);
+ 
+ 
+     // If you want it to clip a bit tighter at top/bottom, tweak these:
+     // wheelMask.y += 2;
+     // wheelMask.height -= 4;
+ 
+     multPlaqueWheel.mask = wheelMask;
+     multPlaque.addChild(wheelMask);
+ 
+     // tweak these to change inactive sizing
+     const PLAQUE_SCALES = {
+@@ -10514,129 +9930,109 @@ addSystem(() => {
+     }
+ 
+ 
+     function applyPlaqueState(idx: number) {
+     const last = LADDER.length - 1;
+ 
+     const cur  = LADDER[Math.min(idx, last)] ?? 1;
+     const next = LADDER[Math.min(idx + 1, last)] ?? cur;
+     const next2 = LADDER[Math.min(idx + 2, last)] ?? next;
+ 
+     // prev with wrap
+     const prev = idx > 0 ? (LADDER[idx - 1] ?? cur) : (LADDER[last] ?? cur);
+ 
+     // Values top → bottom
+     const values: Array<number | null> = [next2, next, cur, prev];
+ 
+     // If we're near the end, remove extra future slots
+     if (idx === last) {
+       values[0] = null; // next2 hidden
+       values[1] = null; // next hidden
+     } else if (idx === last - 1) {
+       values[0] = null; // only hide next2
+     }
+ 
+ 
+-      // alphas Top->Bottom (tweak to taste)
+-      const alphas = [0.28, 0.55, 0.7, 0.55];
+-
+-      const maxVal = LADDER[LADDER.length - 1];
+-
+     for (let i = 0; i < 4; i++) {
+       const row = plaqueRows[i];
+       const v = values[i];
+ 
+       const hide = (v == null) || shouldHideFutureSlot(i, idx);
+ 
+       row.row.visible = !hide;
+       if (hide) continue;
+ 
+       row.label.text = formatMult(v);
+ 
+       const maxVal = LADDER[LADDER.length - 1];
+       row.label.style.fill = (v === maxVal) ? 0xffd36a : 0xffffff;
+ 
+       styleRowBySlot(i, row);
+     }
+ 
+ 
+ 
+ 
+ 
+     }
+ 
+-    function clampLadder(i: number) {
+-      const last = LADDER.length - 1;
+-      return Math.max(0, Math.min(last, i));
+-    }
+-
+-    function ladderAt(i: number) {
+-
+-
+-      
+-      return LADDER[clampLadder(i)] ?? 1;
+-    }
+       function ladderAtRaw(i: number) {
+       return LADDER[i]; // ✅ no clamp
+     }
+ 
+     // ✅ ADD THIS RIGHT HERE ⬇️
+     function shouldHideFutureSlot(slot: number, idx: number) {
+       const last = LADDER.length - 1;
+ 
+       // slot mapping:
+       // 0 = top (next2)
+       // 1 = mid (next)
+       // 2 = active (current)
+       // 3 = bottom (prev / wrap)
+       if (idx >= last) {
+         // at MAX: hide both future slots
+         return slot === 0 || slot === 1;
+       }
+ 
+       if (idx === last - 1) {
+         // one before MAX: hide ONLY next2
+         return slot === 0;
+       }
+ 
+       return false;
+     }
+ 
+     function applyPlaqueSlotVisibility(idxForVis: number) {
+       for (let slot = 0; slot < 4; slot++) {
+         const r = plaqueRows[slot];
+         const hide = shouldHideFutureSlot(slot, idxForVis);
+         r.row.visible = !hide;
+       }
+     }
+ 
+ 
+ 
+-    function isAtMax(idx: number) {
+-      return idx >= LADDER.length - 1;
+-    }
+-
+ 
+     // prev with wrap (so 0 goes to MAX)
+     function ladderPrevWrap(idx: number) {
+       const last = LADDER.length - 1;
+       if (idx <= 0) return LADDER[last] ?? 1;
+       return LADDER[idx - 1] ?? 1;
+     }
+ 
+     // Apply visual styling by slot position (0=top,1=mid,2=active,3=wrap/max)
+     function styleRowBySlot(slot: number, r: PlaqueRow) {
+ 
+       
+ 
+     // ✅ outline fades (no snapping)
+     r.outline.visible = true;
+     r.outline.alpha = (slot === 2) ? 1 : 0;
+ 
+ 
+       // ---- DEPTH FX (blur + overall row alpha by slot) ----
+       const slotRowAlphas = [0.65, 0.80, 1.00, 0.70]; // top, mid, active, wrap/max
+       const slotBlur      = [2,  1,  0.0,  1];
+ 
+       r.row.alpha = slotRowAlphas[slot] ?? 1;
+ 
+       const b = slotBlur[slot] ?? 0;
+@@ -10768,51 +10164,50 @@ addSystem(() => {
+         PLAQUE_SCALES.mid,
+         PLAQUE_SCALES.active,
+         PLAQUE_SCALES.max,
+       ];
+ 
+       const slotBgAlphas    = [0.18, 0.28, 0.55, 0.22];
+       const slotLabelAlphas = [0.75, 0.75, 1.00, 0.75];
+ 
+       // helpers (DECLARE ONCE)
+       const wrap = (n: number, m: number) => (n % m + m) % m;
+       const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+ 
+       // If shifting down, row i ends in slot i+1. If shifting up, row i ends in slot i-1.
+       const dirSlot = shift > 0 ? 1 : -1;
+ 
+       // Capture starting overall + outline
+       const startRowAlphas     = plaqueRows.map((r) => r.row.alpha);
+       const startOutlineAlphas = plaqueRows.map((r) => r.outline.alpha);
+ 
+       // Targets for the new slots (everything lerps TO these)
+       const targetScales        = plaqueRows.map((_, i) => slotScales[wrap(i + dirSlot, 4)]);
+       const targetBgAlphas      = plaqueRows.map((_, i) => slotBgAlphas[wrap(i + dirSlot, 4)]);
+       const targetLabelAlphas   = plaqueRows.map((_, i) => slotLabelAlphas[wrap(i + dirSlot, 4)]);
+       const targetRowAlphas     = plaqueRows.map((_, i) => slotRowAlphas[wrap(i + dirSlot, 4)]);
+       const targetOutlineAlphas = plaqueRows.map((_, i) => slotOutlineAlphas[wrap(i + dirSlot, 4)]);
+-    const startAlpha = multPlaque.alpha;
+     multPlaque.alpha = 1;
+   // 🔊 MULTIPLIER PLAQUE STEP-UP SFX (only when climbing up)
+ if (dir === 1) {
+   const muted = audio?.getSfxMuted?.() ?? false;
+   const vol = audio?.getSfxVolume01?.() ?? 1;
+ 
+   console.log("[SFX] multiplier step", { muted, vol });
+ 
+   if (!muted && vol > 0.001) {
+     const throttled = audio?.playSfxThrottled?.bind(audio);
+     if (throttled) throttled("multiplier", 60, 0.95, 1.0);
+     else audio?.playSfx?.("multiplier", 0.95, 1.0);
+   }
+ }
+       tween(
+       ms,
+       (k) => {
+         const kPos = k;
+         const k01 = Math.max(0, Math.min(1, k));
+ 
+         for (let i = 0; i < plaqueRows.length; i++) {
+           const r = plaqueRows[i];
+ 
+           r.row.y = startYs[i] + shift * kPos;
+ 
+@@ -10897,128 +10292,85 @@ if (dir === 1) {
+         }
+       })();
+     }
+ 
+ 
+ 
+     function updateMultiplierPlaque(current: number) {
+       // Find current index in LADDER (fallback to 0)
+       let idx = LADDER.findIndex((x) => Math.abs(x - current) < 1e-6);
+       if (idx < 0) idx = 0;
+ 
+       if (plaqueAnimBusy) {
+         queuedTargetIdx = idx;
+         return;
+       }
+ 
+       // first time / no animation needed
+       if (idx === plaqueIdx) {
+         applyPlaqueState(plaqueIdx);
+         return;
+       }
+ 
+       runToIdx(idx);
+     }
+ 
+-    function resetMultiplierPlaqueToBase() {
+-      // hard reset internal state
+-      plaqueAnimBusy = false;
+-      queuedTargetIdx = null;
+-      plaqueIdx = 0;
+-
+-      // clear any "force hidden" row flags
+-      for (const r of plaqueRows as any[]) {
+-        r._forceHidden = false;
+-        r.row.visible = true;
+-        r.row.alpha = 1;
+-      }
+-
+-    // ✅ Boot init only (do this once)
+-    plaqueIdx = 0;
+-    applyPlaqueState(plaqueIdx);
+-    restyleAllSlots();
+-    applyPlaqueSlotVisibility(plaqueIdx);
+-    setMult(LADDER[plaqueIdx] ?? 1);
+-
+-    }
+-
+     function slideOneStepP(
+       dir: 1 | -1,
+       ms = 260,
+       easeFn: (t: number) => number = (t) => easeOutBack(t, 2)
+     ) {
+       return new Promise<void>((resolve) => slideOneStep(dir, resolve, ms, easeFn));
+     }
+ 
+ 
+     async function animatePlaqueReturnToBase() {
+       queuedTargetIdx = null;
+ 
+       // ✅ clear any force-hidden flags so returning looks clean
+       for (const r of plaqueRows as any[]) {
+         r._forceHidden = false;
+         r.row.visible = true;
+       }
+ 
+       const RESET_STEP_MS = 120; // tweak 90..140 (lower = faster)
+       while (plaqueIdx > 0) {
+         // ✅ fast + smooth (no bouncy “land” per step)
+         await slideOneStepP(-1, RESET_STEP_MS, easeOutCubic);
+ 
+         plaqueIdx -= 1;
+         applyPlaqueState(plaqueIdx);
+         restyleAllSlots();
+         applyPlaqueSlotVisibility(plaqueIdx);
+         setMult(LADDER[plaqueIdx] ?? 1);
+ 
+         // ✅ no extra pause between steps
+       }
+     }
+ 
+ 
+ 
+-    function animateMultiplierPlaqueBackToBase() {
+-      plaqueAnimBusy = false;
+-      queuedTargetIdx = null;
+-
+-      if (plaqueIdx === 0) {
+-        applyPlaqueState(0);
+-        restyleAllSlots();
+-        applyPlaqueSlotVisibility(0);
+-        setMult(1);
+-        state.game.returningFromFreeSpins = false; // ✅ CLEAR
+-        return;
+-      }
+-
+-      runToIdx(0);
+-
+-      // clear flag AFTER animation completes
+-      setTimeout(() => {
+-        state.game.returningFromFreeSpins = false;
+-      }, 300); // slightly longer than slide duration
+-    }
+-
+ 
+ 
+ 
+ 
+     // Boot default
+     applyPlaqueState(0);
+ 
+     restyleAllSlots();
+ 
+ 
+     // =====================
+     // TITLE DROP-IN (boot + return-to-base)
+     // =====================
+     let TITLE_DROP_MS = 1200;
+     let TITLE_DROP_OFFSCREEN_PAD = 140;
+ 
+     let titleDropActive = false;
+ 
+     // =====================
+     // TITLE IDLE FLOAT (slow drift on idle)
+     // =====================
+     let titleBaseX = 0;
+     let titleBaseY = 0;
+ 
+     let titleFloatT = 0;
+@@ -11147,53 +10499,50 @@ titleBaseX = gameTitle.x;
+ titleBaseY = _titleTargetY;
+ 
+ // Only directly place the sprite if we’re not mid-drop animation
+ if (!titleDropActive) {
+   gameTitle.y = _titleTargetY;
+ }
+ 
+ 
+  // ✅ MOBILE PORTRAIT — PIN TO TOP-RIGHT OF SCREEN
+ if (isMobilePortraitUILayout()) {
+   multPlaqueLayer.visible = true;
+ 
+   const W = app.screen.width;
+ 
+   // ✅ SAFE AREA (notch / island aware)
+   const safeTop = safeInsetTopPx();
+   const safeRight = 0; // iOS usually only needs top, but keep here for symmetry
+ 
+   // 🔧 TUNING (adjust once, works everywhere)
+   const PAD_X = 70;    // distance from right edge
+   const PAD_Y = -27;    // distance from top edge
+   const SCALE = 0.6;   // ladder size in portrait
+ 
+   multPlaqueLayer.scale.set(SCALE);
+ 
+-  // ⚠️ IMPORTANT: bounds AFTER scaling
+-  const lb = multPlaqueLayer.getBounds();
+-
+   // ✅ Pin to top-right (screen space)
+   multPlaqueLayer.x = Math.round(
+     W - safeRight - PAD_X
+   );
+ 
+   multPlaqueLayer.y = Math.round(
+     safeTop + PAD_Y
+   );
+ 
+   applyPlaqueState(plaqueIdx);
+   restyleAllSlots();
+   applyPlaqueSlotVisibility(plaqueIdx);
+   return;
+ }
+ 
+ 
+ 
+   // ✅ MOBILE LANDSCAPE: place ladder at top-right (screen space)
+ if (isMobileLandscapeUILayout()) {
+   multPlaqueLayer.visible = true;
+ 
+   const b = reelHouse.getBounds(); // reel house bounds in screen/root space
+ 
+   // 🔧 TUNING (landscape)
+   const GAP_X = 0;     // gap between ladder and reel house
+@@ -11251,60 +10600,50 @@ applyPlaqueSlotVisibility(plaqueIdx);
+     __buildSceneGraphOnce();
+     // ✅ FINAL: build the scene graph only after all layers exist
+ 
+     // ✅ Prevent UI flashing before splash
+     uiLayer.alpha = 0;
+     uiLayer.eventMode = "none";
+ 
+ 
+ 
+     const uiPanel = new Container();
+     uiLayer.addChild(uiPanel);
+ 
+     function setScaleToHeight(c: Container, targetH: number) {
+       // assumes makePngButton() added btnHeight() to the container
+       const h = (c as any).btnHeight ? (c as any).btnHeight() : c.height;
+       if (h <= 0) return;
+       const s = targetH / h;
+       c.scale.set(s);
+     }
+ 
+ 
+ 
+ 
+ 
+ 
+-    function blurBackgroundTo(target: number, ms = 300) {
+-      const start = bgBlur.strength;
+-      tween(
+-        ms,
+-        (k) => {
+-          bgBlur.strength = start + (target - start) * k;
+-        }
+-      );
+-    }
+-
+     function fadeUiLayerTo(targetAlpha: number, ms = 250) {
+       const start = uiLayer.alpha;
+ 
+       // disable interaction when hidden
+       if (targetAlpha === 0) {
+         uiLayer.eventMode = "none";
+       }
+ 
+       tween(
+         ms,
+         (k) => {
+           uiLayer.alpha = start + (targetAlpha - start) * k;
+         },
+         () => {
+           uiLayer.alpha = targetAlpha;
+           uiLayer.eventMode = targetAlpha > 0 ? "auto" : "none";
+         }
+       );
+     }
+ 
+     function fadeGameTo(targetAlpha: number, targetScale: number, ms = 300) {
+       // scale/fade ONE wrapper so it scales from the center
+       const startA = gameCore.alpha;
+       const startS = gameCore.scale.x;
+ 
+@@ -11444,68 +10783,50 @@ function centerPivot(c: Container) {
+   c.pivot.set(b.x + b.width / 2, b.y + b.height / 2);
+ }
+ 
+     // Place a thing using 0..1 coords inside the panel rectangle
+     function placeOnPanel(
+       c: Container,
+       nx: number,   // 0..1 left->right
+       ny: number,   // 0..1 top->bottom
+       panelW: number,
+       panelH: number
+     ) {
+       c.x = Math.round(panelW * nx);
+       c.y = Math.round(panelH * ny);
+     }
+ 
+     function setTightHitArea(btn: Container, padX: number, padY: number) {
+   const bb = btn.getLocalBounds();
+   btn.hitArea = new Rectangle(
+     bb.x - padX,
+     bb.y - padY,
+     bb.width + padX * 2,
+     bb.height + padY * 2
+   );
+ }
+ 
+-function placeLeft(
+-  c: Container,
+-  xPx: number,
+-  yPx: number
+-) {
+-  c.x = Math.round(xPx + c.getLocalBounds().width / 2);
+-  c.y = Math.round(yPx);
+-}
+-
+-function placeRight(
+-  c: Container,
+-  xPx: number,
+-  yPx: number
+-) {
+-  c.x = Math.round(xPx - c.getLocalBounds().width / 2);
+-  c.y = Math.round(yPx);
+-}
+-
+ 
+ 
+ 
+ 
+     // =====================
+     // MONEY FORMATTER
+     // =====================
+     const moneyFmt = new Intl.NumberFormat("en-AU", {
+       style: "currency",
+       currency: "AUD",
+       minimumFractionDigits: 2,
+     });
+ 
+     function fmtMoney(v: number) {
+       return moneyFmt.format(v);
+     }
+ 
+ 
+ 
+ 
+     // =====================
+     // UI PANEL TEXT STYLES (shared)
+     // =====================
+     const UI_TITLE_STYLE = {
+       fontFamily: "Micro5",
+@@ -12135,51 +11456,51 @@ h = Math.round(h * BET_PILL_H_SCALE_DESKTOP);
+ 
+         knob.on("pointerdown", (e) => {
+           dragging = true;
+           (e as any).stopPropagation?.();
+         });
+ 
+         if (!boundToSettingsLayer) {
+       boundToSettingsLayer = true;
+ 
+       app.stage.on("pointermove", (e: any) => {
+     if (!dragging) return;
+     setFromGlobalX((e as any).global.x);
+     onChange?.(value01);
+   });
+ 
+   const stopDrag = () => { dragging = false; };
+   app.stage.on("pointerup", stopDrag);
+   app.stage.on("pointerupoutside", stopDrag);
+ 
+     }
+ 
+ 
+     const onTrackDown = (e: any) => {
+       e.stopPropagation?.();           // prevent row tap toggling mute
+       dragging = true;                 // ✅ start dragging when you press on the line
+-      const v = setFromGlobalX(e.global.x);
++      setFromGlobalX(e.global.x);
+       onChange?.(value01); // ✅ this is the important bit
+       return value01;
+     };
+ 
+ 
+     // INACTIVE line
+     trackInactive.eventMode = "static";
+     trackInactive.cursor = "pointer";
+     trackInactive.on("pointerdown", onTrackDown);
+     trackInactive.on("pointertap", (e) => e.stopPropagation?.());
+ 
+     // ACTIVE (white) line
+     trackActive.eventMode = "static";
+     trackActive.cursor = "pointer";
+     trackActive.on("pointerdown", onTrackDown);
+     trackActive.on("pointertap", (e) => e.stopPropagation?.());
+ 
+     trackHit.eventMode = "static";
+     trackHit.cursor = "pointer";
+     trackHit.on("pointerdown", onTrackDown);
+     trackHit.on("pointertap", (e) => e.stopPropagation?.());
+ 
+ 
+ 
+       };
+@@ -12345,58 +11666,50 @@ return c as Container & {
+ 
+       
+       const all = [offUp, offHover, offDown, onUp, onHover, onDown];
+       all.forEach((s) => {
+         s.anchor.set(0.5);
+         c.addChild(s);
+       });
+     // 🔒 Force all toggle sprites to the same size (use OFF_UP as reference)
+     const refW = offUp.width;
+     const refH = offUp.height;
+ // ✅ Enlarge hit area for mobile (toggle button)
+ 
+ // ✅ Hit area sizing
+ // Desktop: tight and precise
+ // Touch devices: forgiving
+ 
+ 
+ 
+ 
+ 
+     all.forEach((s) => {
+       s.width = refW;
+       s.height = refH;
+     });
+ 
+-   // ✅ Slightly larger than default (still tight on desktop)
+-const SPIN_HIT_PAD_X = IS_TOUCH ? 40 : 6;
+-const SPIN_HIT_PAD_Y = IS_TOUCH ? 34 : 6;
+-
+-
+-
+-
+-
+       let isOn = initialOn;
+       
+ 
+       function showState(kind: "up" | "hover" | "down") {
+         all.forEach((s) => (s.visible = false));
+ 
+         const up = isOn ? onUp : offUp;
+         const hover = isOn ? onHover : offHover;
+         const down = isOn ? onDown : offDown;
+ 
+         if (kind === "up") up.visible = true;
+         if (kind === "hover") hover.visible = true;
+         if (kind === "down") down.visible = true;
+       }
+ 
+       showState("up");
+ 
+       c.eventMode = "static";
+       if (!disableCustomCursorOnMobile()) {
+   setCursorSafe(c, "pointer");
+ }
+ 
+       c.on("pointerover", () => showState("hover"));
+       c.on("pointerout", () => showState("up"));
+       c.on("pointerdown", () => showState("down"));
+@@ -12557,61 +11870,50 @@ const SPIN_HIT_PAD_Y = IS_TOUCH ? 34 : 6;
+ 
+     const TURBO_OFF_UP    = "btn_turbo_off_up.png";
+     const TURBO_OFF_HOVER = "btn_turbo_hover.png";
+     const TURBO_OFF_DOWN  = "btn_turbo_down.png";
+ 
+     const TURBO_ON_UP    = "btn_turbo_on_up.png";
+     const TURBO_ON_HOVER = "btn_turbo_on_up.png";
+     const TURBO_ON_DOWN  = "btn_turbo_on_up.png";
+ 
+ 
+     const BET_DOWN_UP    = "btn_bet_down_up.png";
+     const BET_DOWN_HOVER = "btn_bet_down_hover.png";
+     const BET_DOWN_DOWN  = "btn_bet_down_down.png";
+ 
+     const BET_UP_UP      = "btn_bet_up_up.png";
+     const BET_UP_HOVER   = "btn_bet_up_hover.png";
+     const BET_UP_DOWN    = "btn_bet_up_down.png";
+ 
+     // ✅ CLOSE uses existing atlas frames (these DO exist in ui.json)
+     const CLOSE_UP    = "btn_settings_on_up.png";
+     const CLOSE_HOVER = "btn_settings_on_up.png";
+     const CLOSE_DOWN  = "btn_settings_on_down.png";
+ 
+ 
+ 
+-    // =====================
+-    // BUY MENU CARD ART (PNG)
+-    // =====================
+-    const BUY_ART_PICK_URL  = "/assets/ui/buy_art_pick.png";
+-    const BUY_ART_GIGA_URL  = "/assets/ui/buy_art_giga.png";
+-    const BUY_ART_SUPER_URL = "/assets/ui/buy_art_super.png";
+-    const BUY_ART_ULTRA_URL = "/assets/ui/buy_art_ultra.png";
+-
+-    const BUY_HOVER_URL = "/assets/ui/btn_buy_hover.png";
+-    const BUY_DOWN_URL  = "/assets/ui/btn_buy_down.png";
+-
+     const BUY_UP    = "btn_buy_up.png";
+     const BUY_HOVER = "btn_buy_hover.png";
+     const BUY_DOWN  = "btn_buy_down.png";
+ 
+ 
+     
+ 
+     const BIGWIN_ITEMS_ATLAS_URL = "/assets/atlases/bigwin_items.json";
+     const UI_ATLAS_URL = "/assets/atlases/ui.json";
+     const UI_EXTRA_ATLAS_URL = "/assets/atlases/ui_extra.json";
+   const VEHICLES_ATLAS_URL = "/assets/atlases/vehicles.json";
+   const REELHOUSE_ATLAS_URL = "/assets/atlases/reelhouse.json";
+   const SYMBOLS_ATLAS_URL = "/assets/atlases/symbols.json";
+ const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
+ 
+ 
+ 
+ 
+ 
+ 
+     // =====================
+     // COIN SHOWER — SPRITESHEET (TexturePacker / Pixi atlas)
+     // =====================
+     const COINS_SHEET_URL = "/assets/particles/coins.json"; // ✅ leading slash
+ 
+@@ -13241,58 +12543,50 @@ addSystem(() => {
+     CLOSE_HOVER,
+     CLOSE_DOWN,
+ 
+   getSfxMuted: () => audio?.getSfxMuted?.() ?? false,
+ setSfxMuted: (v: boolean) => audio?.setSfxMuted?.(v),
+ 
+ getMusicMuted: () => audio?.getMusicMuted?.() ?? false,
+ setMusicMuted: (v: boolean) => audio?.setMusicMuted?.(v),
+ 
+ applyAudioUI: () => {
+   audio?.apply?.();
+ },
+ 
+ makeSlider,
+ 
+ getSfxValue01: () => audio?.getSfxVolume01?.() ?? 0.8,
+ getMusicValue01: () => audio?.getMusicVolume01?.() ?? 0.6,
+ setSfxValue01: (v01: number) => audio?.setSfxVolume01?.(v01),
+ setMusicValue01: (v01: number) => audio?.setMusicVolume01?.(v01),
+ 
+ 
+   });
+ 
+ 
+ 
+-    function openSettingsPanel() {
+-      console.log("Settings OPEN");
+-    }
+-
+-    function closeSettingsPanel() {
+-      console.log("Settings CLOSED");
+-    }
+-
+ 
+ 
+ 
+     const buyBtnPixi = makePngButton(
+       BUY_UP,
+       BUY_HOVER,
+       BUY_DOWN,
+    () => {
+     if (state.ui.spinning) return; // ✅ block during spin
+     stopAutoNow("buy button");
+     console.log("[BUY BTN] clicked");
+ 
+     // close settings if open
+ if (state.ui.settingsOpen) {
+   stopAutoNow("settings opened");
+ }
+ 
+     buyMenuApi?.openBuy?.();
+   }
+ 
+     );
+     // ✅ Bigger hit area for BUY only
+ const BUY_HIT_PAD_X = IS_TOUCH ? 36 : 6;
+ const BUY_HIT_PAD_Y = IS_TOUCH ? 30 : 6;
+ 
+@@ -13576,51 +12870,50 @@ function safeInsetBottomPx() {
+   const v = getComputedStyle(document.documentElement).getPropertyValue("env(safe-area-inset-bottom)");
+   const n = parseFloat(v);
+   return Number.isFinite(n) ? n : 0;
+ }
+ function safeInsetTopPx() {
+   const v = getComputedStyle(document.documentElement).getPropertyValue("env(safe-area-inset-top)");
+   const n = parseFloat(v);
+   return Number.isFinite(n) ? n : 0;
+ }
+ 
+ function isMobilePortraitUILayout() {
+   // ✅ if we lock to portrait, ANY mobile orientation uses portrait layout rules
+   if (LOCK_MOBILE_TO_PORTRAIT && isMobileUILayout()) return true;
+ 
+   const w = app.screen.width;
+   const h = app.screen.height;
+   const aspect = w / h;
+   return (w < 820 || aspect < 0.90) && h >= w;
+ }
+ 
+ 
+ // =====================
+ // MOBILE LANDSCAPE SCALE TUNING
+ // =====================
+ const MOBILE_LANDSCAPE_REELHOUSE_MUL = 0.5; // outer art smaller (try 0.86–0.94)
+-const MOBILE_LANDSCAPE_CELL_MUL      = 1.06; // symbols smaller  (try 0.86–0.94)
+ const MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL = 0.48
+ function carsDisabled(): boolean {
+   // ✅ only disable cars in MOBILE PORTRAIT
+   return isMobilePortraitUILayout();
+ }
+ 
+ function isMobileUILayout() {
+   const w = app.screen.width;
+   const h = app.screen.height;
+   const aspect = w / h;
+ 
+   // touch OR narrow screens behave as mobile
+   return !!IS_TOUCH || w < 820 || aspect < 0.90;
+ }
+ 
+ function isMobileLandscapeUILayout() {
+   // ✅ if we lock to portrait, NEVER allow landscape layout rules
+   if (LOCK_MOBILE_TO_PORTRAIT && isMobileUILayout()) return false;
+ 
+   return isMobileUILayout() && app.screen.width > app.screen.height;
+ }
+ 
+ 
+ 
+ function winPopupScaleMul() {
+@@ -13830,56 +13123,50 @@ setScaleToHeight(settingsBtnPixi, targetH * 0.4 * UI_SCALE);
+ 
+ 
+ 
+ // =====================
+ // BET (DESKTOP) — scale display group only (NOT arrows)
+ // =====================
+ 
+ const BET_ARROW_SCALE = isMobileLandscapeUILayout() ? 0.24 : 0.30;
+ 
+ setScaleToHeight(betUpBtnPixi,   targetH * BET_ARROW_SCALE);
+ setScaleToHeight(betDownBtnPixi, targetH * BET_ARROW_SCALE);
+ 
+ 
+ 
+ 
+ 
+ // ✅ Scale ONLY the bet amount pill (not the "BET" label)
+ const BET_PILL_SCALE = 0.85; // 🔧 try 0.75–0.9
+ 
+ betAmountUI.scale.set(BET_PILL_SCALE);
+ betTitleLabel.position.set(
+   0,
+   Math.round(-betAmountUI.getLocalBounds().height * 0.85)
+ );
+ 
+-// right edge of BUY button (BUY is centered at buyBtnPixi.x)
+-const buyRight = buyBtnPixi.x + buyBtnPixi.width / 2;
+-
+-// 🔧 TUNING: horizontal gap between BUY and BET
+-const BUY_TO_BET_GAP = 80; // try 16..40
+-
+ // pill width (scaled)
+ const pillW = betAmountUI.getBounds().width; // ✅ true on-screen width after group scaling
+ 
+ 
+ // =====================
+ // BET (DESKTOP) — positioned relative to WIN
+ // =====================
+ 
+ // 🔧 how close BET sits to WIN (px)
+ // LOWER = closer to WIN
+ const WIN_TO_BET_GAP = 320; // try 120–260
+ 
+ 
+ 
+ // place BET to the LEFT of WIN
+ betDisplayGroup.x = Math.round(
+   winBounds.x - WIN_TO_BET_GAP - betDisplayGroup.getBounds().width / 2
+ );
+ 
+ 
+ 
+ // Prevent accidental re-centering
+ betDisplayGroup.pivot.set(0, 0);
+ betControlsGroup.pivot.set(0, 0);
+ 
+@@ -13966,52 +13253,50 @@ winAmountLabel.visible = false;
+   const winGap = Math.round(h * 0.30);
+   winTitleLabel.x = 0;
+   winTitleLabel.y = -winGap;
+   winAmountLabel.x = 0;
+   winAmountLabel.y = 4;
+ 
+ // ===== SPIN (portrait: always centered horizontally) =====
+ const SPIN_Y = -0.7; // tweak 0.55..0.78
+ const SPIN_Y_OFFSET = -h * 0.12; 
+ spinBtnPixi.x = Math.round(w * 0.5);        // ✅ center horizontally
+ spinBtnPixi.y = Math.round(h * SPIN_Y + SPIN_Y_OFFSET);// keep Y tunable
+ setScaleToHeight(spinBtnPixi, MAIN_BTN_H);
+ 
+ // ===== BUY (portrait: LEFT of SPIN) =====
+ const BUY_OFFSET_X = 0.34; // same distance as AUTO/TURBO, mirrored
+ const BUY_Y = SPIN_Y;
+ 
+ buyBtnPixi.x = Math.round(w * 0.5 - w * BUY_OFFSET_X);
+ buyBtnPixi.y = Math.round(h * BUY_Y);
+ setScaleToHeight(buyBtnPixi, BUY_BTN_H);
+ 
+ // ===== AUTO + TURBO (portrait, right of SPIN) =====
+ // TUNING KNOBS
+ const AT_OFFSET_X = 0.32; // distance to the right of SPIN (0.14..0.24)
+ const AT_GAP_Y = 0.33;    // vertical gap between AUTO / TURBO
+-const AT_CENTER_Y = SPIN_Y; // align to spin vertically
+-
+ const spinX = Math.round(w * 0.5);
+ const spinY = Math.round(h * SPIN_Y);
+ 
+ // AUTO (above)
+ autoBtnPixi.x = Math.round(spinX + w * AT_OFFSET_X);
+ autoBtnPixi.y = Math.round(spinY - h * AT_GAP_Y);
+ setScaleToHeight(autoBtnPixi, MINI_BTN_H);
+ 
+ // TURBO (below)
+ turboBtnPixi.x = Math.round(spinX + w * AT_OFFSET_X);
+ turboBtnPixi.y = Math.round(spinY + h * AT_GAP_Y);
+ setScaleToHeight(turboBtnPixi, MINI_BTN_H);
+ 
+ 
+ 
+ 
+ // =====================
+ // PORTRAIT: center Settings + BetGroup + BalanceGroup as a row
+ // =====================
+ 
+ // (keep WIN hidden for portrait)
+ winUI.visible = false;
+ winTitleLabel.visible = false;
+ winAmountLabel.visible = false;
+ 
+@@ -14177,52 +13462,50 @@ if (isMobileLandscapeUILayout()) {
+ 
+ 
+ 
+   // Show the groups we want in landscape
+   winUI.visible = true;
+   winTitleLabel.visible = true;
+   winAmountLabel.visible = true;
+ 
+   balanceGroup.visible = true;
+ 
+   betDisplayGroup.visible = true;
+   betControlsGroup.visible = true;
+ 
+   // ---------- BASELINE (everything sits on this line) ----------
+ const CY = Math.round(h * 0.72);
+ 
+ // ✅ LANDSCAPE: shared vertical offset for BET / WIN / BALANCE
+ const GROUPS_Y_OFFSET = Math.round(h * -0.2); // negative = up, positive = down
+ 
+ 
+ const LAND_GROUP_BASE_H = h * 0.58;      // base size
+ const LAND_GROUP_SCALE  = 1.9;          // 🔧 1.05..1.35 (bigger = larger groups)
+ 
+ const LAND_GROUP_H = LAND_GROUP_BASE_H * LAND_GROUP_SCALE;
+ 
+-const LAND_TEXT_SCALE = 1; // 🔧 was 0.52 (try 0.58–0.70)
+-
+ const SETTINGS_Y_OFFSET = Math.round(h * -0.3); // negative = up, positive = down
+ 
+ 
+ 
+   // ---------- LEFT SIDE ----------
+   const LEFT_PAD = 18;
+ 
+   // Settings (far left)
+   settingsBtnPixi.x = Math.round(LEFT_PAD + settingsBtnPixi.getLocalBounds().width * 0.5);
+ settingsBtnPixi.y = CY + SETTINGS_Y_OFFSET;
+ 
+ 
+   // BUY big coin button
+   const buyX = Math.round(settingsBtnPixi.x + settingsBtnPixi.width * 0.75 + buyBtnPixi.width * 0.5 + 12);
+   buyBtnPixi.x = buyX;
+   buyBtnPixi.y = CY;
+ 
+   // BET arrows (to the right of BUY)
+ const arrowsX = Math.round(
+   buyBtnPixi.x + buyBtnPixi.width * 0.62 + betControlsGroup.getLocalBounds().width * 0.5 + 16
+ );
+ betControlsGroup.x = arrowsX;
+ 
+ // ✅ IMPORTANT: move arrows group up with the other groups
+ betControlsGroup.y = CY + GROUPS_Y_OFFSET;
+@@ -14233,54 +13516,50 @@ betControlsGroup.y = CY + GROUPS_Y_OFFSET;
+ const BET_ARROW_GAP_Y = Math.round(h * 0.36);
+ 
+ // ✅ move the whole arrows group up/down (THIS is the one you want)
+ const BET_ARROWS_GROUP_Y_OFFSET = -10; // negative = up
+ 
+ betControlsGroup.y = CY + GROUPS_Y_OFFSET + BET_ARROWS_GROUP_Y_OFFSET;
+ 
+ // ✅ keep children centered inside the group
+ betUpBtnPixi.x = 0;
+ betDownBtnPixi.x = 0;
+ betUpBtnPixi.y = -BET_ARROW_GAP_Y;
+ betDownBtnPixi.y = +BET_ARROW_GAP_Y;
+ 
+ 
+ 
+ 
+   // BET label + amount (to the right of arrows)
+   betAmountUI.x = 0;
+   betAmountUI.y = 0;
+ 
+   betTitleLabel.anchor.set(0.5);
+   const BET_TEXT_GAP = Math.round(LAND_GROUP_H * 0.18);
+ betTitleLabel.position.set(0, Math.round(-(betAmountUI.getLocalBounds().height * 0.5 + BET_TEXT_GAP)));
+ 
+ 
+-  const betX = Math.round(
+-    betControlsGroup.x + betControlsGroup.getLocalBounds().width * 0.55 + betDisplayGroup.getLocalBounds().width * 0.5 + 16
+-  );
+-
+ betDisplayGroup.y = CY + GROUPS_Y_OFFSET;
+ 
+ 
+ // =====================
+ // LANDSCAPE: UNIFY BET SCALE WITH WIN & BALANCE
+ // =====================
+ betDisplayGroup.scale.set(1, 1);
+ const betH0 = Math.max(1, betDisplayGroup.getLocalBounds().height);
+ betDisplayGroup.scale.set(LAND_GROUP_H / betH0);
+ 
+ const BET_GAP_PX = Math.round(h * 0.01); // 🔧 try 0.03..0.10
+ betTitleLabel.y -= Math.round(BET_GAP_PX / Math.max(0.0001, betDisplayGroup.scale.y));
+ 
+ 
+ 
+ 
+ // ---------- WIN (LANDSCAPE): centered + POST-SCALE GAP (screen-space) ----------
+ winTitleLabel.anchor.set(0.5);
+ winAmountLabel.anchor.set(0.5);
+ 
+ // 1) layout with ZERO gap (tight)
+ const tW = winTitleLabel.getLocalBounds();
+ const aW = winAmountLabel.getLocalBounds();
+ 
+ const totalH0 = tW.height + aW.height;
+@@ -14364,52 +13643,50 @@ balanceGroup.y = CY + GROUPS_Y_OFFSET;
+ // =====================
+ // LANDSCAPE: keep BET arrows attached to BET display
+ // =====================
+ const CTRL_TO_BET_GAP = Math.round(h * 0.25); // 🔧 try 0.15..0.35
+ betControlsGroup.scale.set(1, 1); // ensure bounds are accurate
+ const ctrlW = betControlsGroup.getLocalBounds().width * (betControlsGroup.scale.x || 1);
+ 
+ // Put arrows just left of the betDisplayGroup
+ betControlsGroup.x = Math.round(
+   betDisplayGroup.x - (betW * 0.5) - CTRL_TO_BET_GAP - (ctrlW * 0.5)
+ );
+ 
+ 
+ 
+  // ---------- RIGHT SIDE (LANDSCAPE): AUTO+TURBO stacked LEFT of SPIN ----------
+ const RIGHT_PAD = -5;
+ 
+ // horizontal gap between the stack and spin
+ const STACK_TO_SPIN_GAP = -50; // try 6..18
+ 
+ // vertical gap between AUTO and TURBO (stack)
+ const STACK_GAP_Y = Math.round(h * 0.6); // try 0.18..0.30
+ 
+ const spinW = spinBtnPixi.getLocalBounds().width;
+ 
+-const spinH  = spinBtnPixi.getLocalBounds().height;
+-
+ const autoW  = autoBtnPixi.getLocalBounds().width;
+ const turboW = turboBtnPixi.getLocalBounds().width;
+ 
+ 
+ // LANDSCAPE: vertical offset for SPIN (negative = up, positive = down)
+ const SPIN_Y_OFFSET = Math.round(h * -1); // try -0.02 .. -0.10
+ 
+ 
+ // SPIN pinned near the right edge
+ spinBtnPixi.x = Math.round(w - RIGHT_PAD - spinW * 0.5);
+ spinBtnPixi.y = CY + SPIN_Y_OFFSET;
+ 
+ // ✅ LANDSCAPE ONLY: align BUY horizontally with SPIN (same Y line)
+ buyBtnPixi.y = spinBtnPixi.y;
+ // keep spinning overlay aligned
+ spinningBtnPixi.x = spinBtnPixi.x;
+ spinningBtnPixi.y = spinBtnPixi.y;
+ spinningBtnPixi.scale.set(spinBtnPixi.scale.x, spinBtnPixi.scale.y);
+ 
+ // Stack X is left of spin
+ const stackX = Math.round(
+   spinBtnPixi.x - (spinW * 0.5) - STACK_TO_SPIN_GAP - Math.max(autoW, turboW) * 0.5
+ );
+ 
+ const STACK_CENTER_Y = CY + SPIN_Y_OFFSET;
+@@ -15197,51 +14474,50 @@ function pickAftershockHopPath(finalIdx: number, hops = 5) {
+     pool[j] = t;
+   }
+ 
+   const path = pool.slice(0, Math.max(2, Math.min(hops, pool.length)));
+   path.push(finalIdx);
+   return path;
+ }
+ 
+ async function jumpSpriteToCell(
+   
+   
+   spr: Sprite,
+   cellIdx: number,
+   opts: { ms: number; arc: number; baseS: number }
+ ) {
+   const { cx, cy } = getCellCenterXY(cellIdx);
+ 
+   const x0 = spr.x;
+   const y0 = spr.y;
+   const x1 = cx;
+   const y1 = cy;
+ 
+   const ms = opts.ms;
+   const arc = opts.arc;
+   const baseS = opts.baseS;
+-let bouncePlayed = false;
+ 
+ 
+ // 🔊 wild hop / bounce SFX
+ audio?.playSfxThrottled?.("bounce", 70, 1, 0.98 + Math.random() * 0.06);
+ 
+   await animateMs(ms, (t) => {
+     // movement
+     const e = easeOutCubic(t);
+     spr.x = x0 + (x1 - x0) * e;
+     spr.y = y0 + (y1 - y0) * e;
+ 
+     // arc (sin parabola)
+     const k = Math.sin(Math.PI * e); // 0..1..0
+     spr.y -= k * arc;
+ 
+ 
+ 
+ 
+     // squash / stretch
+     const sx = baseS * (1 + 0.16 * k);
+     const sy = baseS * (1 - 0.12 * k);
+     spr.scale.set(sx, sy);
+   });
+ 
+   // settle perfectly
+@@ -15556,54 +14832,50 @@ root.sortChildren();
+ 
+     // keep vertical align
+     amountText.y = 0;
+     xText.y = 2;
+     multText.y = 0;
+ 
+ 
+     // vertical align
+     amountText.y = 0;
+     xText.y = 2;       // tiny optical tweak
+     multText.y = 0;
+ 
+     // skew + polish (match plaque feel)
+     amountText.skew.set(0, 0.39);
+     xText.skew.set(0, 0.39);
+     multText.skew.set(0, 0.39);
+ 
+     amountText.scale.x = 0.98;
+     multText.scale.x = 0.98;
+ 
+ 
+ 
+     c.addChild(amountText, xText, multText);
+ 
+ 
+-      // format multiplier like your plaque (2dp only if needed)
+-      const isInt = Math.abs(mult - Math.round(mult)) < 1e-6;
+-      const multStr = isInt ? String(Math.round(mult)) : mult.toFixed(2);
+-
+       // ✅ TICK UP FROM 0 → baseValue, while always showing xMULT
+       const start = performance.now();
+ 
+       const BASE_MS = 500;
+       const duration = Math.min(
+         1100,
+         BASE_MS + baseValue * 18
+       );
+ 
+       function tick(now: number) {
+   const k = Math.min(1, (now - start) / duration);
+   const e = k * k * (3 - 2 * k); // smoothstep
+   const v = baseValue * e;
+ 
+   amountText.text = v.toFixed(2);
+ 
+   if (k < 1) requestAnimationFrame(tick);
+ }
+ requestAnimationFrame(tick);
+ 
+ 
+       return c;
+     }
+ 
+ 
+@@ -15674,51 +14946,50 @@ p.scale.set(s);
+                   220,
+                   (k) => {
+                     const e = Math.max(0, Math.min(1, k));
+                     p.alpha = 1 - e;
+                     p.y = startY - 18 * e;
+                   },
+                   () => {
+                     p.destroy({ children: true });
+                     resolve();
+                   }
+                 );
+               },
+               (t) => easeOutBack(t, 1.18)
+             );
+           }, delay);
+         });
+       });
+ 
+       await Promise.all(tasks);
+     }
+ 
+     // 👇 tweak these (you asked to increase timing between staggers)
+     const CLUSTER_STAGGER_MS = 50;     // delay between columns/tiles popping (increase this)
+     const CLUSTER_POP_SCALE  = 1.14;    // pop size (e.g. 1.08–1.20)
+     const CLUSTER_POP_IN_MS  = 90;      // pop up duration
+-    const CLUSTER_POP_OUT_MS = 140;     // settle back duration
+ 
+     // frames follow the exact same stagger as the pop
+     const WIN_FRAME_STAGGER_MS = CLUSTER_STAGGER_MS;
+     const WIN_FRAME_FADE_MS = 80;
+ 
+     // per-cell glow sprite cache
+     const winGlowSprites: Array<Sprite | null> = Array(CELL_COUNT).fill(null);
+ 
+     function getSortedWinPositions(clusters: Cluster[]) {
+       const winSet = new Set<number>();
+       for (const c of clusters) for (const i of c.positions) winSet.add(i);
+ 
+       const wins = Array.from(winSet);
+       // left->right, then top->bottom
+       wins.sort((a, b) => {
+         const ax = a % COLS, ay = Math.floor(a / COLS);
+         const bx = b % COLS, by = Math.floor(b / COLS);
+         if (ax !== bx) return ax - bx;
+         return ay - by;
+       });
+ 
+       return wins;
+     }
+ 
+     function setWinGlow(i: number, on: boolean) {
+@@ -15905,55 +15176,50 @@ addSystem(() => {
+   parallaxNY += (mouseNY - parallaxNY) * BG_PARALLAX_SMOOTH;
+ 
+   bgBase.y = bgBaseHomeY + parallaxNY * BG_PARALLAX_BASE_PX;
+   bgFree.y = bgFreeHomeY + parallaxNY * BG_PARALLAX_FREE_PX;
+ });
+ 
+ 
+ 
+   addSystem((dt) => {
+     if (!gameTitle.visible) return;
+     if (titleDropActive) return;
+ 
+     titleFloatT += dt;
+ 
+     const t = titleFloatT;
+ 
+     const oy = Math.sin(t * Math.PI * 2 * TITLE_FLOAT_SPD) * TITLE_FLOAT_AMP_Y;
+     const ox = Math.cos(t * Math.PI * 2 * (TITLE_FLOAT_SPD * 0.9)) * TITLE_FLOAT_AMP_X;
+ 
+     gameTitle.x = titleBaseX + ox * titleFloatBlend;
+     gameTitle.y = titleBaseY + oy * titleFloatBlend;
+     gameTitle.rotation =
+       Math.sin(t * Math.PI * 2 * (TITLE_FLOAT_SPD * 0.7)) * TITLE_FLOAT_ROT * titleFloatBlend;
+   });
+ 
+-function getPortraitReelScale() {
+-  // subtle boost only
+-  return isMobilePortraitUILayout() ? 1.08 : 1.0;
+-}
+-
+   function layoutAll() {
+ 
+   // =====================
+   // PORTRAIT-ONLY LOCK (MOBILE)
+   // =====================
+ 
+   const W = app.screen.width;
+   const H = app.screen.height;
+ 
+   const IS_MOBILE =
+     /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+     window.matchMedia?.("(pointer: coarse)")?.matches;
+ 
+   const isLandscape = app.screen.width > app.screen.height;
+ 
+ 
+   
+ // =====================
+ // PORTRAIT-ONLY LOCK (MOBILE + DOM BLOCKER)
+ // =====================
+ const domBlocker = document.getElementById("rotate-blocker-dom");
+ 
+ if (IS_MOBILE && isLandscape) {
+   // Pixi blocker (covers canvas area)
+   rotateBlocker.visible = true;
+@@ -16065,53 +15331,50 @@ reelHouse.y = isPortrait
+ 
+   const portraitMul = isMobilePortraitUILayout() ? 1.08 : 1.0;
+   const landscapeMul = isMobileLandscapeUILayout() ? MOBILE_LANDSCAPE_REELHOUSE_MUL : 1.0;
+ 
+   reelHouse.scale.set(baseScale * portraitMul * landscapeMul);
+ }
+ 
+ 
+ 
+   // Convert inset pixels (texture space) -> world space using reelHouse scale
+   const sx = reelHouse.scale.x;
+   const sy = reelHouse.scale.y;
+ 
+   const left   = reelHouse.x - reelHouse.width / 2 + REEL_WINDOW_INSET.left * sx;
+   const top    = reelHouse.y - reelHouse.height / 2 + REEL_WINDOW_INSET.top * sy;
+   const right  = reelHouse.x + reelHouse.width / 2 - REEL_WINDOW_INSET.right * sx;
+   const bottom = reelHouse.y + reelHouse.height / 2 - REEL_WINDOW_INSET.bottom * sy;
+ 
+   boardOx = Math.round(left);
+   boardOy = Math.round(top);
+   boardTotalW = Math.round(right - left);
+   boardTotalH = Math.round(bottom - top);
+ 
+   // ✅ MOBILE: now compute symbols/cell size from the *actual* reel window
+ if (isMob) {
+-  const portraitBoost = getPortraitReelScale(); // your existing portrait tweak (1.08 or 1.0)
+-
+-
+   // ✅ MOBILE: compute cellSize EXACTLY from the reel window (no clamps/pads)
+ if (isMob) {
+   const cellFromW = (boardTotalW - (COLS - 1) * SYMBOL_GAP) / COLS;
+   const cellFromH = (boardTotalH - (ROWS - 1) * SYMBOL_GAP) / ROWS;
+ 
+   cellSize = Math.floor(Math.min(cellFromW, cellFromH));
+ }
+ }
+ 
+ 
+   // Update grid mask
+   gridMask.clear();
+   gridMask
+     .rect(
+       boardOx + INSET_L,
+       boardOy + INSET_T,
+       boardTotalW - INSET_L - INSET_R,
+       boardTotalH - INSET_T - INSET_B
+     )
+     .fill(0xffffff);
+ 
+   // Reel dimmer follows reelHouse bounds -> redraw after scaling
+   redrawReelDimmer();
+ 
+   layoutTumbleBanner();
+@@ -16244,51 +15507,50 @@ await runFinalBootPipelineOnce();
+     resizeBackground();
+ 
+     function snapBackgroundToTop() {
+       // anchor = 0.5 → top edge = y - height/2
+       bgBase.y = Math.round(bgBase.height * 0.5);
+       bgFree.y = Math.round(bgFree.height * 0.5);
+ 
+       // IMPORTANT: update "home" positions so parallax doesn't fight this
+       bgBaseHomeY = bgBase.y;
+       bgFreeHomeY = bgFree.y;
+     }
+ 
+ 
+ 
+     // =====================
+     // START SMOKE AFTER STARTUP PAN FINISHES
+     // =====================
+     clearSmokeNow();       // ensure no early particles exist
+     smokeFxEnabled = false; // ✅ keep OFF until game start
+     smokeSpawnAcc = 0;
+ 
+ 
+ 
+     const STARTUP_PAN_MS = 2000;      // tweak
+     const STARTUP_REVEAL_DELAY = 10; // tweak
+-    const STARTUP_BG_PAN_PX_N = 0; // % of screen height to start "lower" (shows top of bg)
+ 
+     function playStartupIntro() {
+       state.overlay.startup = true;
+ 
+       // --- SMOKE: keep OFF during startup pan ---
+     smokeFxEnabled = false;
+     clearSmokeNow();     // removes any already-spawned puffs
+     smokeSpawnAcc = 0;   // resets spawn accumulator (optional but nice)
+ 
+ 
+       // Hide/lock everything except the background
+       gameCore.alpha = 0;
+       gameCore.scale.set(1);
+       (gameCore as any).eventMode = "none";
+ 
+       // If you want the UI hidden too during the intro
+       fadeUiLayerTo(0, 0); // immediate
+ 
+       // Make sure backgrounds are in their correct "home" layout first
+       resizeBackground();
+ 
+     /// Start with the BOTTOM of the texture exactly at the bottom of the screen.
+     // With anchor 0.5, bottom edge is (y + height/2),
+     // so y = screenH - height/2
+     const screenH = app.screen.height;
+@@ -16609,183 +15871,50 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
+       // always follow sprite motion
+       e.root.position.set(s.x, s.y);
+       e.root.rotation = s.rotation;
+       e.root.alpha = s.alpha;
+ 
+       // apply perspective + scale every frame (stable)
+       let sx = s.scale.x;
+       let sy = s.scale.y;
+ 
+       if (spec) {
+         sx *= (spec.scaleX ?? 1);
+         sy *= (spec.scaleY ?? 1);
+         e.root.skew.set(spec.skewX ?? 0, spec.skewY ?? 0);
+       } else {
+         e.root.skew.set(0, 0);
+       }
+ 
+       e.root.scale.set(sx, sy);
+     }
+   });
+ 
+ 
+ 
+ 
+ 
+-    type PayFrameView = { g: Graphics };
+-    let payFrameViews: PayFrameView[] = [];
+-
+-    function clearPayFrames() {
+-      for (const v of payFrameViews) v.g.visible = false;
+-      payFrameLayer.removeChildren();
+-      // remove this line if present:
+-      // clearWinPops();
+-    }
+-
+-
+-
+-
+-    const winPopPool: Text[] = [];
+-
+-    function clearWinPops() {
+-      for (const t of winPopPool) {
+-        t.visible = false;
+-        if (t.parent) t.parent.removeChild(t);
+-      }
+-    }
+-
+-    function getWinPop(): Text {
+-      const t = winPopPool.find((x) => !x.visible);
+-      if (t) return t;
+-
+-      const nt = new Text({
+-        text: "",
+-        style: {
+-          fontFamily: "Luckiest Guy, Arial Black, Arial",
+-          fontSize: 96,
+-          fill: 0xffffff,
+-          stroke: { color: 0x000000, width: 10 },
+-
+-          align: "center",
+-          dropShadow: true,
+-          dropShadowColor: 0x000000,
+-          dropShadowBlur: 2,
+-          dropShadowDistance: 4,
+-        } as any,
+-      });
+-
+-      nt.anchor.set(0.5);
+-      nt.resolution = 2; // sharper text
+-      nt.visible = false;
+-      winPopPool.push(nt);
+-      return nt;
+-    }
+-
+-    // Uses whatever win value your cluster has (winX/payoutX/win) and falls back safely.
+-    function clusterWinX(c: any): number {
+-      return (c?.winX ?? c?.payoutX ?? c?.win ?? 0) as number;
+-    }
+-
+-    function showWinPopsForClusters(clusters: any[], bet: number) {
+-      clearWinPops();
+-
+-      for (const c of clusters) {
+-        const indices: number[] = (c.positions ?? c.indices ?? c.cells ?? c.pos ?? []) as number[];
+-
+-        if (!indices?.length) continue;
+-
+-        // center of cluster in WORLD coords
+-        const pts = indices
+-          .map((i) => cellViews[i]?.sprite?.getGlobalPosition?.())
+-          .filter(Boolean) as any[];
+-
+-        if (!pts.length) continue;
+-
+-        let cx = 0, cy = 0;
+-        for (const p of pts) { cx += p.x; cy += p.y; }
+-        cx /= pts.length;
+-        cy /= pts.length;
+-
+-        const win = clusterWinX(c) * bet;
+-        const label = `$${win.toFixed(2)}`;
+-
+-        const t = getWinPop();
+-        t.text = label;
+-        t.visible = true;
+-        t.alpha = 0;
+-        t.scale.set(0.65);
+-
+-        // convert WORLD -> winPopLayer local
+-        const local = winPopLayer.toLocal({ x: cx, y: cy } as any);
+-        t.position.set(local.x, local.y - 10);
+-
+-        t.zIndex = 1;
+-        winPopLayer.addChild(t);
+-
+-        const startY = t.y;
+-
+-        // pop in + float up + fade out
+-        tween(
+-          180,
+-          (k) => {
+-            const e = easeOutCubic(k);
+-            t.alpha = e;
+-            const s = 0.65 + (1.0 - 0.65) * e;
+-            t.scale.set(s);
+-          },
+-          () => {
+-            tween(
+-              650,
+-              (k2) => {
+-                const e2 = easeOutCubic(k2);
+-                t.y = startY - 34 * e2;
+-                t.alpha = 1 - e2;
+-              },
+-              () => {
+-                t.visible = false;
+-                if (t.parent) t.parent.removeChild(t);
+-              }
+-            );
+-          }
+-        );
+-      }
+-    }
+-
+-
+-    function ensurePayFrame(i: number) {
+-      while (payFrameViews.length <= i) {
+-        const g = new Graphics();
+-        g.visible = false;
+-        payFrameLayer.addChild(g);
+-        payFrameViews.push({ g });
+-      }
+-      return payFrameViews[i].g;
+-    }
+-
+-   
+-
+-
+   function drawEyeRect(g: Graphics, w: number, h: number, col: number) {
+     g.clear();
+ 
+     g
+       .rect(-w / 2, -h / 2, w, h)
+       .fill({ color: col, alpha: 1 });
+ 
+     g.roundPixels = true;
+   }
+ 
+ 
+   function primeEyesForGrid(grid: Cell[]) {
+     // ensure each cell's EyeOverlay is configured for the symbol ID *now*
+     for (let i = 0; i < CELL_COUNT; i++) {
+       applyEyesForCell(i, grid[i].id);
+     }
+   }
+     function applyEyesForCell(i: number, id: SymbolId) {
+       const v = cellViews[i];
+       if (!v) return;
+ 
+       const spec = EYE_SPECS[id];
+       const e = v.eyes;
+ 
+       // hide if this symbol has no eyes
+@@ -16835,107 +15964,91 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
+     // reset blink
+     e.blinking = false;
+     e.blinkT = 0;
+     scheduleNextBlink(e, id);
+ 
+     e.lastId = id;
+   }
+ 
+   e.root.visible = true;
+   e.active = true;
+ 
+   // ensure “open”
+   for (const g of e.eyeG) g.scale.y = 1;
+ 
+ 
+       e.root.visible = true;
+       e.active = true;
+ 
+       // ensure “open”
+       for (const g of e.eyeG) g.scale.y = 1;
+     }
+ 
+ 
+     function drawGrid(grid: Cell[]) {
+       ensureGridSprites();
+-      const { x: ox, y: oy } = boardOrigin();
+ 
+       for (let i = 0; i < CELL_COUNT; i++) {
+-        const { x, y } = idxToXY(i);
+-
+-        const px = ox + x * (cellSize + SYMBOL_GAP);
+-        const py = oy + y * (cellSize + SYMBOL_GAP);
+-
+         const s = cellViews[i].sprite;
+     const id = grid[i].id;
+     (s as any).__sid = id;
+     s.texture = SYMBOL_TEX[id];
+ 
+     applySymbolScale(s, id);
+ 
+     const { cx, cy } = getCellCenterXY(i);
+     s.x = cx;
+     s.y = targetYForSymbol(id, cy);
+ 
+     s.alpha = 1;
+     // ✅ keep eyesRoot glued to the sprite (same position/scale/rotation)
+   const e = cellViews[i].eyes;
+   e.root.position.set(s.x, s.y);
+   e.root.rotation = s.rotation;
+ 
+ 
+     applyEyesForCell(i, id);
+     syncEyesToSprite(i);
+ 
+       }
+     }
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+     function setHighlight(i: number, on: boolean) {
+       const v = cellViews[i];
+       if (!v) return;
+-
+-      const s = v.sprite;
+-    const id = (s.texture === SYMBOL_TEX["S1"] ? "S1" : null); // not great
+-
+     }
+ 
+ 
+ 
+ 
+ 
+-      function setHidden(i: number, hidden: boolean) {
+-        const v = cellViews[i];
+-        if (!v) return;
+-        v.sprite.visible = !hidden;
+-      }
+-
+ 
+       const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+ 
+     // --- TURBO helpers ---
+     const turboFactor = () => (state.ui.turbo ? 0.5 : 1); // 2× speed when turbo ON
+ 
+     const waitT = (ms: number) =>
+       wait(Math.round(ms * turboFactor()));
+ 
+     const durT = (ms: number) =>
+       Math.round(ms * turboFactor());
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+       function animateScaleMs(
+         sprite: Sprite,
+         durationMs: number,
+         fromX: number,
+         fromY: number,
+@@ -16952,114 +16065,110 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
+     async function crossfadeBackground(from: Sprite, to: Sprite, durationMs = 450, targetAlpha = 0.9) {
+       // Ensure both are visible during transition
+       from.visible = true;
+       to.visible = true;
+ 
+       
+ 
+ 
+       // Force known starting alphas (important!)
+       from.alpha = targetAlpha;
+       to.alpha = 0;
+ 
+       await animateMs(durationMs, (t) => {
+         const e = easeOutCubic(t);
+         from.alpha = targetAlpha * (1 - e);
+         to.alpha = targetAlpha * e;
+       });
+ 
+       from.visible = false;
+       from.alpha = 0;
+ 
+       to.visible = true;
+       to.alpha = targetAlpha;
+     }
+ 
+-    let isRelayoutLocked = false;
+-
+ let __fsAutoKickToken = 0;
+ 
+ function kickFreeSpinsAuto(delayMs = 250) {
+   __fsAutoKickToken++;
+   const token = __fsAutoKickToken;
+ 
+   setTimeout(() => {
+     if (token !== __fsAutoKickToken) return;
+ 
+     // only auto-chain during real FREE SPINS
+     if (state.game.mode !== "FREE_SPINS") return;
+     if (state.fs.remaining <= 0) return;
+ 
+     // do NOT spin during overlays/menus
+     if (
+       state.overlay.splash ||
+       state.overlay.startup ||
+       state.overlay.fsIntro ||
+       state.overlay.fsOutro ||
+       state.overlay.fsOutroPending ||
+       state.overlay.bigWin ||
+       state.ui.settingsOpen ||
+       state.ui.buyMenuOpen
+     ) return;
+ 
+     // don’t interrupt an in-flight spin
+     if (state.ui.spinning) return;
+ 
+     void doSpin();
+   }, delayMs);
+ }
+ 
+ 
+     async function doSpin() {
+-      isRelayoutLocked = true;
+       if (state.overlay.splash) return;
+ 
+     // 🔒 Startup intro: absolutely no spinning / input should work
+     if (state.overlay.startup) return;
+ 
+       
+         // 🔒 During FS intro/outro: absolutely no spinning / input should work
+       if (state.overlay.fsIntro || state.overlay.fsOutro) return;
+ 
+       // Optional extra safety: block spins while menus are open
+       if (
+         (typeof state.ui.settingsOpen !== "undefined" && state.ui.settingsOpen) ||
+         (typeof state.ui.buyMenuOpen !== "undefined" && state.ui.buyMenuOpen)
+       ) {
+         return;
+       }
+ 
+         // ✅ Don't allow spinning while FS intro overlay is up
+         if (state.overlay.fsIntro || state.overlay.fsOutro) return;
+         if (state.ui.settingsOpen) return;
+ 
+       if (state.ui.spinning) return;
+ 
+ state.ui.spinning = true;
+ applyUiLocks();
+ 
+-resetClusterPopRate(); // ✅ start pitch ladder fresh each spin
+ audio?.playSfx?.("spin_start", 1.0);
+ 
+ 
+      applyUiLocks();
+ 
+ // ✅ During AUTO: keep STOP button visible (countdown stays on-screen)
+ // ✅ During manual: show the SPINNING overlay like before
+ if (state.ui.auto) {
+   spinningBtnPixi.visible = false;
+   spinBtnPixi.visible = true;        // keep it visible
+ 
+   // ✅ IMPORTANT: keep STOP AUTO clickable (do NOT disable)
+   // Force full alpha in case setEnabled(false) happened earlier
+   (spinBtnPixi as any).eventMode = "static";
+   spinBtnPixi.cursor = "pointer";
+   spinBtnPixi.alpha = 1;
+ } else {
+   spinBtnPixi.visible = false;
+   spinningBtnPixi.visible = true;
+   spinBtnPixi.setEnabled(false);
+ }
+ 
+ 
+ 
+       betDownBtnPixi.setEnabled(false);
+@@ -17144,51 +16253,50 @@ autoBtnPixi?.setEnabled?.(uiFree);
+ 
+ 
+ 
+ 
+ 
+ 
+     // ✅ BASE: only reset when the NEXT spin starts (so it happens on click)
+     let plaqueResetP: Promise<void> | null = null;
+ 
+     if (mode === "BASE" && plaqueIdx > 0) {
+       plaqueResetP = (async () => {
+         // wait for any last step-up animation to finish
+         await waitForPlaqueIdle();
+ 
+         // fast smooth return (uses your quick/no-pause version)
+         await animatePlaqueReturnToBase();
+       })();
+     }
+     await animateBoardExitDown();
+     if (plaqueResetP) await plaqueResetP;
+ 
+ 
+ 
+ 
+ 
+-      const prevFs = state.fs.remaining;          // remember if we were in base mode
+       let openedFsIntro = false;           // if true, don't auto-chain spins
+       let res: SpinResult | null = null;   // so finally can see it
+ 
+ 
+     try {
+       // mode is already decided above
+ 
+ 
+         await setBackgroundForMode(mode, true);
+       
+ 
+     const simCfg = buildSimConfig({
+     COLS,
+     ROWS,
+     fsTotalCap: state.fs.totalCap,
+   });
+ 
+   res = simulateSpin(
+     simCfg,
+     mode,
+     state.fs.remaining,
+     state.fs.ladderIndex,
+     undefined
+   );
+ 
+@@ -17220,51 +16328,50 @@ audio?.setBaseMusicIntensity?.(0.15, 300);
+       state.fs.sessionTotalWin += winAmount;
+     }
+ 
+       if (winAmount > 0) {
+       setWinAmount(state.bank.lastWin + winAmount);
+     } else {
+       setWinAmount(0);
+     }
+         // ✅ BIG WIN OVERLAY (10x+)
+         const winX = res.totalWinX;
+         if (winX >= BIG_WIN_X) {
+           await showBigWinAndWait(winAmount, winX);
+         }
+ 
+ 
+         state.bank.balance += winAmount;
+         balanceLabel.text = fmtMoney(state.bank.balance);
+             // ✅ If we just triggered Free Spins from BASE (eg. 3 scatters),
+         // open the intro overlay instead of immediately chaining into FS spins.
+         if (mode === "BASE" && res.fsAwarded > 0) {
+     enterFreeSpins(res.fsAwarded); // ✅ exact awarded amount (10 usually)
+     openedFsIntro = true;
+   }
+ 
+       } finally {
+-        isRelayoutLocked = false;
+         state.ui.spinning = false;
+         spinningBtnPixi.visible = false;
+     spinBtnPixi.visible = true;
+ 
+ 
+     // ✅ swap back (but if settings is open, keep spin hidden/disabled)
+     spinningBtnPixi.visible = false;
+     spinBtnPixi.visible = true;
+ 
+    
+ 
+ 
+ applyUiLocks();
+ // optional: if your button helper supports it, snap visuals back to UP
+ (buyBtnPixi as any)?.resetVisual?.();
+ 
+     betValueBtn.setEnabled(true);
+ 
+ 
+         // ✅ If we opened the FS intro, don't auto-spin yet
+     if (openedFsIntro) return;
+ 
+ 
+     // ✅ FREE SPINS JUST ENDED → show TOTAL WIN outro
+     if (state.game.mode === "FREE_SPINS" && state.fs.remaining === 0) {
+@@ -18022,58 +17129,50 @@ function colsThatMovedFromExplosions(explodePositions: number[], COLS: number) {
+ 
+       async function playSpin(res: SpinResult) {
+         hideTumbleWinBannerNow(); // reset from any previous spin
+ 
+       setBackgroundForMode(res.mode, false);
+ 
+       modeLabel.text = `MODE: ${res.mode}`;
+       winLabel.text = `WIN: 0`;
+         hideTumbleWinBannerNow(); // reset banner for this spin
+       let tumbleTotalSoFar = 0;
+ 
+       await animateBoardReveal(res.initialGrid);
+ 
+ 
+     // ✅ FREE SPINS retrigger popup (3+ scatters)
+     if (res.mode === "FREE_SPINS" && res.fsAwarded > 0) {
+       await showFsAddedPopup(res.fsAwarded);
+       refreshFsCounter(); // in case your counter updates need a nudge here
+     }
+ if (res.mode === "FREE_SPINS" && res.fsAwarded > 0 && state.fs.remaining > 0) {
+   kickFreeSpinsAuto(250);
+ }
+       await setReelDimmer(false);
+ 
+       
+-
+-
+-
+-
+-
+-
+-    let accum = 0;
+-
+     for (let si = 0; si < res.steps.length; si++) {
+       
+       const step = res.steps[si];
+       // ✅ Dynamic soundtrack intensity ramps per tumble
+ if (res.mode === "BASE") {
+   setBaseMusicIntensityFromTumble(si);
+ }
+ 
+ 
+ // If this is Aftershock, HARD APPLY the BEFORE grid first
+ if (step.aftershockWildSpawned) {
+   applyGridToSprites(step.grid);     // ✅ ensures no "final wild" is visible
+   await playAftershockSequence(step);
+   continue;
+ }
+ 
+ // normal step
+ drawGrid(step.grid);
+ 
+ 
+ 
+         // highlight + frames for winning positions
+       const hi = new Set<number>();
+       step.clusters.forEach((c) => c.positions.forEach((p) => hi.add(p)));
+       const hiArr = Array.from(hi);
+@@ -18294,26 +17393,26 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
+     function bootInitialBoard() {
+       const bootGrid = makeGrid(WEIGHTS_BASE); // simple random grid
+       modeLabel.text = "MODE: BASE";
+       multLabel.text = "MULT: x1";
+       winLabel.text  = "WIN: 0";
+       fsLabel.text   = `FS: ${state.fs.remaining}`;
+ 
+       // draw immediately so you never start empty
+       drawGrid(bootGrid);
+       applyGridToSprites(bootGrid);
+     }
+ 
+ 
+     // call boot AFTER first layout pass has fully applied
+     layoutAll();
+ 
+ 
+ 
+ 
+ 
+ 
+ } // closes main()
+ 
+     main().catch((err) => {
+       console.error("Fatal error in main():", err);
+-    });
+\ No newline at end of file
++    });
+ 
+EOF
+)

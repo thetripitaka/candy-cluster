@@ -62,7 +62,7 @@
 }
 
 #rotate-blocker-dom .rotate-text {
-  font-family: "Micro5", monospace;
+
   font-size: 32px;
   letter-spacing: 2px;
   color: #fff;
@@ -82,12 +82,9 @@ canvas { display: block; }
     </style>
   </head>
   <body>
-      <div id="rotate-blocker-dom">
-    <div class="rotate-text">
-      PLEASE ROTATE<br />
-      BACK TO PORTRAIT
-    </div>
-  </div>
+ <div id="rotate-blocker-dom">
+  <div id="rotate-blocker-text" class="rotate-text"></div>
+</div>
     <div id="ui">
       <button id="spinBtn">SPIN</button>
       <div class="chip">Mode: <span id="modeTxt">BASE</span></div>

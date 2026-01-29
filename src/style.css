@@ -94,3 +94,92 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+/* =========================
+   CORE PIXEL FONTS
+   ========================= */
+@font-face {
+  font-family: "Pixeldown";
+src: url("/assets/fonts/pixeldown.ttf") format("truetype");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Micro5";
+  src: url("/assets/fonts/Micro5.ttf") format("truetype");
+  font-display: block; /* was swap */
+}
+
+/* =========================
+   UI SAFE FONTS (PER SCRIPT)
+   ========================= */
+
+/* Vietnamese / Latin Extended / Russian-safe */
+@font-face {
+  font-family: "Neucha";
+  src: url("/assets/fonts/Neucha-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Arabic */
+@font-face {
+  font-family: "Marhey";
+  src: url("/assets/fonts/Marhey-VariableFont_wght.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Hindi (Devanagari) */
+@font-face {
+  font-family: "PlaypenSansDeva";
+  src: url("/assets/fonts/PlaypenSansDeva-VariableFont_wght.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Japanese */
+@font-face {
+  font-family: "PottaOne";
+  src: url("/assets/fonts/PottaOne-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Korean */
+@font-face {
+  font-family: "DoHyeon";
+  src: url("/assets/fonts/DoHyeon-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Turkish */
+@font-face {
+  font-family: "Bahiana";
+  src: url("/assets/fonts/Bahiana-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Chinese (Simplified) */
+@font-face {
+  font-family: "ZCOOLKuaiLe";
+  src: url("/assets/fonts/ZCOOLKuaiLe-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "RoadRage";
+  src: url("/assets/fonts/RoadRage.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}

@@ -1,5 +1,10 @@
 // src/ui/buyMenu.ts
 import { Application, Container, Graphics, Rectangle, Sprite, Text, TextStyle, Texture } from "pixi.js";
+import { applyUiTextCase, localizeStyle, micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
+import { getLang } from "../i18n/i18n";
+
+
+
 
 export type BuyMenuApi = {
   openBuy: () => void;
@@ -13,9 +18,12 @@ export type BuyMenuApi = {
 export type BuyMenuDeps = {
   app: Application;
   root: Container;
-  uiLayer: Container; // (optional, but you had it)
+  uiLayer: Container;
   state: any;
   audio?: any;
+
+  t?: (key: string) => string; // ✅ ADD THIS
+
   // texture helpers
   texUI: (frame: string) => Texture;
   texExtra: (frame: string) => Texture;
@@ -30,6 +38,7 @@ export type BuyMenuDeps = {
   updateBetUI: () => void;
   refreshSpinAffordability: () => void;
   onBalanceUpdated?: () => void;
+  
 
   // buttons to disable/enable while menu open
   spinBtnPixi: any;
@@ -67,6 +76,7 @@ export type BuyMenuDeps = {
 };
 
 export function createBuyMenu(deps: BuyMenuDeps): BuyMenuApi {
+  
 
 
 
@@ -77,18 +87,20 @@ let portraitBetValueW = 0;
 
 
   const {
-    app,
-    root,
-    state,
-  audio, 
-    texExtra,
-    setScaleToHeight,
-    makePngButton,
+  app,
+  root,
+  state,
+  audio,
+  texExtra,
+  setScaleToHeight,
+  makePngButton,
 
-    fmtMoney,
-    updateBetUI,
-    refreshSpinAffordability,
-    enterFreeSpins,
+    t, // ✅ ADD THIS
+  fmtMoney,
+  updateBetUI,
+  refreshSpinAffordability,
+  enterFreeSpins,
+
 
     CLOSE_UP,
     CLOSE_HOVER,
@@ -109,6 +121,47 @@ let portraitBetValueW = 0;
     easeOutBack,
     easeInCubic,
   } = deps;
+  
+  const tt = (key: string, fallback: string) => t?.(key) ?? fallback;
+const uiLabel = (key: string, fallback: string) => applyUiTextCase(tt(key, fallback));
+
+function applyLatinMicro5ToBuyMenuText() {
+  const ff = micro5ForLatinUiFontFamily(getLang());
+
+  // Footer
+  (buyFooterBalanceTitle.style as any).fontFamily = ff;
+  (buyFooterBalanceValue.style as any).fontFamily = ff;
+  (buyFooterBetTitle.style as any).fontFamily = ff;
+  (buyFooterBetValue.style as any).fontFamily = ff;
+
+  // Card subtitles (body)
+  for (const c of buyCards as any[]) {
+    const body = c?._body as Text | undefined;
+    if (body) (body.style as any).fontFamily = ff;
+
+    const price = c?._price as Text | undefined;
+    if (price) (price.style as any).fontFamily = ff;
+
+    // button text inside the buy button
+    const btn = c?._buyBtn as any;
+    const txt = btn?.children?.find((ch: any) => ch instanceof Text) as Text | undefined;
+    if (txt) (txt.style as any).fontFamily = ff;
+  }
+
+  // Confirm popup button text (CONFIRM)
+  // (buyConfirmYesBtn contains a Text child too)
+  {
+    const txt = buyConfirmYesBtn?.children?.find((ch: any) => ch instanceof Text) as Text | undefined;
+    if (txt) (txt.style as any).fontFamily = ff;
+  }
+
+  // Confirm popup price text (you want Micro5 for Latin too)
+  (buyConfirmPriceText.style as any).fontFamily = ff;
+
+  // Toast already Micro5; leave it alone (or force it too)
+  // (buyToast.style as any).fontFamily = ff;
+}
+
 
     function playUiClick(vol = 0.9) {
     // ✅ also make sure audio is unlocked (harmless on desktop)
@@ -158,18 +211,24 @@ function isMobileLandscapeBuyLayout() {
   buyMenuLayer.addChild(buyBlocker);
 
   // header
-  const buyHeader = new Text({
-    text: "BUY BONUS",
-    style: {
-      fontFamily: "Micro5",
-      fill: 0xffffff,
-      fontSize: 50,
-      fontWeight: "100",
-      letterSpacing: 1,
-      align: "center",
-      stroke: { color: 0x000000, width: 6 },
-    } as any,
-  } as any);
+const buyHeader = new Text({
+  text: uiLabel("ui.buyBonus", "BUY BONUS"),
+style: localizeStyle({
+  fontFamily: "Pixeldown",
+  fill: 0xffffff,
+  fontSize: 38,
+  fontWeight: "100",
+  align: "center",
+  letterSpacing: 2,
+  dropShadow: true,
+  dropShadowAlpha: 0.6,
+  dropShadowDistance: 2,
+  dropShadowBlur: 0,
+  dropShadowAngle: -Math.PI / 4,
+} as any),
+
+} as any);
+
   buyHeader.anchor.set(0.5);
   buyMenuLayer.addChild(buyHeader);
 
@@ -221,17 +280,18 @@ buyCardsRow.mask = buyCardsMask;
 root.sortChildren();
 
 
-  const buyToast = new Text({
-    text: "",
-    style: {
-      fontFamily: "Micro5",
-      stroke: { color: 0x000000, width: 6 },
-      fill: 0xffe0e0,
-      fontSize: 30,
-      align: "center",
-      letterSpacing: 1,
-    } as any,
-  } as any);
+const buyToast = new Text({
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Micro5",
+    stroke: { color: 0x000000, width: 6 },
+    fill: 0xffe0e0,
+    fontSize: 30,
+    align: "center",
+    letterSpacing: 1,
+  } as any),
+} as any);
+
   buyToast.anchor.set(0.5);
   buyToast.visible = false;
   buyToast.alpha = 0;
@@ -265,11 +325,14 @@ root.sortChildren();
         else buyToast.visible = false;
       };
       requestAnimationFrame(tick);
+      buyToast.text = applyUiTextCase(msg);
     }, 900);
   }
+  
 
-  const BUY_PORTRAIT_TOAST_MSG = "OOPS, NOT ENOUGH BALANCE"; // ✅ portrait wording
-const BUY_DESKTOP_TOAST_MSG  = "OOPS — NOT ENOUGH BALANCE or CHANGE BET AMOUNT"; // ✅ desktop/landscape wording
+const BUY_PORTRAIT_TOAST_MSG = tt("ui.insufficientBalance", "OOPS, NOT ENOUGH BALANCE");
+const BUY_DESKTOP_TOAST_MSG  = tt("ui.insufficientBalanceOrChangeBet", "OOPS — NOT ENOUGH BALANCE or CHANGE BET AMOUNT");
+
 
 function getInsufficientMsg() {
   return isMobilePortraitBuyLayout()
@@ -335,24 +398,30 @@ let portraitHudPivotSet = false;
   const buyFooterBetBg = new Graphics(); // grey pill behind bet+arrows
   buyFooter.addChild(buyFooterBetBg);
 
-  const BUY_FOOTER_TITLE_STYLE = new TextStyle({
-    fontFamily: "Micro5",
-    fill: 0xb18cff,
-    fontSize: 24,
-    letterSpacing: 2,
-  } as any);
+const BUY_FOOTER_TITLE_STYLE_OBJ: any = localizeStyle({
+  fontFamily: "Micro5", // placeholder
+  fill: 0xb18cff,
+  fontSize: 24,
+  letterSpacing: 2,
+} as any);
+BUY_FOOTER_TITLE_STYLE_OBJ.fontFamily = micro5ForLatinUiFontFamily(getLang());
+const BUY_FOOTER_TITLE_STYLE = new TextStyle(BUY_FOOTER_TITLE_STYLE_OBJ);
 
-  const BUY_FOOTER_VALUE_STYLE = new TextStyle({
-    fontFamily: "Micro5",
-    fill: 0xffffff,
-    fontSize: 40,
-    letterSpacing: 1,
-    stroke: { color: 0x000000, width: 4 },
-  } as any);
+const BUY_FOOTER_VALUE_STYLE_OBJ: any = localizeStyle({
+  fontFamily: "Micro5", // placeholder
+  fill: 0xffffff,
+  fontSize: 40,
+  letterSpacing: 1,
+  stroke: { color: 0x000000, width: 4 },
+} as any);
+BUY_FOOTER_VALUE_STYLE_OBJ.fontFamily = micro5ForLatinUiFontFamily(getLang());
+const BUY_FOOTER_VALUE_STYLE = new TextStyle(BUY_FOOTER_VALUE_STYLE_OBJ);
 
-  const buyFooterBalanceTitle = new Text({ text: "BALANCE", style: BUY_FOOTER_TITLE_STYLE } as any);
+
+
+ const buyFooterBalanceTitle = new Text({ text: uiLabel("ui.balance", "BALANCE"), style: BUY_FOOTER_TITLE_STYLE } as any);
   const buyFooterBalanceValue = new Text({ text: fmtMoney(state.bank.balance), style: BUY_FOOTER_VALUE_STYLE } as any);
-  const buyFooterBetTitle = new Text({ text: "BET", style: BUY_FOOTER_TITLE_STYLE } as any);
+  const buyFooterBetTitle     = new Text({ text: uiLabel("ui.bet", "BET"), style: BUY_FOOTER_TITLE_STYLE } as any);
   const buyFooterBetValue = new Text({ text: fmtMoney(state.bank.betLevels[state.bank.betIndex]), style: BUY_FOOTER_VALUE_STYLE } as any);
 
   buyFooter.addChild(buyFooterBalanceTitle, buyFooterBalanceValue, buyFooterBetTitle, buyFooterBetValue);
@@ -423,39 +492,40 @@ const buyBetUpBtn = makePngButton(BET_UP_UP, BET_UP_HOVER, BET_UP_DOWN, () => {
   let buyConfirmDividerAnimToken = 0;
 
   const buyConfirmTitleText = new Text({
-    text: "",
-    style: {
-      fontFamily: "pixeldown",
-      fill: 0xffffff,
-      fontSize: 38,
-      fontWeight: "100",
-      align: "center",
-      letterSpacing: 2,
-      dropShadow: true,
-      dropShadowAlpha: 0.6,
-      dropShadowDistance: 2,
-      dropShadowBlur: 0,
-      dropShadowAngle: -Math.PI / 4,
-    } as any,
-  } as any);
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffffff,
+    fontSize: 38,
+    fontWeight: "100",
+    align: "center",
+    letterSpacing: 2,
+    dropShadow: true,
+    dropShadowAlpha: 0.6,
+    dropShadowDistance: 2,
+    dropShadowBlur: 0,
+    dropShadowAngle: -Math.PI / 4,
+  } as any),
+} as any);
+
   buyConfirmTitleText.anchor.set(0.5);
   buyConfirmLayer.addChild(buyConfirmTitleText);
 
   const buyConfirmPriceText = new Text({
     text: "",
-    style: {
-      fontFamily: "Micro5",
-      fill: 0xffd36a,
-      fontSize: 42,
-      fontWeight: "100",
-      align: "center",
-      letterSpacing: 2,
-      dropShadow: true,
-      dropShadowAlpha: 0.65,
-      dropShadowDistance: 2,
-      dropShadowBlur: 0,
-      dropShadowAngle: -Math.PI / 4,
-    } as any,
+    style: localizeStyle({
+  fontFamily: "Micro5",
+  fill: 0xffd36a,
+  fontSize: 42,
+  fontWeight: "100",
+  align: "center",
+  letterSpacing: 2,
+  dropShadow: true,
+  dropShadowAlpha: 0.65,
+  dropShadowDistance: 2,
+  dropShadowBlur: 0,
+  dropShadowAngle: -Math.PI / 4,
+} as any),
   } as any);
   buyConfirmPriceText.anchor.set(0.5);
   buyConfirmLayer.addChild(buyConfirmPriceText);
@@ -469,18 +539,24 @@ function makeCardButton(
   const btn = new Container();
 
   const bg = new Graphics();
-  const txt = new Text({
-    text: label,
-    style: {
-      fontFamily: "Micro5",
-      fill: 0xffffff,
-      fontSize: 45,
-      fontWeight: "100",
-      letterSpacing: 2,
-      align: "center",
-      stroke: { color: 0x000000, width: 4 },
-    } as any,
-  } as any);
+  const btnTextStyle: any = localizeStyle({
+  fontFamily: "Micro5", // placeholder
+  fill: 0xffffff,
+  fontSize: 45,
+  fontWeight: "100",
+  letterSpacing: 2,
+  align: "center",
+  stroke: { color: 0x000000, width: 4 },
+} as any);
+
+// ✅ override font AFTER localizeStyle
+btnTextStyle.fontFamily = micro5ForLatinUiFontFamily(getLang());
+
+const txt = new Text({
+  text: applyUiTextCase(label),
+  style: btnTextStyle,
+} as any);
+
   txt.anchor.set(0.5);
   txt.position.set(110, 22);
 
@@ -506,7 +582,8 @@ function makeCardButton(
     onTap();
   });
 
-  (btn as any).setLabel = (t: string) => (txt.text = t);
+  (btn as any).setLabel = (s: string) => (txt.text = applyUiTextCase(s));
+   (txt.style as any).fontFamily = micro5ForLatinUiFontFamily(getLang());
   (btn as any).setRed = () => drawRed();
   (btn as any).setGreen = () => drawGreen();
 
@@ -516,7 +593,7 @@ function makeCardButton(
 
   let buyConfirmOnYes: null | (() => void) = null;
  const buyConfirmYesBtn = makeCardButton(
-  "CONFIRM",
+   tt("ui.btnConfirm", "CONFIRM"),
   () => {
     const cb = buyConfirmOnYes;
     closeBuyConfirm();
@@ -612,7 +689,7 @@ function makeCardButton(
   function openBuyConfirm(title: string, price: number, onYes: () => void) {
     buyConfirmOnYes = onYes;
 
-    buyConfirmTitleText.text = title;
+    buyConfirmTitleText.text = applyUiTextCase(title);
     buyConfirmPriceText.text = fmtMoney(price);
 
     layoutBuyConfirm();
@@ -655,18 +732,23 @@ function makeCardButton(
   function makeBuyCardButton(label: string, onTap: () => void) {
     const btn = new Container();
     const bg = new Graphics();
-    const txt = new Text({
-      text: label,
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffffff,
-        fontSize: 45,
-        fontWeight: "100",
-        letterSpacing: 2,
-        align: "center",
-        stroke: { color: 0x000000, width: 4 },
-      } as any,
-    } as any);
+    const btnTextStyle: any = localizeStyle({
+  fontFamily: "Micro5", // placeholder
+  fill: 0xffffff,
+  fontSize: 45,
+  fontWeight: "100",
+  letterSpacing: 2,
+  align: "center",
+  stroke: { color: 0x000000, width: 4 },
+} as any);
+
+// ✅ override font AFTER localizeStyle
+btnTextStyle.fontFamily = micro5ForLatinUiFontFamily(getLang());
+
+const txt = new Text({
+  text: applyUiTextCase(label),
+  style: btnTextStyle,
+} as any);
     txt.anchor.set(0.5);
     txt.position.set(110, 22);
 
@@ -685,7 +767,8 @@ function makeCardButton(
   onTap();
 });
 
-    (btn as any).setLabel = (t: string) => (txt.text = t);
+    (btn as any).setLabel = (s: string) => (txt.text = applyUiTextCase(s));
+ (txt.style as any).fontFamily = micro5ForLatinUiFontFamily(getLang());
     (btn as any).setRed = () => drawRed();
     (btn as any).setGreen = () => drawGreen();
 
@@ -704,12 +787,29 @@ function makeCardButton(
     artFrame: string;
   };
 
-  const buyCardSpecs: BuyCardSpec[] = [
-    { title: "PICK & MIX", body: "ENTRY BONUS\nSTARTS AT 1× MULTIPLIER", priceMult: 50,  startMult: 1, fsCount: 10, artFrame: "buy_art_pick.png" },
-    { title: "GIGA",       body: "HIGHER VOLATILITY\nSTARTS AT 2× MULTIPLIER", priceMult: 75,  startMult: 2, fsCount: 10, artFrame: "buy_art_giga.png" },
-    { title: "SUPER",      body: "STRONG FEATURE\nSTARTS AT 3× MULTIPLIER", priceMult: 100, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png" },
-    { title: "ULTRA",      body: "MAXIMUM INTENSITY\nSTARTS AT 5× MULTIPLIER", priceMult: 150, startMult: 5, fsCount: 10, artFrame: "buy_art_ultra.png" },
-  ];
+const buyCardSpecs: BuyCardSpec[] = [
+  {
+    title: tt("ui.buyCard.pickMixTitle", "PICK & MIX"),
+    body:  tt("ui.buyCard.pickMixBody",  "ENTRY BONUS\nSTARTS AT 1× MULTIPLIER"),
+    priceMult: 50, startMult: 1, fsCount: 10, artFrame: "buy_art_pick.png"
+  },
+  {
+    title: tt("ui.buyCard.gigaTitle", "GIGA"),
+    body:  tt("ui.buyCard.gigaBody",  "HIGHER VOLATILITY\nSTARTS AT 2× MULTIPLIER"),
+    priceMult: 75, startMult: 2, fsCount: 10, artFrame: "buy_art_giga.png"
+  },
+  {
+    title: tt("ui.buyCard.superTitle", "SUPER"),
+    body:  tt("ui.buyCard.superBody",  "STRONG FEATURE\nSTARTS AT 3× MULTIPLIER"),
+    priceMult: 100, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png"
+  },
+  {
+    title: tt("ui.buyCard.ultraTitle", "ULTRA"),
+    body:  tt("ui.buyCard.ultraBody",  "MAXIMUM INTENSITY\nSTARTS AT 5× MULTIPLIER"),
+    priceMult: 150, startMult: 5, fsCount: 10, artFrame: "buy_art_ultra.png"
+  },
+];
+
 
   const buyCards: Container[] = [];
 
@@ -727,22 +827,23 @@ function makeCardButton(
     card.addChild(bg);
 
     const title = new Text({
-      text: spec.title,
-      style: {
-        fontFamily: "pixeldown",
-        fill: 0xffd36a,
-        fontSize: 31,
-        align: "center",
-        letterSpacing: 1,
-        stroke: { color: 0x000000, width: 5 },
-        dropShadow: true,
-        dropShadowColor: 0x000000,
-        dropShadowAlpha: 0.85,
-        dropShadowDistance: 3,
-        dropShadowBlur: 0,
-        dropShadowAngle: -Math.PI / 4,
-      } as any,
-    } as any);
+  text: applyUiTextCase(spec.title),
+  style: localizeStyle({
+    fontFamily: "Pixeldown",
+    fill: 0xffd36a,
+    fontSize: 31,
+    align: "center",
+    letterSpacing: 1,
+    stroke: { color: 0x000000, width: 5 },
+    dropShadow: true,
+    dropShadowColor: 0x000000,
+    dropShadowAlpha: 0.85,
+    dropShadowDistance: 3,
+    dropShadowBlur: 0,
+    dropShadowAngle: -Math.PI / 4,
+  } as any),
+} as any);
+
     title.anchor.set(0.5, 0);
     card.addChild(title);
 
@@ -753,36 +854,43 @@ function makeCardButton(
     card.addChild(art);
     (card as any)._art = art;
 
-    const body = new Text({
-      text: spec.body,
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffffff,
-        fontSize: 30,
-        lineHeight: 24,
-        align: "center",
-        letterSpacing: 1,
-      } as any,
-    } as any);
+ const bodyStyle: any = localizeStyle({
+  // keep styling same
+  fontFamily: "Micro5", // placeholder
+  fill: 0xffffff,
+  fontSize: 30,
+  lineHeight: 24,
+  align: "center",
+  letterSpacing: 1,
+} as any);
+
+// ✅ override font AFTER localizeStyle
+bodyStyle.fontFamily = micro5ForLatinUiFontFamily(getLang());
+
+const body = new Text({
+  text: spec.body,
+  style: bodyStyle,
+} as any);
+
     body.anchor.set(0.5, 0);
     card.addChild(body);
 
     const price = new Text({
-      text: "",
-      style: {
-        fontFamily: "Micro5",
-        fill: 0xffffff,
-        fontSize: 37,
-        align: "center",
-        letterSpacing: 2,
-        stroke: { color: 0x000000, width: 5 },
-        dropShadow: false,
-      } as any,
-    } as any);
+  text: "",
+  style: localizeStyle({
+    fontFamily: "Micro5",
+    fill: 0xffffff,
+    fontSize: 37,
+    align: "center",
+    letterSpacing: 2,
+    stroke: { color: 0x000000, width: 5 },
+    dropShadow: false,
+  } as any),
+} as any);
     price.anchor.set(0.5, 0);
     card.addChild(price);
 
-    const buyBtn = makeBuyCardButton("BUY", () => {
+    const buyBtn = makeBuyCardButton(tt("ui.btnBuy", "BUY"), () => {
       const cost = getCurrentBet() * spec.priceMult;
 
     if (state.bank.balance < cost) {
@@ -896,10 +1004,11 @@ showToast(getInsufficientMsg());
 
       if (canAfford) {
         buyBtn.setGreen();
-        buyBtn.setLabel("BUY");
+        buyBtn.setLabel(tt("ui.btnBuy", "BUY"));
       } else {
         buyBtn.setRed();
-        buyBtn.setLabel("TOP UP");
+        buyBtn.setLabel(tt("ui.btnTopUp", "TOP UP"));
+
       }
 
       // dim non-button children only
@@ -1551,7 +1660,10 @@ window.addEventListener("resize", () => {
   // OPEN / CLOSE
   // -----------------------------
   function openBuyMenu() {
-
+buyHeader.text = uiLabel("ui.buyBonus", "BUY BONUS");
+buyFooterBalanceTitle.text = uiLabel("ui.balance", "BALANCE");
+buyFooterBetTitle.text = uiLabel("ui.bet", "BET");
+  applyLatinMicro5ToBuyMenuText(); 
     portraitBetWidthLocked = false;
 portraitBetValueW = 0;
 portraitHudPivotSet = false; // you already do this
