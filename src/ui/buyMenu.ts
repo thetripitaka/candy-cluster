@@ -791,24 +791,25 @@ const buyCardSpecs: BuyCardSpec[] = [
   {
     title: tt("ui.buyCard.pickMixTitle", "PICK & MIX"),
     body:  tt("ui.buyCard.pickMixBody",  "ENTRY BONUS\nSTARTS AT 1× MULTIPLIER"),
-    priceMult: 50, startMult: 1, fsCount: 10, artFrame: "buy_art_pick.png"
+    priceMult: 67, startMult: 1, fsCount: 10, artFrame: "buy_art_pick.png"
   },
   {
     title: tt("ui.buyCard.gigaTitle", "GIGA"),
     body:  tt("ui.buyCard.gigaBody",  "HIGHER VOLATILITY\nSTARTS AT 2× MULTIPLIER"),
-    priceMult: 75, startMult: 2, fsCount: 10, artFrame: "buy_art_giga.png"
+    priceMult: 78, startMult: 2, fsCount: 10, artFrame: "buy_art_giga.png"
   },
   {
     title: tt("ui.buyCard.superTitle", "SUPER"),
     body:  tt("ui.buyCard.superBody",  "STRONG FEATURE\nSTARTS AT 3× MULTIPLIER"),
-    priceMult: 100, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png"
+    priceMult: 90, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png"
   },
   {
     title: tt("ui.buyCard.ultraTitle", "ULTRA"),
     body:  tt("ui.buyCard.ultraBody",  "MAXIMUM INTENSITY\nSTARTS AT 5× MULTIPLIER"),
-    priceMult: 150, startMult: 5, fsCount: 10, artFrame: "buy_art_ultra.png"
+    priceMult: 100, startMult: 5, fsCount: 10, artFrame: "buy_art_ultra.png"
   },
 ];
+
 
 
   const buyCards: Container[] = [];

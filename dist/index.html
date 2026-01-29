@@ -51,14 +51,42 @@
   height: 100%;
   touch-action: none;
 }
+#rotate-blocker-dom {
+  position: fixed;
+  inset: 0; /* top:0 right:0 bottom:0 left:0 */
+  background: #000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 999999; /* above everything */
+}
+
+#rotate-blocker-dom .rotate-text {
+
+  font-size: 32px;
+  letter-spacing: 2px;
+  color: #fff;
+  text-align: center;
+  text-transform: uppercase;
+}
+#rotate-blocker-dom {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+
 canvas { display: block; }
  @media (max-width: 900px) {
     #ui { display: none !important; }
   }
     </style>
-    <script type="module" crossorigin src="/assets/index-CBWm0EGi.js"></script>
+    <script type="module" crossorigin src="/assets/index-cXgQsQE0.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-L0op8kj5.css">
   </head>
   <body>
+ <div id="rotate-blocker-dom">
+  <div id="rotate-blocker-text" class="rotate-text"></div>
+</div>
     <div id="ui">
       <button id="spinBtn">SPIN</button>
       <div class="chip">Mode: <span id="modeTxt">BASE</span></div>

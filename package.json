@@ -3,11 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
-  },
+"scripts": {
+  "dev": "vite",
+  "build": "tsc && vite build",
+  "preview": "vite preview",
+  "rtp": "tsx scripts/rtp.ts"
+}
+,
   "devDependencies": {
     "@types/howler": "^2.2.12",
     "@types/node": "18",

@@ -9,15 +9,8 @@ export type SfxKey =
   | "reel_land"
   | "cluster_pop"
   | "explode"
-  | "bonus_trigger"
-  | "fs_intro"
-  | "fs_outro"
   | "fs_click"
   | "bigwin_hit"
-  | "bigwin_super"
-  | "bigwin_mega"
-  | "bigwin_epic"
-  | "bigwin_max"
   | "final_amount"
   | "final_fsoutro_amount"
   | "bounce"
@@ -220,7 +213,6 @@ export type SfxKey =
       this.sfx = {
         infused: this.makeSfx("/assets/audio/infused.mp3"),
     ui_click: this.makeSfx("/assets/audio/ui_click.mp3"),
-    
     confirm:  this.makeSfx("/assets/audio/confirm.mp3"), 
     ui_toggle: this.makeSfx("/assets/audio/ui_toggle.mp3"),
     spin_start: this.makeSfx("/assets/audio/spin_start.mp3"),
@@ -229,15 +221,8 @@ export type SfxKey =
     fs_click: this.makeSfx("/assets/audio/fs_click.mp3"),
     explode: this.makeSfx("/assets/audio/explode.mp3"),
     car: this.makeSfx("/assets/audio/car.mp3"), 
-    bonus_trigger: this.makeSfx("/assets/audio/bonus_trigger.mp3"),
-    fs_intro: this.makeSfx("/assets/audio/fs_intro.mp3"),
-    fs_outro: this.makeSfx("/assets/audio/fs_outro.mp3"),
     fstrigger: this.makeSfx("/assets/audio/fstrigger.mp3"),
     bigwin_hit: this.makeSfx("/assets/audio/bigwin_hit.mp3"),
-    bigwin_super: this.makeSfx("/assets/audio/bigwin_super.mp3"),
-  bigwin_mega:  this.makeSfx("/assets/audio/bigwin_mega.mp3"),
-  bigwin_epic:  this.makeSfx("/assets/audio/bigwin_epic.mp3"),
-  bigwin_max:   this.makeSfx("/assets/audio/bigwin_max.mp3"),
   final_amount: this.makeSfx("/assets/audio/final_amount.mp3"),
   final_fsoutro_amount: this.makeSfx("/assets/audio/final_fsoutro_amount.mp3"),
     bounce: this.makeSfx("/assets/audio/bounce.mp3"),
@@ -295,7 +280,7 @@ export type SfxKey =
   this.musicBaseLayers = [
     this.makeMusic("/assets/audio/music_base_drums.mp3"),
     this.makeMusic("/assets/audio/music_base_drums.mp3"),
-    this.makeMusic("/assets/audio/mmusic_base_drums.mp3"),
+    this.makeMusic("/assets/audio/music_base_drums.mp3"),
   ];
 
   // start silent until we activate base layers

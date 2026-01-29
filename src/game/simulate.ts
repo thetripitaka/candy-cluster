@@ -76,6 +76,8 @@ export type SimConfig = {
   WEIGHTS_BASE: Record<SymbolId, number>;
   WEIGHTS_FS: Record<SymbolId, number>;
 
+  SCATTER_WEIGHT_MUL_BASE?: number;
+
   // Map symbol id -> frame name (optional for your renderer; sim doesn't use it)
   SYMBOL_FRAMES?: Partial<Record<SymbolId, string>>;
 
@@ -320,6 +322,7 @@ function makeGrid(
 // - returns ladderIndexAfter so you can store it in your state
 // ----------------------------
 export function simulateSpin(
+  
   cfg: SimConfig,
   mode: Mode,
   fsRemainingIn: number,
@@ -370,10 +373,35 @@ if (!(globalThis as any).__SIM_VER__) {
 
 
 
-  const weights = mode === "FREE_SPINS" ? cfg.WEIGHTS_FS : cfg.WEIGHTS_BASE;
+// -----------------------------
+// Symbol weights (with BASE scatter tuning)
+// -----------------------------
+const weightsRaw =
+  mode === "FREE_SPINS"
+    ? cfg.WEIGHTS_FS
+    : cfg.WEIGHTS_BASE;
+
+// clone so we can safely tweak
+const weights: Record<SymbolId, number> = { ...weightsRaw };
+
+// BASE only: nudge scatter frequency
+if (mode === "BASE" && cfg.SCATTER_WEIGHT_MUL_BASE) {
+  weights.S1 = weights.S1 * cfg.SCATTER_WEIGHT_MUL_BASE;
+}
+
 
   let grid = makeGrid(weights, COLS, ROWS, rng);
   const initialGrid = grid.map(c => ({ id: c.id }));
+// DEBUG: confirm scatter multiplier is applied (prints once)
+if (mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
+  (globalThis as any).__SC_MUL_ONCE__ = true;
+  console.log(
+    "[SIM] BASE scatter mul =",
+    cfg.SCATTER_WEIGHT_MUL_BASE,
+    "S1 effective =",
+    weights.S1
+  );
+}
 
   // Scatter awards:
   // - award if initial grid has 3+

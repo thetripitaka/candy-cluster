@@ -1,11 +1,12 @@
 
 import { setLang, getLang, t } from "./i18n/i18n";
+import type { Lang } from "./i18n/i18n";
 import { ensureUiFontLoaded } from "./i18n/loadFonts";
 import "./style.css";
 import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
 import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
-
-
+import { createPerfHud } from "./dev/perfHud";
+import { setRtpScale } from "./game/simulate";
 import {
       Application,
       Container,
@@ -107,6 +108,13 @@ let infusedText: Text | null = null;
 async function main() {
     if ((window as any).__GAME_BOOTED__) return;
   (window as any).__GAME_BOOTED__ = true;
+
+  // ------------------------------------------------
+  // 🔒 SHIP-LOCKED RTP CALIBRATION (GLOBAL)
+  // ------------------------------------------------
+  setRtpScale(0.49295, 0.49295);
+
+  
  // 1) decide language first
   const detectedLang =
     new URLSearchParams(window.location.search).get("lang") ||
@@ -182,8 +190,25 @@ function loaderFontFamilyFor(lang: string) {
   if (isLatinUiLang(lang)) return '"Micro5"';
 
   // ✅ non-latin => glyph-safe per-language font
-  return uiFontFamilyFor(lang);
+  return uiFontFamilyFor(lang as Lang);
 }
+
+function forceOverlayBrandFont(txt: Text) {
+  if (!txt) return;
+
+  // Use your existing overlay font chooser if you have it:
+  // const ff = overlayBrandFontFamilyFor(getLang());
+
+  // If you *don't* have overlayBrandFontFamilyFor, use this:
+  const ff = isLatinUiLang(getLang()) ? '"Pixeldown"' : uiFontFamilyFor(getLang() as any);
+
+  const s: any =
+    (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
+
+  s.fontFamily = ff;
+  txt.style = new TextStyle(s);
+}
+
 
 function forceLoaderFont(txt: Text) {
   if (!txt) return;
@@ -861,10 +886,43 @@ if (!disableCustomCursorOnMobile(__layoutDeps)) {
   (document.getElementById("stage") as any)?.style &&
     (((document.getElementById("stage") as any).style.cursor = "auto"));
 }
-
+let perfHud: ReturnType<typeof createPerfHud> | null = null;
 
       // ROOT + LAYERS
       const root = new Container();
+      // =====================
+// DEV ONLY: PERF HUD (FPS + memory)
+// =====================
+if (import.meta.env.DEV) {
+  perfHud = createPerfHud({
+    root, // ✅ attach to your top-most root
+    width: () => app.renderer.screen.width,
+    height: () => app.renderer.screen.height,
+    anchor: "tl",
+    margin: 10,
+  });
+
+  // start hidden by default (optional)
+  perfHud.setEnabled(false);
+
+  // ✅ Mobile toggle: 3-finger tap
+  window.addEventListener(
+    "touchstart",
+    (e) => {
+      if ((e as TouchEvent).touches?.length >= 3) perfHud?.toggle();
+    },
+    { passive: true }
+  );
+
+  // ✅ Desktop toggle: press ` (backtick)
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "`") perfHud?.toggle();
+  });
+}
+addSystem((dt) => {
+  perfHud?.update(dt);
+});
+
       // =====================
 // MOBILE LANDSCAPE BLOCKER (PORTRAIT-ONLY LOCK)
 // =====================
@@ -1105,6 +1163,7 @@ function scheduleViewportRelayout() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         layoutAll();
+        perfHud?.layout();
         root.sortChildren();
 
         // keep stage hit area correct after a resize (important on iOS)
@@ -1830,7 +1889,7 @@ let studioLogoHouseTex: Texture | null = null;
 
   // If you want the logo to stay "brand" in Latin languages, keep Pixeldown.
   // If non-latin, switch to the language font so glyphs exist.
-  return isLatinUiLang(lang) ? '"Pixeldown"' : uiFontFamilyFor(lang);
+  return isLatinUiLang(lang) ? '"Pixeldown"' : uiFontFamilyFor(lang as Lang);
 }
 // -----------------------------
 // OVERLAY FONT OVERRIDES (Big Win + FS retrigger)
@@ -6417,7 +6476,7 @@ debugForceFsOutro = (amt: number) => {
       if (on) {
         
         state.overlay.fsOutro = true;
-        audio?.playSfx?.("fs_outro", 1.0);
+ 
 
         // ✅ lock portrait scale ONCE using the final amount (prevents snapping during count-up)
 fsOutroPortraitScaleLocked = false;
@@ -7923,13 +7982,7 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
       }
     }
 
-    function playBigWinTierSfx(tier: BigWinTier) {
-  // Don’t play for BIG (you already play bigwin_hit at overlay start)
-  if (tier === "SUPER") audio?.playSfx?.("bigwin_super", 1.0);
-  else if (tier === "MEGA") audio?.playSfx?.("bigwin_mega", 1.0);
-  else if (tier === "EPIC") audio?.playSfx?.("bigwin_epic", 1.0);
-  else if (tier === "MAX") audio?.playSfx?.("bigwin_max", 1.0);
-}
+
 
 
 function playBigWinTierPitch(tier: BigWinTier) {
@@ -8034,7 +8087,7 @@ bigWinPortraitScaleLocked = true;
 layoutBigWin(); // apply it immediately
 
     bigWinCountDone = false;
-
+audio?.startTickLoop?.(120, 0.22, 1.0);
 
     // timing (bigger wins count longer)
     const BASE_MS = 1400;
@@ -8097,7 +8150,7 @@ audio?.setTickParams?.(vol, rate);
   swapBigWinTierTitle(tier);
 playBigWinTierPitch(tier);
   // ✅ NEW: play tier upgrade stinger exactly once per tier
-  playBigWinTierSfx(tier);
+
 
   bigWinFloatTier = tier;
       
@@ -8132,7 +8185,7 @@ playBigWinTierPitch(tier);
 
       if (rawT < 1) {
         // ✅ TICK LOOP: start for Big Win count-up
-audio?.startTickLoop?.(120, 0.22, 1.0);
+
         requestAnimationFrame(tickBigWin);
       } else {
 
@@ -8473,7 +8526,7 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
         await setBackgroundForMode("FREE_SPINS", true);
       
 
-
+if (!bgBase || !bgFree) return;
 
 
         bgBase.visible = false;
@@ -9945,7 +9998,7 @@ function formatMult(v: number) {
       });
     }
 
-
+let pendingFsAward = 0;
     function applyPlaqueState(idx: number) {
     const last = LADDER.length - 1;
 
@@ -12030,6 +12083,13 @@ symbolsSheet = Assets.get(SYMBOLS_ATLAS_URL) as any;
     return t;
   }
 
+  // ✅ Symbols UI icons (for paytable in settingsMenu)
+function texSymbols(frame: string): Texture {
+  // frames are the keys in symbols.json, e.g. "symbol_low_L1_gummy.png"
+  return texSymbol(frame);
+}
+
+
   // =====================
   // SYMBOL TEXTURES (from symbols atlas)
   // =====================
@@ -12546,6 +12606,8 @@ refreshLocalizedText();
     // ✅ IMPORTANT: settings should be ABOVE the dimmer
     uiPanel.addChild(settingsBtnPixi);
 
+
+
   // =====================
   // SETTINGS MENU (external module)
   // =====================
@@ -12569,6 +12631,7 @@ t,
     },
 
     texUI,
+    texSymbols,
     setScaleToHeight,
     makePngButton,
 
@@ -14321,6 +14384,7 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   // ✅ CENTER OF SCREEN (not board, not cluster)
   const W = app.screen.width;
   const H = app.screen.height;
+  if (!boostedText) return;
   boostedText.x = Math.round(W * 0.5);
   boostedText.y = Math.round(H * 0.45);
 
@@ -14336,6 +14400,7 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   await animateMs(msIn, (t) => {
     if (token !== boostedToken) return;
     const e = easeOutBack(t, 1.1);
+    if (!boostedText) return;
     boostedText.alpha = t;
     const s = 0.85 + (1.12 - 0.85) * e;
     boostedText.scale.set(s);
@@ -14349,6 +14414,7 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   await animateMs(msOut, (t) => {
     if (token !== boostedToken) return;
     const e = easeOutCubic(t);
+    if (!boostedText) return;
     boostedText.alpha = 1 - e;
     boostedText.y = y0 - 26 * e;
   });
@@ -14395,6 +14461,7 @@ async function showInfusedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   // ✅ same placement as BOOSTED
   const W = app.screen.width;
   const H = app.screen.height;
+  if (!infusedText) return;
   infusedText.x = Math.round(W * 0.5);
   infusedText.y = Math.round(H * 0.45);
 
@@ -14410,6 +14477,7 @@ async function showInfusedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   await animateMs(msIn, (t) => {
     if (token !== infusedToken) return;
     const e = easeOutBack(t, 1.1);
+    if (!infusedText) return;
     infusedText.alpha = t;
     const s = 0.85 + (1.12 - 0.85) * e;
     infusedText.scale.set(s);
@@ -14423,6 +14491,7 @@ async function showInfusedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   await animateMs(msOut, (t) => {
     if (token !== infusedToken) return;
     const e = easeOutCubic(t);
+    if (!infusedText) return;
     infusedText.alpha = 1 - e;
     infusedText.y = y0 - 26 * e;
   });
@@ -15200,6 +15269,7 @@ addSystem(() => {
   // ✅ NO PARALLAX ON MOBILE (portrait + landscape)
   if (isMobileUILayout(__layoutDeps)) {
     parallaxNY = 0;
+    if (!bgBase || !bgFree) return;
     bgBase.y = bgBaseHomeY;
     bgFree.y = bgFreeHomeY;
     return;
@@ -15207,7 +15277,7 @@ addSystem(() => {
 
   // desktop parallax
   parallaxNY += (mouseNY - parallaxNY) * BG_PARALLAX_SMOOTH;
-
+if (!bgBase || !bgFree) return;
   bgBase.y = bgBaseHomeY + parallaxNY * BG_PARALLAX_BASE_PX;
   bgFree.y = bgFreeHomeY + parallaxNY * BG_PARALLAX_FREE_PX;
 });
@@ -15232,7 +15302,7 @@ addSystem(() => {
   });
 
   function layoutAll() {
-
+perfHud?.layout();
   // =====================
   // PORTRAIT-ONLY LOCK (MOBILE)
   // =====================
@@ -15502,7 +15572,7 @@ await runFinalBootPipelineOnce();
       // Pin to chosen framing (you already call setSplashBackgroundFraming)
       // If you want TOP during splash, use 0. If bottom, use 1.
       setSplashBackgroundFraming(1, 0);
-
+if (!bgBase || !bgFree) return;
       // Ensure only BASE background is showing for splash
       bgBase.visible = true;
       bgFree.visible = false;
@@ -15533,7 +15603,7 @@ await runFinalBootPipelineOnce();
         const botY = H - bg.height * 0.5;
         return Math.round(topY + (botY - topY) * t01 + nudgePx);
       }
-
+if (!bgBase || !bgFree) return;
       bgBase.y = yFor(bgBase);
       bgFree.y = yFor(bgFree);
 
@@ -15546,6 +15616,7 @@ await runFinalBootPipelineOnce();
     resizeBackground();
 
     function snapBackgroundToTop() {
+      if (!bgBase || !bgFree) return;
       // anchor = 0.5 → top edge = y - height/2
       bgBase.y = Math.round(bgBase.height * 0.5);
       bgFree.y = Math.round(bgFree.height * 0.5);
@@ -15593,13 +15664,13 @@ await runFinalBootPipelineOnce();
     // With anchor 0.5, bottom edge is (y + height/2),
     // so y = screenH - height/2
     const screenH = app.screen.height;
-
+if (!bgBase || !bgFree) return;
     const baseStartY = Math.round(screenH - bgBase.height * 0.5);
     const freeStartY = Math.round(screenH - bgFree.height * 0.5);
 
     // optional extra "peek" below the screen
     const BOTTOM_PAD = 0; // try 40–120 for stronger upward motion
-
+if (!bgBase || !bgFree) return;
     bgBase.y = baseStartY + BOTTOM_PAD;
     bgFree.y = freeStartY + BOTTOM_PAD;
 
@@ -15613,6 +15684,7 @@ await runFinalBootPipelineOnce();
       (k) => {
         // smooth cinematic ease-out
         const e = k * k * (3 - 2 * k); // smoothstep
+        if (!bgBase || !bgFree) return;
         bgBase.y = baseStartY + (bgBaseHomeY - baseStartY) * e;
         bgFree.y = freeStartY + (bgFreeHomeY - freeStartY) * e;
       },
@@ -16318,20 +16390,33 @@ autoBtnPixi?.setEnabled?.(uiFree);
     undefined
   );
 
+
+
   state.fs.ladderIndex = res.ladderIndexAfter;
 
-  // ✅ Apply FS remaining after this spin (this is what makes FS count down)
-  state.fs.remaining = res.fsRemainingAfter;
+// ✅ NEW: delay FS retrigger award until the tumble visually settles
+const prevFs = state.fs.remaining;
+const nextFs = res.fsRemainingAfter;
 
-  // keep the centered counter refreshed
-  refreshFsCounter();
+// what FS would be *without* a retrigger (consume 1 spin)
+const expectedNoAward = Math.max(0, prevFs - 1);
 
+// this is the retrigger add (0 if none)
+pendingFsAward = Math.max(0, nextFs - expectedNoAward);
 
+// show the decrement immediately (visual truth)
+if (mode === "FREE_SPINS") {
+  state.fs.remaining = expectedNoAward;
+} else {
+  state.fs.remaining = nextFs; // BASE keeps old behavior
+}
 
-        // ✅ if we retrigger during FREE SPINS, the "total" should grow too (capped)
-    if (mode === "FREE_SPINS" && res.fsAwarded > 0) {
-      state.fs.total = Math.min(state.fs.totalCap, state.fs.total + res.fsAwarded);
-    }
+// update counter now (shows the decrement, not the awarded retrigger yet)
+refreshFsCounter();
+
+// ✅ IMPORTANT: DO NOT grow state.fs.total here anymore
+// (we will apply pendingFsAward after the 3rd scatter lands)
+
 
 
         
@@ -16405,6 +16490,7 @@ applyUiLocks();
 
       // keep FEATURE background visible immediately
       setBackgroundForMode("FREE_SPINS", false);
+      if (!bgBase || !bgFree) return;
       bgBase.visible = false;
       bgBase.alpha = 0;
       bgFree.visible = true;
@@ -16790,7 +16876,22 @@ applyUiLocks();
 
       // snap-safe: ensure final textures + sizing are correct
       applyGridToSprites(nextGrid);
+      // ✅ Apply FS retrigger ONLY after the tumble has fully settled and 3 scatters are visible
+if (state.game.mode === "FREE_SPINS" && pendingFsAward > 0) {
+  if (countScatters(nextGrid) >= 3) {
+    state.fs.remaining = Math.min(state.fs.totalCap, state.fs.remaining + pendingFsAward);
+    state.fs.total = Math.min(state.fs.totalCap, state.fs.total + pendingFsAward);
+
+    refreshFsCounter();
+    await showFsAddedPopup(pendingFsAward);
+
+    pendingFsAward = 0; // ✅ fire once
+  }
+}
+
     }
+
+
 
 
 
@@ -17169,10 +17270,10 @@ function colsThatMovedFromExplosions(explodePositions: number[], COLS: number) {
 
 
     // ✅ FREE SPINS retrigger popup (3+ scatters)
-    if (res.mode === "FREE_SPINS" && res.fsAwarded > 0) {
-      await showFsAddedPopup(res.fsAwarded);
-      refreshFsCounter(); // in case your counter updates need a nudge here
-    }
+    //if (res.mode === "FREE_SPINS" && res.fsAwarded > 0) {
+     // await showFsAddedPopup(res.fsAwarded);
+      //refreshFsCounter(); // in case your counter updates need a nudge here
+    //}
 if (res.mode === "FREE_SPINS" && res.fsAwarded > 0 && state.fs.remaining > 0) {
   kickFreeSpinsAuto(250);
 }
@@ -17388,7 +17489,7 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
         // ✅ HARD SET (always fixes black background states)
         backgroundLayer.visible = true;
         backgroundLayer.alpha = 1;
-
+if (!bgBase || !bgFree) return;
         bgBase.visible = mode === "BASE";
         bgFree.visible = mode === "FREE_SPINS";
 
@@ -17401,8 +17502,10 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
 
       // animated crossfade
       if (mode === "FREE_SPINS") {
+        if (!bgBase || !bgFree) return;
         await crossfadeBackground(bgBase, bgFree, 450, 0.9);
       } else {
+        if (!bgBase || !bgFree) return;
         await crossfadeBackground(bgFree, bgBase, 450, 0.9);
       }
 
