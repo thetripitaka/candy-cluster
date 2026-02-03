@@ -8,7 +8,7 @@ import { localizeStyle } from "../i18n/uiTextStyle";
 export function applyClickToContinueStyle(t: Text) {
   const styleObj = localizeStyle({
     // base font (will be overridden by localizeStyle per language)
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 35,
     fontWeight: "200",

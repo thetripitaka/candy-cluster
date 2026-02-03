@@ -28,7 +28,7 @@ export function uiFontFamilyFor(lang: Lang): string {
       return `"Bahiana", system-ui, sans-serif`;
 
     default:
-      return `"Pixeldown","Micro5", system-ui, sans-serif`;
+      return `"pixeldown","Micro5", system-ui, sans-serif`;
   }
 }
 

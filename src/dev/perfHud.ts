@@ -45,7 +45,7 @@ export function createPerfHud(opts: {
   layer.addChild(bg);
 
   const style = new TextStyle({
-    fontFamily: "Micro5, Pixeldown, monospace",
+    fontFamily: "Micro5, pixeldown, monospace",
     fontSize: 18,
     fill: 0xffffff,
     lineHeight: 20,

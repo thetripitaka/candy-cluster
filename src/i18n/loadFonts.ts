@@ -3,7 +3,7 @@ import { uiFontFamilyFor } from "./fonts";
 import type { Lang } from "./i18n";
 
 function firstFamily(fontFamily: string) {
-  // `"Pixeldown","Micro5", system-ui` -> Pixeldown
+  // `"pixeldown","Micro5", system-ui` -> pixeldown
   return fontFamily.split(",")[0].trim().replaceAll('"', "");
 }
 

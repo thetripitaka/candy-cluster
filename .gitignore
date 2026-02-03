@@ -858,11 +858,11 @@ index 391d71bd2762892161eec29e5f869b35b55591dd..a30fc72a5eeef04a332aeaa71eb100b3
  
      }
  
-   const STUDIO_LOGO_URL = "/assets/ui/studio_logo.png";
-   const STUDIO_LOGO_HOUSE_URL = "/assets/ui/studio_logo_house.webp";
-   const BG_BASE_URL = "/assets/backgrounds/bg_candy_landscape.webp";
-   const BG_FREE_URL = "/assets/backgrounds/bg_candy_landscape_free.webp";
-   const FS_OUTRO_BG_URL = "/assets/ui/fs_outro_bg.webp";
+   const STUDIO_LOGO_URL = "./assets/ui/studio_logo.png";
+   const STUDIO_LOGO_HOUSE_URL = "./assets/ui/studio_logo_house.webp";
+   const BG_BASE_URL = "./assets/backgrounds/bg_candy_landscape.webp";
+   const BG_FREE_URL = "./assets/backgrounds/bg_candy_landscape_free.webp";
+   const FS_OUTRO_BG_URL = "./assets/ui/fs_outro_bg.webp";
  
      
  
@@ -3901,13 +3901,13 @@ index 391d71bd2762892161eec29e5f869b35b55591dd..a30fc72a5eeef04a332aeaa71eb100b3
 -    // =====================
 -    // BUY MENU CARD ART (PNG)
 -    // =====================
--    const BUY_ART_PICK_URL  = "/assets/ui/buy_art_pick.png";
--    const BUY_ART_GIGA_URL  = "/assets/ui/buy_art_giga.png";
--    const BUY_ART_SUPER_URL = "/assets/ui/buy_art_super.png";
--    const BUY_ART_ULTRA_URL = "/assets/ui/buy_art_ultra.png";
+-    const BUY_ART_PICK_URL  = "./assets/ui/buy_art_pick.png";
+-    const BUY_ART_GIGA_URL  = "./assets/ui/buy_art_giga.png";
+-    const BUY_ART_SUPER_URL = "./assets/ui/buy_art_super.png";
+-    const BUY_ART_ULTRA_URL = "./assets/ui/buy_art_ultra.png";
 -
--    const BUY_HOVER_URL = "/assets/ui/btn_buy_hover.png";
--    const BUY_DOWN_URL  = "/assets/ui/btn_buy_down.png";
+-    const BUY_HOVER_URL = "./assets/ui/btn_buy_hover.png";
+-    const BUY_DOWN_URL  = "./assets/ui/btn_buy_down.png";
 -
      const BUY_UP    = "btn_buy_up.png";
      const BUY_HOVER = "btn_buy_hover.png";
@@ -3916,13 +3916,13 @@ index 391d71bd2762892161eec29e5f869b35b55591dd..a30fc72a5eeef04a332aeaa71eb100b3
  
      
  
-     const BIGWIN_ITEMS_ATLAS_URL = "/assets/atlases/bigwin_items.json";
-     const UI_ATLAS_URL = "/assets/atlases/ui.json";
-     const UI_EXTRA_ATLAS_URL = "/assets/atlases/ui_extra.json";
-   const VEHICLES_ATLAS_URL = "/assets/atlases/vehicles.json";
-   const REELHOUSE_ATLAS_URL = "/assets/atlases/reelhouse.json";
-   const SYMBOLS_ATLAS_URL = "/assets/atlases/symbols.json";
- const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
+     const BIGWIN_ITEMS_ATLAS_URL = "./assets/atlases/bigwin_items.json";
+     const UI_ATLAS_URL = "./assets/atlases/ui.json";
+     const UI_EXTRA_ATLAS_URL = "./assets/atlases/ui_extra.json";
+   const VEHICLES_ATLAS_URL = "./assets/atlases/vehicles.json";
+   const REELHOUSE_ATLAS_URL = "./assets/atlases/reelhouse.json";
+   const SYMBOLS_ATLAS_URL = "./assets/atlases/symbols.json";
+ const AUTO_MENU_UI_ATLAS_URL = "./assets/atlases/auto_menu_ui.json";
  
  
  
@@ -3932,7 +3932,7 @@ index 391d71bd2762892161eec29e5f869b35b55591dd..a30fc72a5eeef04a332aeaa71eb100b3
      // =====================
      // COIN SHOWER — SPRITESHEET (TexturePacker / Pixi atlas)
      // =====================
-     const COINS_SHEET_URL = "/assets/particles/coins.json"; // ✅ leading slash
+     const COINS_SHEET_URL = "./assets/particles/coins.json"; // ✅ leading slash
  
 @@ -13241,58 +12543,50 @@ addSystem(() => {
      CLOSE_HOVER,

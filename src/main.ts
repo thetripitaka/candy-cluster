@@ -6,6 +6,8 @@ import { ensureUiFontLoaded } from "./i18n/loadFonts";
 import "./style.css";
 import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
 import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
+import rgsClient from "./rgs/rgsClient";
+
 
 
 import { getResultProvider } from "./engine/resultProvider";
@@ -122,6 +124,58 @@ async function main() {
 
   setLang(detectedLang as any);
 
+  // =====================
+// RGS (Stake) boot handshake
+// =====================
+const isRgs = rgsClient.initFromUrl();
+let rgsAuthed = false;
+
+let rgsInitialBalance: number | null = null;
+let rgsAuthP: Promise<void> | null = null;
+
+
+
+if (isRgs) {
+  rgsAuthP = rgsClient.authenticate()
+    .then((res) => {
+      rgsAuthed = true;
+      console.log("[RGS] authenticated", res);
+
+     const balObj = (res?.balance ?? res?.wallet?.balance ?? res?.player?.balance);
+const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+
+if (typeof amt === "number" && Number.isFinite(amt)) {
+  // Stake balances are micro-units (1e6)
+  rgsInitialBalance = amt / 1_000_000;
+}
+
+    })
+    .catch((err) => {
+      rgsAuthed = false;
+      console.error("[RGS] authenticate failed", err);
+    });
+}
+
+function rgsReadyNow() {
+  return isRgs && rgsAuthed;
+}
+
+async function ensureRgsAuthed() {
+  if (!isRgs) return false;
+  if (rgsAuthed) return true;
+
+  // wait for the in-flight auth if it exists
+  try {
+    await rgsAuthP;
+  } catch {
+    // swallow; rgsAuthed will be false
+  }
+
+  return rgsAuthed;
+}
+
+
+
 // Kick off font loads early, but DON'T block boot visuals
 const fontWarmupP = (async () => {
   await ensureUiFontLoaded("en");
@@ -130,7 +184,7 @@ const fontWarmupP = (async () => {
   // load specific faces you actually use
   await Promise.allSettled([
     document.fonts.load('16px "Micro5"'),
-    document.fonts.load('16px "Pixeldown"'),
+    document.fonts.load('16px "pixeldown"'),
   ]);
 })();
 
@@ -142,7 +196,7 @@ const fontWarmupP = (async () => {
   if (ctx) {
     ctx.font = '16px "Micro5"';
     ctx.fillText(".", 0, 0);
-    ctx.font = '16px "Pixeldown"';
+    ctx.font = '16px "pixeldown"';
     ctx.fillText(".", 0, 0);
   }
 
@@ -165,13 +219,13 @@ const IS_TOUCH =
 
       
 
-function forcePlaquePixeldown(txt: Text) {
-  // lock to Pixeldown regardless of language
+function forcePlaquepixeldown(txt: Text) {
+  // lock to pixeldown regardless of language
   const s: any =
     (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
 
   // IMPORTANT: match your actual @font-face name
-  s.fontFamily = '"Pixeldown"';
+  s.fontFamily = '"pixeldown"';
 
   txt.style = new TextStyle(s);
 }
@@ -200,7 +254,7 @@ function forceOverlayBrandFont(txt: Text) {
   // const ff = overlayBrandFontFamilyFor(getLang());
 
   // If you *don't* have overlayBrandFontFamilyFor, use this:
-  const ff = isLatinUiLang(getLang()) ? '"Pixeldown"' : uiFontFamilyFor(getLang() as any);
+  const ff = isLatinUiLang(getLang()) ? '"pixeldown"' : uiFontFamilyFor(getLang() as any);
 
   const s: any =
     (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
@@ -552,6 +606,10 @@ try {
   },
 
   };
+// ✅ If RGS provided an initial balance, use it
+if (rgsInitialBalance != null) {
+  state.bank.balance = rgsInitialBalance;
+}
 
 // =====================
 // AUDIO
@@ -883,7 +941,7 @@ function layoutRotateBlocker() {
     const fsCounterTitle = new Text({
   text: t("ui.freeSpins"),
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 40,
     fontWeight: "100",
@@ -896,7 +954,7 @@ function layoutRotateBlocker() {
 const fsCounterValue = new Text({
   text: "0/0",
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffd36a,
     fontSize: 50,
     fontWeight: "100",
@@ -1779,9 +1837,9 @@ let studioLogoHouseTex: Texture | null = null;
 
     function splashTitleFontFamilyFor(lang: string) {
 
-  // If you want the logo to stay "brand" in Latin languages, keep Pixeldown.
+  // If you want the logo to stay "brand" in Latin languages, keep pixeldown.
   // If non-latin, switch to the language font so glyphs exist.
-  return isLatinUiLang(lang) ? '"Pixeldown"' : uiFontFamilyFor(lang as Lang);
+  return isLatinUiLang(lang) ? '"pixeldown"' : uiFontFamilyFor(lang as Lang);
 }
 // -----------------------------
 // OVERLAY FONT OVERRIDES (Big Win + FS retrigger)
@@ -1790,11 +1848,11 @@ function overlayBrandFontFamilyFor(lang: string) {
   const base = (lang || "en").toLowerCase();
   const isTr = base === "tr" || base.startsWith("tr-");
 
-  // ✅ Turkish should NOT use Pixeldown brand font
+  // ✅ Turkish should NOT use pixeldown brand font
   if (isTr) return uiFontFamilyFor(lang as any);
 
   // Latin-script: keep the brand font
-  if (isLatinUiLang(lang)) return '"Pixeldown"';
+  if (isLatinUiLang(lang)) return '"pixeldown"';
 
   // Non-latin / “problematic”: use glyph-safe per-language font
   return uiFontFamilyFor(lang as any);
@@ -4914,7 +4972,7 @@ addSystem((dt) => {
     const bannerFree = new Text({
   text: "",
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 64,
     letterSpacing: 2,
@@ -4925,7 +4983,7 @@ addSystem((dt) => {
 const bannerSpins = new Text({
   text: "",
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 64,
     letterSpacing: 2,
@@ -9795,7 +9853,7 @@ addSystem(() => {
       } as any,
     });
 
-forcePlaquePixeldown(label);
+forcePlaquepixeldown(label);
 
 
       label.anchor.set(0.5);
@@ -9858,7 +9916,7 @@ forcePlaquePixeldown(label);
     });
     
 
-    forcePlaquePixeldown(plaqueArrow);
+    forcePlaquepixeldown(plaqueArrow);
 
     plaqueArrow.anchor.set(0.5);
     plaqueArrow.x = PLAQUE_RIGHT_X + 4;
@@ -9926,7 +9984,7 @@ let pendingFsAward = 0;
       if (hide) continue;
 
       row.label.text = formatMult(v);
-forcePlaquePixeldown(row.label);
+forcePlaquepixeldown(row.label);
       const maxVal = LADDER[LADDER.length - 1];
       row.label.style.fill = (v === maxVal) ? 0xffd36a : 0xffffff;
 
@@ -10818,6 +10876,20 @@ const UI_VALUE_STYLE = localizeStyle({
       text: fmtMoney(state.bank.balance),
       style: UI_VALUE_STYLE,
     });
+
+    
+// ✅ Apply Stake wallet balance once UI exists
+if (isRgs) {
+  void (async () => {
+    await (rgsAuthP ?? Promise.resolve());
+   if (rgsAuthed && rgsInitialBalance != null && !state.ui.spinning) {
+  state.bank.balance = rgsInitialBalance;
+      balanceLabel.text = fmtMoney(state.bank.balance);
+      refreshSpinAffordability();
+    }
+  })();
+}
+
 
 
 
@@ -13791,7 +13863,7 @@ tumbleBanner.addChild(tumbleBannerContent);
 const tumbleBannerLabel = new Text({
   text: t("ui.tumbleWin"),
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 64,
     letterSpacing: 1,
@@ -13808,7 +13880,7 @@ const tumbleBannerLabel = new Text({
 const tumbleBannerValue = new Text({
   text: "",
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffd36a,
     fontSize: 64,
     letterSpacing: 1,
@@ -13877,11 +13949,23 @@ const ABOVE_REEL_GAP_PX = -20; // ✅ positive = above reel (try 12..36)
 // ✅ portrait-only extra lift (negative = move UP)
 const PORTRAIT_TUMBLE_BANNER_Y_NUDGE = -22; // 🔧 try -10 .. -40
 
+// ✅ desktop-only nudge (positive = move DOWN)
+const DESKTOP_TUMBLE_BANNER_Y_NUDGE = 0; // 🔧 try 10 .. 60
+
+const isDesktop =
+  !isMobilePortraitUILayout(__layoutDeps) &&
+  !isMobileLandscapeUILayout(__layoutDeps);
+
 let y = Math.round(b.y - ABOVE_REEL_GAP_PX);
 
 // apply portrait-only nudge
 if (isMobilePortraitUILayout(__layoutDeps)) {
   y += PORTRAIT_TUMBLE_BANNER_Y_NUDGE;
+}
+
+// apply desktop-only nudge
+if (isDesktop) {
+  y += DESKTOP_TUMBLE_BANNER_Y_NUDGE;
 }
 
 // ✅ keep it out of the notch/safe-top
@@ -13940,7 +14024,13 @@ tumbleBanner.y = y;
   // ✅ ensure banner is fully above reelhouse (uses actual bg height)
 const bannerH = tumbleBannerBg.getBounds().height;
 const minTop = b.y - ABOVE_REEL_GAP_PX - bannerH * 0.5;
-tumbleBanner.y = Math.min(tumbleBanner.y, Math.round(minTop));
+
+// ✅ Only clamp on mobile (prevents notch / overlap issues)
+// Desktop: allow manual nudges to move it down
+if (!isDesktop) {
+  tumbleBanner.y = Math.min(tumbleBanner.y, Math.round(minTop));
+}
+
 
 }
 
@@ -16230,6 +16320,7 @@ function kickFreeSpinsAuto(delayMs = 250) {
 
 
     async function doSpin() {
+     
       function computeTotalWinXFromSteps(res: SpinResult): number {
   // Prefer explicit total if provider gives it
   const direct = (res as any).totalWinX;
@@ -16272,7 +16363,28 @@ if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
 
       if (state.ui.spinning) return;
 
+      // ✅ In RGS mode, we MUST authenticate before allowing spins
+if (isRgs) {
+  const ok = await ensureRgsAuthed();
+  if (!ok) {
+    console.error("[RGS] Not authenticated; blocking spin");
+    return;
+  }
+}
+// =====================
+// RGS helpers (in-scope for doSpin)
+// =====================
+
+
+// per-spin RGS state
+let rgsRoundStarted = false;
+let rgsWinToReport = 0;
+if (isRgs) {
+  const ok = await ensureRgsAuthed();
+  if (!ok) return;
+}
 state.ui.spinning = true;
+
 applyUiLocks();
 
 audio?.playSfx?.("spin_start", 1.0);
@@ -16319,8 +16431,22 @@ autoBtnPixi?.setEnabled?.(false);
       ? "FREE_SPINS"
       : "BASE";
 
-    // ✅ Cost is 0 in FREE SPINS
-    const spinCost = (mode === "BASE") ? bet : 0;
+
+
+
+
+const spinCost = (mode === "BASE") ? bet : 0;
+
+// ✅ affordability check FIRST
+if (spinCost > 0 && state.bank.balance < spinCost) {
+  // ... your existing insufficient funds early return ...
+  return;
+}
+
+// ✅ THEN call Stake play (only if we're really spinning)
+// (removed) — play is handled in the unified provider section below
+
+
 
     if (spinCost > 0 && state.bank.balance < spinCost) {
       buyMenuApi.showInsufficientToast();
@@ -16356,34 +16482,6 @@ autoBtnPixi?.setEnabled?.(uiFree);
 
       return;
     }
-
-
-    if (spinCost > 0 && state.bank.balance < spinCost) {
-      state.ui.auto = false;
-      autoBtnPixi?.setOn?.(false);
-      
-
-      // ✅ undo the spin-lock state
-      state.ui.spinning = false;
-
-      spinningBtnPixi.visible = false;
-      spinBtnPixi.visible = true;
-
-      spinBtnPixi.setEnabled(true);
-      betDownBtnPixi.setEnabled(true);
-      betUpBtnPixi.setEnabled(true);
-
-      return;
-    }
-
-
-    
-
-
-
-
-
-
 
 
     // ✅ BASE: only reset when the NEXT spin starts (so it happens on click)
@@ -16425,24 +16523,40 @@ autoBtnPixi?.setEnabled?.(uiFree);
 
 const provider = getResultProvider();
 
-outcome = await provider({
-  cfg: simCfg,
-  mode,
-  fsRemainingIn: state.fs.remaining,
-  ladderIndexIn: state.fs.ladderIndex,
-  seed: undefined,
-  betAmount: bet,
-});
+let res: SpinResult;
+let charged = 0;
 
-const res = outcome.result as SpinResult;
-// ✅ Wallet: apply bet cost ONLY in BASE
-const charged = (mode === "BASE") ? (outcome.betAmount ?? spinCost) : 0;
+if (isRgs) {
+  const playRes = await rgsClient.play(bet, mode);
 
-if (charged > 0) {
+  // Accept either shape:
+  // 1) playRes is SpinResult
+  // 2) playRes.result is SpinResult
+  res = ((playRes as any).result ?? playRes) as SpinResult;
+} else {
+  const outcome = await provider({
+    cfg: simCfg,
+    mode,
+    fsRemainingIn: state.fs.remaining,
+    ladderIndexIn: state.fs.ladderIndex,
+    seed: undefined,
+    betAmount: bet,
+  });
+
+  res = outcome.result as SpinResult;
+  charged = (mode === "BASE") ? ((outcome as any).betAmount ?? spinCost) : 0;
+}
+
+
+
+// ✅ Only do local debits when NOT under RGS
+if (!isRgs && charged > 0) {
   state.bank.balance = Math.max(0, state.bank.balance - charged);
   balanceLabel.text = fmtMoney(state.bank.balance);
   refreshSpinAffordability();
 }
+
+
 
 
 
@@ -16489,6 +16603,7 @@ audio?.setBaseMusicIntensity?.(0.15, 300);
 const winX = computeTotalWinXFromSteps(res);
 const winAmount = winX * bet;
 
+rgsWinToReport = winAmount;
 // (Optional) store it back so other code sees it
 (res as any).totalWinX = winX;
 
@@ -16506,11 +16621,17 @@ if (winX >= BIG_WIN_X && winAmount > 0) {
   await showBigWinAndWait(winAmount, winX);
 }
 
-// ✅ Wallet: apply win (never during replay)
-if ( winAmount > 0) {
+// ✅ Wallet: apply win ONLY when NOT running under RGS
+if (!isRgs && winAmount > 0) {
   state.bank.balance += winAmount;
   balanceLabel.text = fmtMoney(state.bank.balance);
 }
+
+
+
+
+
+
 
 
             // ✅ If we just triggered Free Spins from BASE (eg. 3 scatters),
@@ -16521,9 +16642,41 @@ if ( winAmount > 0) {
   }
 
       } finally {
-        state.ui.spinning = false;
-        spinningBtnPixi.visible = false;
-    spinBtnPixi.visible = true;
+  // ✅ RGS: always try to close the round if we started one
+  if (isRgs && mode === "BASE" && rgsRoundStarted) {
+    try {
+      const res = await rgsClient.endRound(rgsWinToReport);
+      console.log("[RGS] endRound response:", res);
+
+      if (res) {
+        const balObj =
+  (res as any)?.balance ??
+  (res as any)?.wallet?.balance ??
+  (res as any)?.player?.balance ??
+  (res as any)?.data?.balance ??
+  null;
+
+const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+
+if (typeof amt === "number" && Number.isFinite(amt)) {
+  state.bank.balance = amt / 1_000_000;
+  balanceLabel.text = fmtMoney(state.bank.balance);
+  refreshSpinAffordability();
+} else {
+  console.warn("[RGS] endRound: no numeric balance.amount found in response");
+}
+      }
+    } catch (e) {
+      console.warn("[RGS] endRound failed (non-fatal)", e);
+    }
+  }
+
+  rgsRoundStarted = false;
+  rgsWinToReport = 0;
+
+  state.ui.spinning = false;
+  spinningBtnPixi.visible = false;
+  spinBtnPixi.visible = true;
 
 
     // ✅ swap back (but if settings is open, keep spin hidden/disabled)

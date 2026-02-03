@@ -37,7 +37,7 @@ export type SfxKey =
   const TRACTOR_LOOP_END   = .9; // seconds
 
 
-  type MusicKey = "music_base" | "music_fs" | "music_bigwin";
+  type MusicKey = "music_base" | "music_fs" ;
 
   type AudioOptions = {
     sfxVolume01?: number;    // 0..1
@@ -274,7 +274,6 @@ export type SfxKey =
       this.music = {
         music_base: this.makeMusic("/assets/audio/music_base.mp3"),
         music_fs: this.makeMusic("/assets/audio/music_free.mp3"),
-        music_bigwin: this.makeMusic("/assets/audio/music_bigwin.mp3"),
       };
       // ✅ Build base layered stems (all loop, silent until activated)
   this.musicBaseLayers = [

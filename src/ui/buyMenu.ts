@@ -214,7 +214,7 @@ function isMobileLandscapeBuyLayout() {
 const buyHeader = new Text({
   text: uiLabel("ui.buyBonus", "BUY BONUS"),
 style: localizeStyle({
-  fontFamily: "Pixeldown",
+  fontFamily: "pixeldown",
   fill: 0xffffff,
   fontSize: 38,
   fontWeight: "100",
@@ -494,7 +494,7 @@ const buyBetUpBtn = makePngButton(BET_UP_UP, BET_UP_HOVER, BET_UP_DOWN, () => {
   const buyConfirmTitleText = new Text({
   text: "",
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffffff,
     fontSize: 38,
     fontWeight: "100",
@@ -830,7 +830,7 @@ const buyCardSpecs: BuyCardSpec[] = [
     const title = new Text({
   text: applyUiTextCase(spec.title),
   style: localizeStyle({
-    fontFamily: "Pixeldown",
+    fontFamily: "pixeldown",
     fill: 0xffd36a,
     fontSize: 31,
     align: "center",

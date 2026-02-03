@@ -94,7 +94,7 @@ export function createSettingsMenu(opts: {
 
   const tt = (key: string, fallback: string) => t?.(key) ?? fallback;
 const uiLabel = (key: string, fallback: string) => applyUiTextCase(tt(key, fallback));
-// ✅ Info-modal-only: force *system/computer* font (no Pixeldown/Micro5)
+// ✅ Info-modal-only: force *system/computer* font (no pixeldown/Micro5)
 const localizeInfoSystemStyle = <T extends Record<string, any>>(baseStyle: T): T => {
   const s: any = localizeStyle(baseStyle);
   // system font stack
@@ -109,7 +109,7 @@ const localizeSettingsStyle = <T extends Record<string, any>>(baseStyle: T): T =
   return s as T;
 };
 
-// ✅ Info-modal-only: force SAFE fallback fonts (no Pixeldown/Micro5)
+// ✅ Info-modal-only: force SAFE fallback fonts (no pixeldown/Micro5)
 const localizeInfoSafeStyle = <T extends Record<string, any>>(baseStyle: T): T => {
   const s: any = localizeStyle(baseStyle);
   s.fontFamily = uiFontFamilyFor(getLang()); // <- your safe font mapping
