@@ -7,8 +7,9 @@ import "./style.css";
 import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
 import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
 import rgsClient from "./rgs/rgsClient";
-
-
+import { createUIBottom } from "./ui/uiBottom";
+import { createUiController } from "./ui/uiController";
+import { installUiInputController } from "./ui/uiInputController";
 
 import { getResultProvider } from "./engine/resultProvider";
 import { setRtpScale } from "./game/simulate";
@@ -92,7 +93,12 @@ import type { SfxKey } from "./audio/audio";
 let autoMenuApi: any = null;
 // --- DEV / REPLAY SUPPORT ---
 
-
+// =====================
+// UI LAYER (TDZ-safe forward declarations)
+// =====================
+let uiLayer: Container;
+let uiPanel: Container;
+let uiController: ReturnType<typeof createUiController>;
 
 
 
@@ -124,56 +130,51 @@ async function main() {
 
   setLang(detectedLang as any);
 
-  // =====================
+ // =====================
 // RGS (Stake) boot handshake
 // =====================
 const isRgs = rgsClient.initFromUrl();
-let rgsAuthed = false;
 
+const DEV_FORCE_RGS_OK =
+  import.meta.env.DEV &&
+  new URLSearchParams(window.location.search).get("rgs_dev_ok") === "1";
+
+
+let rgsAuthed = false;
+let rgsReady = !isRgs; // non-RGS builds are always "ready"
 let rgsInitialBalance: number | null = null;
 let rgsAuthP: Promise<void> | null = null;
 
-
-
 if (isRgs) {
-  rgsAuthP = rgsClient.authenticate()
+  rgsAuthP = rgsClient
+    .authenticate()
     .then((res) => {
       rgsAuthed = true;
+      rgsReady = true;
       console.log("[RGS] authenticated", res);
 
-     const balObj = (res?.balance ?? res?.wallet?.balance ?? res?.player?.balance);
-const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+      const balObj = (res as any)?.balance ?? (res as any)?.wallet?.balance ?? (res as any)?.player?.balance;
+      const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
 
-if (typeof amt === "number" && Number.isFinite(amt)) {
-  // Stake balances are micro-units (1e6)
-  rgsInitialBalance = amt / 1_000_000;
-}
-
+      if (typeof amt === "number" && Number.isFinite(amt)) {
+        // Stake balances are micro-units (1e6)
+        rgsInitialBalance = amt / 1_000_000;
+      }
     })
     .catch((err) => {
       rgsAuthed = false;
+      rgsReady = false;
       console.error("[RGS] authenticate failed", err);
     });
 }
 
-function rgsReadyNow() {
-  return isRgs && rgsAuthed;
+// ✅ DEV override: pretend we’re authed so you can test UI/spins locally.
+// DO NOT return from main(); just flip flags.
+if (DEV_FORCE_RGS_OK) {
+  console.warn("[RGS] DEV OVERRIDE ENABLED (rgs_dev_ok=1)");
+  rgsAuthed = true;
+  rgsReady = true;
 }
-
-async function ensureRgsAuthed() {
-  if (!isRgs) return false;
-  if (rgsAuthed) return true;
-
-  // wait for the in-flight auth if it exists
-  try {
-    await rgsAuthP;
-  } catch {
-    // swallow; rgsAuthed will be false
-  }
-
-  return rgsAuthed;
-}
-
 
 
 // Kick off font loads early, but DON'T block boot visuals
@@ -644,7 +645,7 @@ const audio = new AudioManager({
 
       state.game.mode = "FREE_SPINS";
 
-      applyUiLocks();
+      uiController.applyUiLocks();
     // 🚫 NO BASE CAR DURING FREE SPINS (kill immediately)
     if (bgCarLive) {
       bgCarLive.s.removeFromParent();
@@ -869,6 +870,21 @@ if (!disableCustomCursorOnMobile(__layoutDeps)) {
 
       // ROOT + LAYERS
       const root = new Container();
+
+
+// ✅ CREATE UI BOTTOM EARLY
+const uiBottom = createUIBottom();
+// =====================
+// ✅ UI LAYER (build immediately once root + uiBottom exist)
+// =====================
+uiLayer = new Container();
+uiLayer.zIndex = 8000;
+uiLayer.alpha = 0;           // starts hidden (your splash/loader flow)
+uiLayer.eventMode = "none";  // no clicks while hidden
+root.addChild(uiLayer);
+
+uiPanel = uiBottom.layer;
+uiLayer.addChild(uiPanel);
 
 
       // =====================
@@ -1122,6 +1138,9 @@ if (window.visualViewport) {
 // FINAL: Build scene graph ONCE (prevents zIndex chaos)
 // =====================
 let __sceneGraphBuilt = false;
+let __uiBuilt = false;
+
+
 
 function __buildSceneGraphOnce() {
   if (__sceneGraphBuilt) return;
@@ -1138,7 +1157,7 @@ function __buildSceneGraphOnce() {
   // These three are safe because we will call this only after they exist:
   if (!backgroundLayer.parent) root.addChild(backgroundLayer);
   if (!gameCore.parent) root.addChild(gameCore);
-  if (!uiLayer.parent) root.addChild(uiLayer);
+ 
 
   root.sortChildren();
 }
@@ -1343,6 +1362,9 @@ forceLoaderFont(loadingPct);
 
       loadingLayer.visible = false;
       loadingLayer.eventMode = "none";
+      // ✅ safety: allow UI to be re-enabled by reveal pipeline
+uiLayer.eventMode = "none"; // stays off until showGameCoreDelayed flips it to auto
+
     }
 // =====================
 // FINAL: single boot pipeline (loader -> splash -> startup)
@@ -3014,12 +3036,12 @@ leafSpawnAcc = 0;
 
     }
 
-  const STUDIO_LOGO_URL = "/assets/ui/studio_logo.png";
-  const STUDIO_LOGO_HOUSE_URL = "/assets/ui/studio_logo_house.webp";
-  const BG_BASE_URL = "/assets/backgrounds/bg_candy_landscape.webp";
-  const BG_FREE_URL = "/assets/backgrounds/bg_candy_landscape_free.webp";
-  const FS_OUTRO_BG_URL = "/assets/ui/fs_outro_bg.webp";
-  const INFINITY_ICON_URL = "/assets/ui/infinity.png";
+  const STUDIO_LOGO_URL = "./assets/ui/studio_logo.png";
+  const STUDIO_LOGO_HOUSE_URL = "./assets/ui/studio_logo_house.webp";
+  const BG_BASE_URL = "./assets/backgrounds/bg_candy_landscape.webp";
+  const BG_FREE_URL = "./assets/backgrounds/bg_candy_landscape_free.webp";
+  const FS_OUTRO_BG_URL = "./assets/ui/fs_outro_bg.webp";
+  const INFINITY_ICON_URL = "./assets/ui/infinity.png";
 
     
 
@@ -4205,117 +4227,7 @@ audio?.playSfx?.("car", 0.5, 1.2);
 
   
 
-  function onKeyDown(e: KeyboardEvent) {
-
-
-
-    // stop page scroll from Space
-    if (e.code === "Space") e.preventDefault();
-
-    // =========
-    // 0) HARD LOCKS (loader/splash/startup intro)
-    // =========
-    if (__hardOverlayLocks()) {
-    return;
-  }
-
-  // ✅ SPLASH: Space/Enter should "click to continue"
-  if (state.overlay.splash && __isContinueKey(e)) {
-    __blockEvent(e);
-
-    // same as clicking/tapping the splash layer
-    splashLayer.emit("pointertap", {} as any);
-    return;
-  }
-
-
-    // =========
-    // 1) OVERLAYS OWN SPACE/ENTER
-    // =========
-    if (__overlayWantsContinue()) {
-      if (__isContinueKey(e)) {
-        __blockEvent(e);
-        fsDimmer.emit("pointertap", { stopPropagation() {} } as any);
-      } else {
-        // ignore all other keys during overlays
-        __blockEvent(e);
-      }
-      return;
-    } 
-
-
-    // =========
-    // 3) GAMEPLAY SPACE (tap = spin, hold = temp auto)
-    // =========
-   if (e.code === "Space") {
-
- // ✅ Block manual spin input during FREE SPINS
-  if (isInFreeSpinsMode()) return;
-
-  // don't fire repeatedly
-  if (e.repeat) return;
-
-  // block while menus open / already spinning
-  if (state.ui.settingsOpen || state.ui.buyMenuOpen || state.ui.spinning) return;
-      // don't fire repeatedly
-      if (e.repeat) return;
-
-      // block while menus open / already spinning
-      if (state.ui.settingsOpen || state.ui.buyMenuOpen || state.ui.spinning) return;
-
-      // start hold tracking
-      if (__spaceDown) return;
-      __spaceDown = true;
-
-      __autoWasOnBeforeSpace = state.ui.auto;
-
-      // tap = spin once
-      if (!state.ui.spinning) void doSpin();
-
-      // hold = auto after delay
-    __spaceHoldTimer = setTimeout(() => {
-    if (!__spaceDown) return;
-
-    // still block if menus are open
-    if (state.ui.settingsOpen || state.ui.buyMenuOpen) return;
-
-    // ✅ Turn auto ON even if a spin is currently running.
-    // This way, when the current spin finishes, your normal auto-chaining will continue.
-    if (!state.ui.auto) {
-      state.ui.auto = true;
-      autoBtnPixi?.setOn?.(true);
-    }
-
-    // If we aren't currently spinning, start a spin immediately.
-    if (!state.ui.spinning) void doSpin();
-  }, 350);
-
-
-      return;
-    }
-  }
-
-  function onKeyUp(e: KeyboardEvent) {
-    if (e.code !== "Space") return;
-
-    e.preventDefault();
-
-    __spaceDown = false;
-    if (__spaceHoldTimer) {
-      clearTimeout(__spaceHoldTimer);
-      __spaceHoldTimer = null;
-    }
-
-    // restore auto state if it was off before hold
-    if (!__autoWasOnBeforeSpace && state.ui.auto) {
-      state.ui.auto = false;
-      autoBtnPixi?.setOn?.(false);
-    }
-  }
-
-  // ✅ capture phase so we win over other listeners (now there are none)
-  window.addEventListener("keydown", onKeyDown, true);
-  window.addEventListener("keyup", onKeyUp, true);
+  
 
 
 
@@ -6467,7 +6379,7 @@ fsOutroPortraitScale = 1;
     clearFirefliesNow();
 
             fsOutroPulseToken++; // safety kill
-              restoreUiAfterFsOutro();
+              uiController.restoreUiAfterFsOutro();
           }
         );
       }
@@ -8401,7 +8313,7 @@ setTimeout(() => {
 
   // ✅ Now fsOutro flag is definitely cleared (and plaque is allowed again)
   layoutMultiplierPlaque();
-  restoreUiAfterFsOutro();
+  uiController.restoreUiAfterFsOutro();
   root.sortChildren();
 
   // (optional) if you want it to “snap show” no matter what:
@@ -9373,6 +9285,8 @@ layoutMultiplierPlaque();
     gameCore.sortableChildren = true;
     gameCore.zIndex = 1500;
     root.addChild(gameCore);
+    __buildSceneGraphOnce();
+
     // ✅ FINAL: mount reel + grid AFTER gameCore exists
 gameCore.addChild(reelHouseLayer);
 gameCore.addChild(gridLayer);
@@ -10626,24 +10540,6 @@ applyPlaqueSlotVisibility(plaqueIdx);
 
 
 
-
-    // ===== PIXI UI (Bottom Control Board) =====
-    const uiLayer = new Container();
-    
-    uiLayer.zIndex = 8000;          // ✅ above reel + symbols + win frames
-    root.addChild(uiLayer);
-    __buildSceneGraphOnce();
-    // ✅ FINAL: build the scene graph only after all layers exist
-
-    // ✅ Prevent UI flashing before splash
-    uiLayer.alpha = 0;
-    uiLayer.eventMode = "none";
-
-
-
-    const uiPanel = new Container();
-    uiLayer.addChild(uiPanel);
-
     function setScaleToHeight(c: Container, targetH: number) {
       // assumes makePngButton() added btnHeight() to the container
       const h = (c as any).btnHeight ? (c as any).btnHeight() : c.height;
@@ -10704,32 +10600,14 @@ applyPlaqueSlotVisibility(plaqueIdx);
 // =====================
 let betUpBtnPixi: any = null;
 let betDownBtnPixi: any = null;
-    function setUiEnabled(enabled: boolean) {
-      // visually + interactively disable the whole UI layer
-      uiLayer.eventMode = enabled ? "auto" : "none";
-      uiLayer.cursor = enabled ? "default" : "default";
-      uiLayer.alpha = enabled ? 1 : 1; // keep visible; change to 0.6 if you want dim
-
-      // disable individual buttons (prevents edge cases where they still get events)
-      spinBtnPixi?.setEnabled?.(
-  enabled && (!state.ui.spinning || state.ui.auto)
-);
-      settingsBtnPixi?.setEnabled?.(enabled);
-      buyBtnPixi?.setEnabled?.(enabled);
-      autoBtnPixi?.setEnabled?.(enabled);
-      turboBtnPixi?.setEnabled?.(enabled);
-      betDownBtnPixi?.setEnabled?.(enabled);
-      betUpBtnPixi?.setEnabled?.(enabled);
-
-     
-    }
+  
 
     function lockInputForBigWin(on: boolean) {
       if (on) {
-        setUiEnabled(false);
+        uiController.applyUiLocks();
         (gameCore as any).eventMode = "none"; // already doing this, but keep it consistent
       } else {
-        setUiEnabled(true);
+        uiController.applyUiLocks();
         (gameCore as any).eventMode = "auto";
       }
     }
@@ -10752,18 +10630,22 @@ let betDownBtnPixi: any = null;
         const startS = gameCore.scale.x;
 
         tween(
-          fadeMs,
-          (k) => {
-            gameCore.alpha = startA + (1 - startA) * k;
-            const s = startS + (1 - startS) * k;
-            gameCore.scale.set(s);
-          },
+  fadeMs,
+  (k) => {
+    gameCore.alpha = startA + (1 - startA) * k;
+    const s = startS + (1 - startS) * k;
+    gameCore.scale.set(s);
+  },
           () => {
-            gameCore.alpha = 1;
-            gameCore.scale.set(1);
-            (gameCore as any).eventMode = "auto";
-          }
-        );
+    gameCore.alpha = 1;
+    gameCore.scale.set(1);
+    (gameCore as any).eventMode = "auto";
+
+    // ✅ enable UI interaction once visible
+    uiLayer.alpha = 1;
+    uiLayer.eventMode = "auto";
+  }
+);
       }, delayMs);
     }
 
@@ -10885,7 +10767,7 @@ if (isRgs) {
    if (rgsAuthed && rgsInitialBalance != null && !state.ui.spinning) {
   state.bank.balance = rgsInitialBalance;
       balanceLabel.text = fmtMoney(state.bank.balance);
-      refreshSpinAffordability();
+      uiController.refreshSpinAffordability();
     }
   })();
 }
@@ -11092,152 +10974,11 @@ uiPanel.addChild(betControlsGroup);
 
 
 
-    function refreshSpinAffordability() {
-      const bet = state.bank.betLevels[state.bank.betIndex];
-      const canSpin = (state.fs.remaining > 0) || (state.bank.balance >= bet); // FS is free
-      // ✅ Auto mode: keep STOP AUTO clickable even while spinning
-spinBtnPixi?.setEnabled?.(
-  canSpin &&
-  (!state.ui.spinning || state.ui.auto) &&
-  !state.ui.settingsOpen &&
-  !state.ui.buyMenuOpen
-);
-
-      updateSpinButtonVisualState();
-    }
-
-    function setUiEnabledExceptSpin(enabled: boolean) {
-  settingsBtnPixi?.setEnabled?.(enabled);
-  buyBtnPixi?.setEnabled?.(enabled);
-  autoBtnPixi?.setEnabled?.(enabled);
-  turboBtnPixi?.setEnabled?.(enabled);
-  betDownBtnPixi?.setEnabled?.(enabled);
-  betUpBtnPixi?.setEnabled?.(enabled);
-
-  // spin is handled by refreshSpinAffordability
-  refreshSpinAffordability();
-}
-
-function isInFreeSpinsMode(): boolean {
-  // "entire free spins mode" includes the between-spins gaps.
-  // We also include fsOutroPending because you treat that as "still in FS presentation".
-  return (
-    state.game.mode === "FREE_SPINS" ||
-    state.fs.remaining > 0 ||
-    state.overlay.fsOutroPending
-  );
-}
-
-// One source of truth: call this anytime state changes (spin start/end, enter/exit FS, menus).
-function applyUiLocks() {
-  const hardOverlay =
-    loadingLayer?.visible ||
-    state.overlay.splash ||
-    state.overlay.startup ||
-    state.overlay.fsIntro ||
-    state.overlay.fsOutro ||
-    state.overlay.bigWin;
-
-  // Menus also lock most things (your existing behavior)
-  const anyMenuOpen =
-    state.ui.settingsOpen ||
-    state.ui.buyMenuOpen ||
-    (autoMenuApi?.isOpen?.() ?? false);
-
-  const fsLock = isInFreeSpinsMode();
-
-// --- SETTINGS + TURBO rules ---
-// ✅ Allow settings during FREE_SPINS gameplay (but still NOT during hard overlays)
-const allowSettings = !hardOverlay;
-const allowTurbo    = !hardOverlay;
-
-settingsBtnPixi?.setEnabled?.(allowSettings);
-turboBtnPixi?.setEnabled?.(allowTurbo);
+ 
 
 
 
-  // Everything else:
-  // - If hard overlay: disable all.
-  // - Else if in FREE_SPINS: disable spin/buy/auto/bet.
-  // - Else normal: use your normal rules (affordability/spinning/menus).
-  if (hardOverlay) {
-    spinBtnPixi?.setEnabled?.(false);
-    buyBtnPixi?.setEnabled?.(false);
-    autoBtnPixi?.setEnabled?.(false);
-    betUpBtnPixi?.setEnabled?.(false);
-    betDownBtnPixi?.setEnabled?.(false);
-    return;
-  }
 
- if (fsLock) {
-  // ✅ FREE SPINS: lock these completely
-  spinBtnPixi?.setEnabled?.(false);
-  autoBtnPixi?.setEnabled?.(false);
-  betUpBtnPixi?.setEnabled?.(false);
-  betDownBtnPixi?.setEnabled?.(false);
-
-  // ✅ BUY: always disabled, but FULL opacity + GREY filter
-  buyBtnPixi?.setEnabled?.(false);   // disables interactivity (and would dim alpha)
-  buyBtnPixi.eventMode = "none";     // double-safety
-  buyBtnPixi.cursor = "default";
-  buyBtnPixi.alpha = 1.0;            // ✅ override the 0.5 dim
-  (buyBtnPixi as any)?.resetVisual?.();
-  buyBtnPixi.filters = [buyGreyFilter];
-
-  // Also kill any armed/auto state so nothing weird persists
-  stopAutoNow("free spins lock");
-  refreshAutoSpinSpinButton?.();
-
-  return;
-}
-
-
-  // ✅ BASE GAME rules (your normal behavior)
-  // Let your existing affordability logic decide SPIN.
-  refreshSpinAffordability();
-
-  // Other buttons depend on menus + spinning
-  const uiFree = !anyMenuOpen && !state.ui.spinning;
-
-// BUY: during spinning, keep FULL opacity but NO interaction + GREYED visuals
-buyBtnPixi?.setEnabled?.(uiFree);
-
-if (state.ui.spinning) {
-  buyBtnPixi.eventMode = "none";         // blocks clicks/taps
-  buyBtnPixi.alpha = 1.0;               // keep opaque
-  buyBtnPixi.cursor = "default";
-  (buyBtnPixi as any)?.resetVisual?.();  // force UP state
-
-  // ✅ grey it out (like a 50% overlay)
-  buyBtnPixi.filters = [buyGreyFilter];
-} else {
-  // ✅ restore normal color
-  buyBtnPixi.filters = null;
-}
-
-
-  autoBtnPixi?.setEnabled?.(uiFree);
-
-  // bet arrows are disabled while spinning or menus
-  betUpBtnPixi?.setEnabled?.(!anyMenuOpen && !state.ui.spinning);
-  betDownBtnPixi?.setEnabled?.(!anyMenuOpen && !state.ui.spinning);
-
-}
-function restoreUiAfterFsOutro() {
-  // make sure UI layer can receive events again
-  uiLayer.eventMode = "auto";
-  uiLayer.alpha = 1;
-
-  // reset any weird button visual state
-  (spinBtnPixi as any)?.resetVisual?.();
-  (buyBtnPixi as any)?.resetVisual?.();
-
-  // restore correct auto skin (NORMAL/PLAY/STOP)
-  refreshAutoSpinSpinButton();
-
-  // re-apply your single source of truth
-  applyUiLocks();
-}
 
 
  function updateBetUI() {
@@ -11990,13 +11731,13 @@ return c as Container & {
 
     
 
-    const BIGWIN_ITEMS_ATLAS_URL = "/assets/atlases/bigwin_items.json";
-    const UI_ATLAS_URL = "/assets/atlases/ui.json";
-    const UI_EXTRA_ATLAS_URL = "/assets/atlases/ui_extra.json";
-  const VEHICLES_ATLAS_URL = "/assets/atlases/vehicles.json";
-  const REELHOUSE_ATLAS_URL = "/assets/atlases/reelhouse.json";
-  const SYMBOLS_ATLAS_URL = "/assets/atlases/symbols.json";
-const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
+    const BIGWIN_ITEMS_ATLAS_URL = "./assets/atlases/bigwin_items.json";
+    const UI_ATLAS_URL = "./assets/atlases/ui.json";
+    const UI_EXTRA_ATLAS_URL = "./assets/atlases/ui_extra.json";
+  const VEHICLES_ATLAS_URL = "./assets/atlases/vehicles.json";
+  const REELHOUSE_ATLAS_URL = "./assets/atlases/reelhouse.json";
+  const SYMBOLS_ATLAS_URL = "./assets/atlases/symbols.json";
+const AUTO_MENU_UI_ATLAS_URL = "./assets/atlases/auto_menu_ui.json";
 
 
 
@@ -12006,7 +11747,7 @@ const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
     // =====================
     // COIN SHOWER — SPRITESHEET (TexturePacker / Pixi atlas)
     // =====================
-    const COINS_SHEET_URL = "/assets/particles/coins.json"; // ✅ leading slash
+    const COINS_SHEET_URL = "./assets/particles/coins.json"; // ✅ leading slash
 
     let coinFramesCache: Texture[] | null = null;
 
@@ -12240,39 +11981,6 @@ bigWinItemsSheet = Assets.get(BIGWIN_ITEMS_ATLAS_URL) as any;
 
 
 
-    // =====================
-    // UI PANEL BACKGROUND (CODE, replaces ui_panel.png)
-    // =====================
-    const panelBgG = new Graphics();
-    panelBgG.zIndex = -999;          // keep behind everything inside uiPanel
-    panelBgG.eventMode = "none";
-    uiPanel.addChildAt(panelBgG, 0);
-
-
-
-
-
-
-    
-
-
-    const uiDimmer = new Graphics();
-    uiDimmer.visible = false;
-    uiDimmer.alpha = 0.65;
-
-    // ✅ This blocks clicks when visible
-    uiDimmer.eventMode = "static";
-    uiDimmer.cursor = "default";
-
-    uiPanel.addChild(uiDimmer);
-
-
-    
-
-
-
-
-
 
 
     // Spin button (create AFTER load)
@@ -12282,6 +11990,11 @@ bigWinItemsSheet = Assets.get(BIGWIN_ITEMS_ATLAS_URL) as any;
       SPIN_HOVER,
       SPIN_DOWN,
       () => {
+          // ✅ RGS AUTH GUARD (ADD THIS)
+    if (isRgs && !rgsReady) {
+      console.warn("[RGS] spin blocked — not authenticated yet");
+      return;
+    } 
         // ✅ If auto is running, SPIN becomes "STOP AUTO"
 if (state.ui.auto) {
   stopAutoNow("spin button (stop auto)");
@@ -12308,7 +12021,7 @@ if (state.ui.autoArmed) {
 
   // close menu if it's still open
   autoMenuApi?.close?.();
-  setUiEnabledExceptSpin(true);
+uiController.applyUiLocks();
 
   refreshAutoSpinSpinButton(); // ✅ now show STOP AUTO skin + counter
   void doSpin();
@@ -12351,7 +12064,10 @@ spinBtnPixi.hitArea = new Rectangle(
 
 
 
-    uiPanel.addChild(spinBtnPixi);
+uiPanel.addChild(spinBtnPixi);
+
+
+    
 
  // =====================
 // ✅ AUTO SPIN VISUALS (PLAY/STOP skins + countdown number)
@@ -12570,6 +12286,7 @@ addSystem(() => {
 });
 
 
+
 refreshLocalizedText();
 
     // =====================
@@ -12596,7 +12313,7 @@ refreshLocalizedText();
     uiPanel.addChild(spinningBtnPixi);
 
     // ✅ now safe (spinningBtnPixi exists)
-    refreshSpinAffordability();
+    uiController?.refreshSpinAffordability();
 
 
 
@@ -12622,18 +12339,18 @@ refreshLocalizedText();
 
     settingsBtnPixi.x += isOn ? SETTINGS_ON_OFFSET_X : -SETTINGS_ON_OFFSET_X;
 
-      uiDimmer.visible = state.ui.settingsOpen;
+   uiBottom.setDimmer(state.ui.settingsOpen);
 
   if (state.ui.settingsOpen) settingsApi?.open?.();
   else settingsApi?.close?.();
 
       // Let the single source of truth decide which buttons are enabled/greyed
-applyUiLocks();
+uiController.applyUiLocks();
 
 
       // ✅ Opening settings should NOT disrupt FREE SPINS auto-chaining.
 // Only stop BASE auto (your state.ui.auto system) when NOT in free spins.
-if (state.ui.settingsOpen && !isInFreeSpinsMode()) {
+if (state.ui.settingsOpen && !uiController.isInFreeSpinsMode()) {
   stopAutoNow("settings opened");
   autoBtnPixi.setOn(false);
 }
@@ -12656,20 +12373,20 @@ if (state.ui.settingsOpen && !isInFreeSpinsMode()) {
     root,
     state,
 t,
-    uiDimmer,
+     uiDimmer: uiBottom.uiDimmer,
     settingsBtnPixi,
 
     // when settings closes, re-enable UI buttons
  onClosed: () => {
   // SettingsMenu can be closed by clicking outside, so force-sync the toggle state.
   state.ui.settingsOpen = false;
-  uiDimmer.visible = false;
+  
 
   // ensure the settings toggle looks OFF
   settingsBtnPixi?.setOn?.(false);
 
   // re-apply your "only turbo+settings in FS" rules
-  applyUiLocks();
+  uiController.applyUiLocks();
 },
 
 
@@ -12796,6 +12513,18 @@ buyBtnPixi.hitArea = new Rectangle(
 
     // ✅ ADD IT TO THE UI
     uiPanel.addChild(autoBtnPixi);
+// ✅ INSTALL UI INPUT CONTROLLER (ONE-TIME)
+installUiInputController({
+  state,
+  doSpin,
+  stopAutoNow,
+  refreshAutoSpinSpinButton,
+  autoBtnPixi,
+  uiController,
+  splashLayer,
+  fsDimmer,
+  audio,
+});
 
 function stopAutoNow(reason = "") {
   if (!state.ui.auto && (state.ui.autoRounds ?? -1) === -1 && (state.ui.autoPendingRounds ?? -1) === -1) return;
@@ -12849,7 +12578,7 @@ onClosed: () => {
     state.ui.autoPendingRounds = -1;
   }
 
-  setUiEnabledExceptSpin(true);
+  uiController.applyUiLocks();
 
   // ✅ This will restore btn_spin_up.png (NORMAL) if not armed/running
   refreshAutoSpinSpinButton();
@@ -12915,13 +12644,13 @@ onClosed: () => {
   BET_DOWN_HOVER,
   BET_DOWN_DOWN,
   () => {
-    if (isInFreeSpinsMode()) return; // ✅ hard safety
+    if (uiController.isInFreeSpinsMode()) return; // ✅ hard safety
     stopAutoNow("bet down");
 
     if (state.bank.betIndex > 0) {
       state.bank.betIndex--;
       updateBetUI();
-      refreshSpinAffordability();
+      uiController.refreshSpinAffordability();
       if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
     }
   }
@@ -12932,13 +12661,13 @@ betUpBtnPixi = makePngButton(
   BET_UP_HOVER,
   BET_UP_DOWN,
   () => {
-    if (isInFreeSpinsMode()) return; // ✅ hard safety
+    if (uiController.isInFreeSpinsMode()) return; // ✅ hard safety
     stopAutoNow("bet up");
 
     if (state.bank.betIndex < state.bank.betLevels.length - 1) {
       state.bank.betIndex++;
       updateBetUI();
-      refreshSpinAffordability();
+      uiController.refreshSpinAffordability();
       if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
     }
   }
@@ -12949,6 +12678,19 @@ betUpBtnPixi = makePngButton(
 betControlsGroup.addChild(betUpBtnPixi, betDownBtnPixi);
 
 
+uiController = createUiController({
+  state,
+
+  spinBtn: spinBtnPixi,
+  buyBtn: buyBtnPixi,
+  autoBtn: autoBtnPixi,
+  turboBtn: turboBtnPixi,
+  betUpBtn: betUpBtnPixi,
+  betDownBtn: betDownBtnPixi,
+
+  autoMenuApi,
+  refreshAutoSpinSpinButton,
+});
 
    
 
@@ -12965,9 +12707,10 @@ t,
   makePngButton,
   makePngToggleButton,
 
-  fmtMoney,
-  updateBetUI,
-  refreshSpinAffordability,
+fmtMoney,
+updateBetUI,
+refreshSpinAffordability: () => uiController.refreshSpinAffordability(),
+
 
 
   onBalanceUpdated: () => {
@@ -13091,37 +12834,22 @@ const bgH = Math.round(
 uiPanelH = bgH;
 
 
-  // uiPanel container pinned to bottom (safe area)
-  uiPanel.x = 0;
-  const safeB = safeInsetBottomPx();
-  uiPanel.y = Math.round(app.screen.height - bgH - safeB);
+ uiPanel.x = 0;
+const safeB = safeInsetBottomPx();
+uiPanel.y = 0; // ✅ uiPanel is now inside the bottom panel coordinate space
 
+  // =====================
+// UI BOTTOM module layout (tracks panel size/position)
+// =====================
+uiBottom.layout({
+  W: app.screen.width,
+  H: app.screen.height,
+  uiH: uiPanelH,
+  safeB: safeB,
+  isMobile: isMobileUILayout(__layoutDeps),
+  isPortrait: isMobilePortraitUILayout(__layoutDeps),
+});
 
-  // -----------------------------
-  // PANEL BG DRAW (code)
-  // -----------------------------
-  panelBgG.clear();
-
-  const PANEL_FILL = 0x000000;
-  const PANEL_ALPHA = 0.38;
-  const PANEL_OUTLINE_A = 0.35;
-  const PANEL_OUTLINE_W = 2;
-  const PANEL_RADIUS = 0;
-
-  if (PANEL_RADIUS > 0) {
-    panelBgG
-      .roundRect(0, 0, panelW, bgH, PANEL_RADIUS)
-      .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
-      .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
-  } else {
-    panelBgG
-      .rect(0, 0, panelW, bgH)
-      .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
-      .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
-  }
-
-  uiDimmer.clear();
-  uiDimmer.rect(0, 0, panelW, bgH).fill(0x000000);
 
 // ✅ Ensure BET parenting is correct BEFORE we position things
 ensureBetParentingForLayout();
@@ -16345,6 +16073,12 @@ function kickFreeSpinsAuto(delayMs = 250) {
       
         // 🔒 During FS intro/outro: absolutely no spinning / input should work
       if (state.overlay.fsIntro || state.overlay.fsOutro) return;
+      // ✅ RGS: block spins until authenticated
+if (isRgs && !rgsReady) {
+  console.warn("[RGS] doSpin blocked — not authenticated yet");
+  return;
+}
+
 
       // Optional extra safety: block spins while menus are open
 // ✅ BUT allow FREE SPINS to continue even if SETTINGS is open
@@ -16363,14 +16097,13 @@ if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
 
       if (state.ui.spinning) return;
 
-      // ✅ In RGS mode, we MUST authenticate before allowing spins
-if (isRgs) {
-  const ok = await ensureRgsAuthed();
-  if (!ok) {
-    console.error("[RGS] Not authenticated; blocking spin");
-    return;
-  }
-}
+// =====================
+// Decide spin mode ONCE
+// =====================
+const mode: Mode =
+  (state.game.mode === "FREE_SPINS" || state.fs.remaining > 0)
+    ? "FREE_SPINS"
+    : "BASE";
 // =====================
 // RGS helpers (in-scope for doSpin)
 // =====================
@@ -16379,18 +16112,17 @@ if (isRgs) {
 // per-spin RGS state
 let rgsRoundStarted = false;
 let rgsWinToReport = 0;
-if (isRgs) {
-  const ok = await ensureRgsAuthed();
-  if (!ok) return;
-}
-state.ui.spinning = true;
 
-applyUiLocks();
+state.ui.spinning = true;
+if (isRgs && mode === "BASE") {
+  rgsRoundStarted = true;
+}
+uiController.applyUiLocks();
 
 audio?.playSfx?.("spin_start", 1.0);
 
 
-     applyUiLocks();
+     uiController.applyUiLocks();
 
 // ✅ During AUTO: keep STOP button visible (countdown stays on-screen)
 // ✅ During manual: show the SPINNING overlay like before
@@ -16406,7 +16138,7 @@ if (state.ui.auto) {
 } else {
   spinBtnPixi.visible = false;
   spinningBtnPixi.visible = true;
-  spinBtnPixi.setEnabled(false);
+  uiController.applyUiLocks();
 }
 
 
@@ -16425,11 +16157,7 @@ autoBtnPixi?.setEnabled?.(false);
 
     const bet = state.bank.betLevels[state.bank.betIndex];
 
-    // ✅ Decide mode ONCE
-  const mode: Mode =
-    (state.game.mode === "FREE_SPINS" || state.fs.remaining > 0)
-      ? "FREE_SPINS"
-      : "BASE";
+
 
 
 
@@ -16460,14 +16188,13 @@ if (spinCost > 0 && state.bank.balance < spinCost) {
 spinningBtnPixi.visible = false;
 spinBtnPixi.visible = true;
 
-// re-enable spin only if no menus open etc (your existing logic)
-spinBtnPixi.setEnabled(!state.ui.settingsOpen && !state.ui.buyMenuOpen);
+uiController.applyUiLocks();
 
 // ✅ Ensure the correct auto/normal skin is applied immediately
 refreshAutoSpinSpinButton();
 
 
-      spinBtnPixi.setEnabled(true);
+      uiController.applyUiLocks();
       betDownBtnPixi.setEnabled(true);
       betUpBtnPixi.setEnabled(true);
       // ✅ restore BUY + AUTO when spin ends (but respect open menus)
@@ -16553,7 +16280,7 @@ if (isRgs) {
 if (!isRgs && charged > 0) {
   state.bank.balance = Math.max(0, state.bank.balance - charged);
   balanceLabel.text = fmtMoney(state.bank.balance);
-  refreshSpinAffordability();
+  uiController.applyUiLocks();
 }
 
 
@@ -16661,7 +16388,8 @@ const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : ba
 if (typeof amt === "number" && Number.isFinite(amt)) {
   state.bank.balance = amt / 1_000_000;
   balanceLabel.text = fmtMoney(state.bank.balance);
-  refreshSpinAffordability();
+ uiController.applyUiLocks();
+
 } else {
   console.warn("[RGS] endRound: no numeric balance.amount found in response");
 }
@@ -16686,7 +16414,7 @@ if (typeof amt === "number" && Number.isFinite(amt)) {
    
 
 
-applyUiLocks();
+uiController.applyUiLocks();
 // optional: if your button helper supports it, snap visuals back to UP
 (buyBtnPixi as any)?.resetVisual?.();
 

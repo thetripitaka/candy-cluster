@@ -46,20 +46,16 @@ export class RgsClient {
   private async post(path: string, body: any) {
     if (!this.cfg) throw new Error("RGS not initialized");
 
-    const res = await fetch(`${this.cfg.rgsUrl}${path}`, {
-      method: "POST",
-      credentials: "include", // ✅ important for dashboard sessions
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        sessionID: this.cfg.sessionID,
-        currency: this.cfg.currency,
-        lang: this.cfg.lang,
-        ...body,
-      }),
-    });
-
+   const res = await fetch(`${this.cfg.rgsUrl}${path}`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    sessionID: this.cfg.sessionID,
+    currency: this.cfg.currency,
+    lang: this.cfg.lang,
+    ...body,
+  }),
+});
    if (!res.ok) {
   const t = await res.text();
 

@@ -211,41 +211,41 @@ export type SfxKey =
 
       // Create Howls (don’t auto-play yet)
       this.sfx = {
-        infused: this.makeSfx("/assets/audio/infused.mp3"),
-    ui_click: this.makeSfx("/assets/audio/ui_click.mp3"),
-    confirm:  this.makeSfx("/assets/audio/confirm.mp3"), 
-    ui_toggle: this.makeSfx("/assets/audio/ui_toggle.mp3"),
-    spin_start: this.makeSfx("/assets/audio/spin_start.mp3"),
-    reel_land: this.makeSfx("/assets/audio/reel_land.mp3"),
-    cluster_pop: this.makeSfx("/assets/audio/cluster_pop.mp3"),
-    fs_click: this.makeSfx("/assets/audio/fs_click.mp3"),
-    explode: this.makeSfx("/assets/audio/explode.mp3"),
-    car: this.makeSfx("/assets/audio/car.mp3"), 
-    fstrigger: this.makeSfx("/assets/audio/fstrigger.mp3"),
-    bigwin_hit: this.makeSfx("/assets/audio/bigwin_hit.mp3"),
-  final_amount: this.makeSfx("/assets/audio/final_amount.mp3"),
-  final_fsoutro_amount: this.makeSfx("/assets/audio/final_fsoutro_amount.mp3"),
-    bounce: this.makeSfx("/assets/audio/bounce.mp3"),
-    boosted: this.makeSfx("/assets/audio/boosted.mp3"),
-      tick: this.makeSfx("/assets/audio/tick.mp3"),
+        infused: this.makeSfx("./assets/audio/infused.mp3"),
+    ui_click: this.makeSfx("./assets/audio/ui_click.mp3"),
+    confirm:  this.makeSfx("./assets/audio/confirm.mp3"), 
+    ui_toggle: this.makeSfx("./assets/audio/ui_toggle.mp3"),
+    spin_start: this.makeSfx("./assets/audio/spin_start.mp3"),
+    reel_land: this.makeSfx("./assets/audio/reel_land.mp3"),
+    cluster_pop: this.makeSfx("./assets/audio/cluster_pop.mp3"),
+    fs_click: this.makeSfx("./assets/audio/fs_click.mp3"),
+    explode: this.makeSfx("./assets/audio/explode.mp3"),
+    car: this.makeSfx("./assets/audio/car.mp3"), 
+    fstrigger: this.makeSfx("./assets/audio/fstrigger.mp3"),
+    bigwin_hit: this.makeSfx("./assets/audio/bigwin_hit.mp3"),
+  final_amount: this.makeSfx("./assets/audio/final_amount.mp3"),
+  final_fsoutro_amount: this.makeSfx("./assets/audio/final_fsoutro_amount.mp3"),
+    bounce: this.makeSfx("./assets/audio/bounce.mp3"),
+    boosted: this.makeSfx("./assets/audio/boosted.mp3"),
+      tick: this.makeSfx("./assets/audio/tick.mp3"),
       tickhigh: new Howl({
-  src: ["/assets/audio/tickhigh.mp3"],
+  src: ["./assets/audio/tickhigh.mp3"],
   preload: true,
   loop: true,
   volume: this.sfxVolume01,
 }),
         ticktock: new Howl({
-  src: ["/assets/audio/ticktock.mp3"],
+  src: ["./assets/audio/ticktock.mp3"],
   preload: true,
   loop: true,
   volume: this.sfxVolume01,
 }),
-    multiplier: this.makeSfx("/assets/audio/multiplier.mp3"),
+    multiplier: this.makeSfx("./assets/audio/multiplier.mp3"),
   };
 
   // FS INTRO tractor loop (gapless sprite loop — overlay only)
   this.fsIntroTractor = new Howl({
-    src: ["/assets/audio/tractor.mp3"],
+    src: ["./assets/audio/tractor.mp3"],
     preload: true,
     html5: false, // force WebAudio for accurate looping
     volume: 0,    // start silent, fade in
@@ -272,14 +272,14 @@ export type SfxKey =
 
 
       this.music = {
-        music_base: this.makeMusic("/assets/audio/music_base.mp3"),
-        music_fs: this.makeMusic("/assets/audio/music_free.mp3"),
+        music_base: this.makeMusic("./assets/audio/music_base.mp3"),
+        music_fs: this.makeMusic("./assets/audio/music_free.mp3"),
       };
       // ✅ Build base layered stems (all loop, silent until activated)
   this.musicBaseLayers = [
-    this.makeMusic("/assets/audio/music_base_drums.mp3"),
-    this.makeMusic("/assets/audio/music_base_drums.mp3"),
-    this.makeMusic("/assets/audio/music_base_drums.mp3"),
+    this.makeMusic("./assets/audio/music_base_drums.mp3"),
+    this.makeMusic("./assets/audio/music_base_drums.mp3"),
+    this.makeMusic("./assets/audio/music_base_drums.mp3"),
   ];
 
   // start silent until we activate base layers
