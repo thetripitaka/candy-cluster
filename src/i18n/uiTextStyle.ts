@@ -7,7 +7,7 @@ import { uiFontFamilyFor } from "./fonts";
 
 function isLatinUiLang(lang: string) {
   const base = (lang || "en").toLowerCase();
-    if (base === "tr" || base.startsWith("tr-")) return false;
+  
   const latin = [
     "en", "es", "fr", "de", "it", "pt",
     "nl", "sv", "da", "no", "fi","id", "tl",

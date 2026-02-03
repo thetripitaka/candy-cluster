@@ -65,9 +65,10 @@ function runFsSessionStats(cfg: ReturnType<typeof buildSimConfig>, N = 100_000) 
     let retriggered = false;
 
     const SESSION_SPIN_CAP = 500;
-
+    let hitCapThisSession = false;
     while (fsRemaining > 0 && spinsPlayed < SESSION_SPIN_CAP) {
       const r = simulateSpin(cfg, "FREE_SPINS", fsRemaining, ladderIndex, 98765 + i * 31 + spinsPlayed);
+      if (r.fsRemainingAfter >= (cfg.FS_TOTAL_CAP ?? 20)) hitCapThisSession = true;
 
       if (r.fsAwarded > 0) retriggered = true;
 
@@ -80,7 +81,7 @@ function runFsSessionStats(cfg: ReturnType<typeof buildSimConfig>, N = 100_000) 
     }
 
     if (retriggered) sessionsWithRetrigger++;
-    if (fsRemaining >= (cfg.FS_TOTAL_CAP ?? 20)) hitCapCount++;
+        if (hitCapThisSession) hitCapCount++;
   }
 
   console.log("=== FS SESSION STATS (start=10, starts at 2x) ===");
@@ -202,8 +203,8 @@ console.log("[RTP] WEIGHTS_FS:", cfg.WEIGHTS_FS);
  
 
 // ✅ Choose what to run (comment/uncomment)
- runBuyPricing(cfg);
-runOverallRtp(cfg, 5_000_000);
+runBuyPricing(cfg);
 
-// runBaseStats(cfg, 1_000_000);
-// runFsSessionStats(cfg, 100_000);
+runBaseStats(cfg, 1_000_000);
+runFsSessionStats(cfg, 100_000);
+runOverallRtp(cfg, 5_000_000);

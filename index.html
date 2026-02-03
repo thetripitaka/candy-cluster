@@ -3,9 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-
+<link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <title>Candy Cluster (Prototype)</title>
+    <link
+  rel="preload"
+  as="image"
+  href="/assets/ui/studio_logo.png"
+/>
+
+<link
+  rel="preload"
+  as="image"
+  href="/assets/ui/studio_logo_house.webp"
+/>
+<link
+  rel="preload"
+  as="font"
+  href="/assets/fonts/Micro5.ttf"
+  type="font/ttf"
+  crossorigin
+/>
+
+<link
+  rel="preload"
+  as="font"
+  href="/assets/fonts/Pixeldown.ttf"
+  type="font/ttf"
+  crossorigin
+/>
+
     <style>
+      #boot-cover{
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 999998; /* under rotate blocker (999999) but above everything else */
+}
+
       #hud, #topLeftHud, #debugHud,
 .hud, .top-left-hud, .debug-hud {
   display: none !important;
@@ -26,24 +60,10 @@
   -webkit-user-select: none;
   user-select: none;
 }
-    #ui {
-  position: fixed;
-  left: calc(12px + env(safe-area-inset-left));
-  top:  calc(12px + env(safe-area-inset-top));
-  z-index: 10;
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  color: #fff;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
-  user-select: none;
-}
-      button {
-        cursor: pointer; padding: 10px 14px; border-radius: 10px; border: 0;
-        background: #2b6cff; color: #fff; font-weight: 600;
-      }
-      button:active { transform: translateY(1px); }
-      .chip { padding: 8px 10px; background: rgba(255,255,255,0.08); border-radius: 10px; }
+
+
+      
+      
       #stage {
   position: fixed;
   inset: 0;
@@ -51,6 +71,8 @@
   height: 100%;
   touch-action: none;
 }
+
+
 #rotate-blocker-dom {
   position: fixed;
   inset: 0; /* top:0 right:0 bottom:0 left:0 */
@@ -76,22 +98,17 @@
 
 
 canvas { display: block; }
- @media (max-width: 900px) {
-    #ui { display: none !important; }
-  }
+
     </style>
   </head>
   <body>
+    <div id="boot-cover"></div>
+
  <div id="rotate-blocker-dom">
+  
   <div id="rotate-blocker-text" class="rotate-text"></div>
 </div>
-    <div id="ui">
-      <button id="spinBtn">SPIN</button>
-      <div class="chip">Mode: <span id="modeTxt">BASE</span></div>
-      <div class="chip">Mult: <span id="multTxt">x1</span></div>
-      <div class="chip">Win: <span id="winTxt">0.00</span></div>
-      <div class="chip">FS: <span id="fsTxt">0</span></div>
-    </div>
+    
     <div id="stage"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

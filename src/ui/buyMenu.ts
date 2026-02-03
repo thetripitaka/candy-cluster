@@ -385,7 +385,7 @@ function shakeBuyToast() {
   const buyFooter = new Container();
 
   // ✅ Portrait HUD lock (prevents jumping when text width changes)
-let portraitHudLocked = false;
+
 let portraitHudPivotSet = false;
 
   buyFooter.eventMode = "static";
@@ -899,8 +899,7 @@ const body = new Text({
   showInsufficientToast();
   shakeBuyToast(); // add this helper below
 
-  // optional: still open wallet
-  window.open("https://stake.com/wallet", "_blank", "noopener,noreferrer");
+
   return;
 }
 
@@ -1271,6 +1270,7 @@ setScaleToHeight(buyBetDownBtn, 30);
 
 // TUNING
 const HUD_BOTTOM_PAD = 22;              // 👈 distance from bottom edge
+let HUD_H = 0;                          // ✅ will be filled after scaling block    // 👈 distance from bottom edge
 const GAP_X = 18;                       // spacing between items
 const COL_GAP_X = 54;                   // spacing between BET column and BALANCE column
 
@@ -1329,10 +1329,10 @@ buyFooterBetTitle.y = Math.round(-betLabelValueGap * 0.5);
 buyFooterBetValue.y = Math.round( betLabelValueGap * 0.5);
 
 // arrows to the left/right of the bet value (horizontal)
-buyBetDownBtn.x = betCX - (betValW * 0.5) - (btnW * 0.5) - GAP_X;
+buyBetDownBtn.x = betCX - (betValW * 0.3) - (btnW * 0.5) - GAP_X;
 buyBetDownBtn.y = buyFooterBetValue.y;
 
-buyBetUpBtn.x   = betCX + (betValW * 0.5) + (btnW * 0.5) + GAP_X;
+buyBetUpBtn.x   = betCX + (betValW * 0.3) + (btnW * 0.5) + GAP_X;
 buyBetUpBtn.y   = buyFooterBetValue.y;
 
 // Layout BALANCE column to the right of BET
@@ -1344,28 +1344,42 @@ buyFooterBalanceTitle.y = -26;
 buyFooterBalanceValue.x = balCX;
 buyFooterBalanceValue.y = 10;
 
-// ✅ PORTRAIT: lock HUD position (no jumping on bet text changes)
-if (!portraitHudPivotSet) {
-  // build bounds ONCE (after children positions have been set)
+// ✅ PORTRAIT: ensure HUD fits within device width by scaling the whole panel down
+// (portrait only)
+{
+  // Reset scale first so our width measurement is consistent
+  buyFooter.scale.set(1);
+
+  // How much horizontal room we allow (tweak if you want more/less margin)
+  const HUD_SIDE_MARGIN = 16; // px
+  const maxHudPixelW = Math.max(1, W - HUD_SIDE_MARGIN * 2);
+
+  // Measure "design" width (local space)
   const hb = buyFooter.getLocalBounds();
 
-  // pivot to its visual center ONCE
+  // Your bg adds padding later: +36 total width (18 each side)
+  const paddedHudW = hb.width + 36;
+
+  // Scale down ONLY if needed
+  const s = Math.min(1, maxHudPixelW / Math.max(1, paddedHudW));
+  buyFooter.scale.set(s);
+
+  // Pivot to visual center (in local coords) so centering is stable
   buyFooter.pivot.set(
     Math.round(hb.x + hb.width * 0.5),
     Math.round(hb.y + hb.height * 0.5)
   );
 
-  portraitHudPivotSet = true;
+  // Center on screen
+  buyFooter.x = Math.round(W * 0.5);
+
+  // ✅ Move HUD to bottom (account for scale!)
+  const HUD_BOTTOM_PAD = 22; // keep same as your tuning above
+  HUD_H = (hb.height + 28) * s; // +28 matches your bg padding below, scaled
+
+  buyFooter.y = Math.round(H - HUD_BOTTOM_PAD - HUD_H * 0.5);
 }
 
-// Always keep HUD centered on screen (bounds can change, pivot won't)
-buyFooter.x = Math.round(W * 0.5);
-
-
-// ✅ Move the HUD to the BOTTOM (y)
-const hb2 = buyFooter.getLocalBounds();
-const HUD_H = hb2.height + 28; // matches your bg padding below
-buyFooter.y = Math.round(H - HUD_BOTTOM_PAD - HUD_H * 0.5);
 
 // Background pill behind the HUD (same as you had)
 buyFooterBg.clear();
@@ -1670,7 +1684,7 @@ portraitBetValueW = 0;
 portraitHudPivotSet = false; // you already do this
 
 
-    portraitHudLocked = false;
+    
 portraitHudPivotSet = false;
 
 

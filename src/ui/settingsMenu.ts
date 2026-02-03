@@ -2,6 +2,7 @@
 import { getLang } from "../i18n/i18n";
 import { applyUiTextCase, localizeStyle, micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
 import { uiFontFamilyFor } from "../i18n/fonts";
+import infoI18n from "../i18n/info_i18n_all_languages.json";
 
 
 // src/ui/settingsMenu.ts
@@ -116,6 +117,7 @@ const localizeInfoSafeStyle = <T extends Record<string, any>>(baseStyle: T): T =
 };
 
 
+
   const IS_TOUCH =
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   window.matchMedia?.("(pointer: coarse)")?.matches;
@@ -139,6 +141,9 @@ const title = new Text("PAYTABLE", new TextStyle(localizeInfoSystemStyle({
 } as any)));
   title.anchor.set(0.5, 0);
   section.addChild(title);
+
+
+
 
   // ---- PAYTABLE DATA ----
   const PAY_BANDS = [
@@ -186,15 +191,91 @@ const title = new Text("PAYTABLE", new TextStyle(localizeInfoSystemStyle({
     const PAD_B = 14;
     const GAP_L = 8;
 
-    // scale icon to a fixed height
-    const s = ICON_H / Math.max(1, icon.height);
-    icon.scale.set(s);
+    // scale icon to a fixed height (RESET first to avoid scale ping-pong)
+icon.scale.set(1);
+const s = ICON_H / Math.max(1, icon.height);
+icon.scale.set(s);
     icon.x = Math.round(w / 2);
     icon.y = 0;
 
     const boxY = Math.round(icon.y + icon.height + GAP);
 
     let y = boxY + PAD_T;
+    for (const t of rowTexts) {
+      t.x = Math.round(w / 2);
+      t.y = Math.round(y);
+      y += t.height + GAP_L;
+    }
+
+    const boxH = Math.round((y - boxY) + PAD_B);
+
+    bg.clear();
+    bg
+      .roundRect(0, boxY, w, boxH, 10)
+      .fill({ color: 0x000000, alpha: 0.25 })
+      .stroke({ width: 2, color: 0xffffff, alpha: 0.55 });
+
+    return { w, h: boxY + boxH };
+  };
+
+  return c;
+}
+function makeRuleCard(iconFrame: string, heading: string, lines: string[]) {
+  const c = new Container();
+
+  const icon = new Sprite(texSymbols(iconFrame));
+  icon.anchor.set(0.5, 0);
+  c.addChild(icon);
+
+  const bg = new Graphics();
+  c.addChild(bg);
+
+  const headingStyle = new TextStyle(localizeInfoSystemStyle({
+    fontSize: 20,
+    fill: 0xffd36a,
+    align: "center",
+  } as any));
+
+  const lineStyle = new TextStyle(localizeInfoSystemStyle({
+    fontSize: 18,
+    fill: 0xffffff,
+    align: "center",
+  } as any));
+
+  const tHeading = new Text(heading, headingStyle);
+  tHeading.anchor.set(0.5, 0);
+  c.addChild(tHeading);
+
+  const rowTexts: Text[] = [];
+  for (const s of lines) {
+    const t = new Text(s, lineStyle);
+    t.anchor.set(0.5, 0);
+    rowTexts.push(t);
+    c.addChild(t);
+  }
+
+  (c as any).__layout = (w: number) => {
+    const ICON_H = 90;
+    const GAP = 10;
+    const PAD_T = 14;
+    const PAD_B = 14;
+    const GAP_L = 8;
+
+ // scale icon to a fixed height (RESET first to avoid scale ping-pong)
+icon.scale.set(1);
+const s = ICON_H / Math.max(1, icon.height);
+icon.scale.set(s);
+    icon.x = Math.round(w / 2);
+    icon.y = 0;
+
+    const boxY = Math.round(icon.y + icon.height + GAP);
+
+    let y = boxY + PAD_T;
+
+    tHeading.x = Math.round(w / 2);
+    tHeading.y = Math.round(y);
+    y += tHeading.height + GAP_L;
+
     for (const t of rowTexts) {
       t.x = Math.round(w / 2);
       t.y = Math.round(y);
@@ -233,6 +314,24 @@ const highFrames = [
   const row1 = new Container();
   const row2 = new Container();
   section.addChild(row1, row2);
+  // ✅ Feature symbols row (WILD + SCATTER)
+const featureRow = new Container();
+section.addChild(featureRow);
+
+const wildCard = makeRuleCard(
+  "symbol_wild_W1_gummy.png",
+  "WILD",
+  ["Substitutes for all symbols", "Except SCATTER"]
+);
+
+const scatterCard = makeRuleCard(
+  "symbol_scatter_S1_gold.png",
+  "SCATTER",
+  ["3+ triggers FREE SPINS", "Base: awards 10", "In FS: awards 5"]
+);
+
+featureRow.addChild(wildCard, scatterCard);
+
 
   const lowCards = lowFrames.map((frame, i) =>
   makePayCard(frame, PAY_BANDS.map(b => ({
@@ -252,59 +351,159 @@ const highCards = highFrames.map((frame, i) =>
   lowCards.forEach(c => row1.addChild(c));
   highCards.forEach(c => row2.addChild(c));
 
-  (section as any).__layout = (viewportW: number) => {
-    const GAP_X = 26, GAP_Y = 28, PAD_TOP = 10;
+ (section as any).__layout = (viewportW: number, portrait: boolean = false) => {
+  const GAP_X = 26, GAP_Y = 28, PAD_TOP = 10;
 
-    title.x = Math.round(viewportW / 2);
-    title.y = 0;
+  title.x = Math.round(viewportW / 2);
+  title.y = 0;
 
-    const row1Cols = 4;
-    const row2Cols = 5;
+  let y = Math.round(title.y + title.height + PAD_TOP);
+  // ✅ Layout featureRow first (2 cards)
+{
+  const cols = portrait ? 1 : 2;
+const gapX = 26;
+const gapY = 18;
+const sidePad = 10;
 
-    const maxCardW1 = Math.floor((viewportW - GAP_X * (row1Cols - 1)) / row1Cols);
-    const maxCardW2 = Math.floor((viewportW - GAP_X * (row2Cols - 1)) / row2Cols);
-    const cardW = Math.max(120, Math.min(maxCardW1, maxCardW2));
+featureRow.visible = true;
+featureRow.x = 0;
+featureRow.y = y;
 
-    let y = Math.round(title.y + title.height + PAD_TOP);
+const kids = [wildCard, scatterCard] as any[];
 
-    // row1
-    row1.y = y;
-    {
-      const totalW = row1Cols * cardW + (row1Cols - 1) * GAP_X;
-      let x = Math.round((viewportW - totalW) / 2);
+if (cols === 1) {
+  // ✅ portrait: stack vertically
+  const cardW = Math.max(260, Math.floor(viewportW - sidePad * 2));
+  const xCard = Math.round((viewportW - cardW) / 2);
 
-      let rowH = 0;
-      for (const ch of row1.children as any[]) {
-        ch.x = x;
-        ch.y = 0;
-        const size = ch.__layout(cardW);
-        rowH = Math.max(rowH, size.h);
-        x += cardW + GAP_X;
-      }
-      for (const ch of row1.children as any[]) ch.y = Math.round((rowH - ch.height) / 2);
-      y += rowH + GAP_Y;
+  let yy = 0;
+  for (const ch of kids) {
+    ch.x = xCard;
+    ch.y = yy;
+    const size = ch.__layout(cardW);
+    yy += (size?.h ?? ch.height) + gapY;
+  }
+
+  y += yy + 12;
+} else {
+  // ✅ desktop/tablet: 2-up
+  const cardW = Math.max(160, Math.floor((viewportW - sidePad * 2 - gapX) / 2));
+  const totalW = 2 * cardW + gapX;
+  let x = Math.round((viewportW - totalW) / 2);
+
+  let rowH = 0;
+  for (const ch of kids) {
+    ch.x = x;
+    ch.y = 0;
+    const size = ch.__layout(cardW);
+    rowH = Math.max(rowH, size?.h ?? ch.height);
+    x += cardW + gapX;
+  }
+
+  y += rowH + 24;
+}
+
+}
+
+
+if (portrait) {
+  const sidePad = 10;
+  const cardW = Math.max(260, Math.floor(viewportW - sidePad * 2));
+  const xCard = Math.round((viewportW - cardW) / 2);
+  const gap = 18;
+
+  // ✅ keep parents visible (cards live inside them)
+  row1.visible = true;
+  row2.visible = true;
+
+  // Row 1 (L symbols) stacked vertically
+  row1.x = 0;
+  row1.y = y;
+
+  let yy = 0;
+  for (const ch of lowCards as any[]) {
+    ch.visible = true;
+    ch.x = xCard;
+    ch.y = yy;
+
+    const size = ch.__layout(cardW);
+    yy += (size?.h ?? ch.height) + gap;
+  }
+
+  y += yy;
+
+  // Row 2 (H symbols) stacked vertically
+  row2.x = 0;
+  row2.y = y;
+
+  yy = 0;
+  for (const ch of highCards as any[]) {
+    ch.visible = true;
+    ch.x = xCard;
+    ch.y = yy;
+
+    const size = ch.__layout(cardW);
+    yy += (size?.h ?? ch.height) + gap;
+  }
+
+  y += yy;
+
+  return { h: y };
+}
+
+
+  // ✅ DESKTOP/TABLET: your original 2-row layout
+  row1.visible = true;
+  row2.visible = true;
+
+  // make sure cards are visible (if we previously hid them)
+  lowCards.forEach(c => (c.visible = true));
+  highCards.forEach(c => (c.visible = true));
+
+  const row1Cols = 4;
+  const row2Cols = 5;
+
+  const maxCardW1 = Math.floor((viewportW - GAP_X * (row1Cols - 1)) / row1Cols);
+  const maxCardW2 = Math.floor((viewportW - GAP_X * (row2Cols - 1)) / row2Cols);
+  const cardW = Math.max(120, Math.min(maxCardW1, maxCardW2));
+
+  // row1
+  row1.y = y;
+  {
+    const totalW = row1Cols * cardW + (row1Cols - 1) * GAP_X;
+    let x = Math.round((viewportW - totalW) / 2);
+
+    let rowH = 0;
+    for (const ch of row1.children as any[]) {
+      ch.x = x;
+      ch.y = 0;
+      const size = ch.__layout(cardW);
+      rowH = Math.max(rowH, size.h);
+      x += cardW + GAP_X;
     }
+    y += rowH + GAP_Y;
+  }
 
-    // row2
-    row2.y = y;
-    {
-      const totalW = row2Cols * cardW + (row2Cols - 1) * GAP_X;
-      let x = Math.round((viewportW - totalW) / 2);
+  // row2
+  row2.y = y;
+  {
+    const totalW = row2Cols * cardW + (row2Cols - 1) * GAP_X;
+    let x = Math.round((viewportW - totalW) / 2);
 
-      let rowH = 0;
-      for (const ch of row2.children as any[]) {
-        ch.x = x;
-        ch.y = 0;
-        const size = ch.__layout(cardW);
-        rowH = Math.max(rowH, size.h);
-        x += cardW + GAP_X;
-      }
-      for (const ch of row2.children as any[]) ch.y = Math.round((rowH - ch.height) / 2);
-      y += rowH;
+    let rowH = 0;
+    for (const ch of row2.children as any[]) {
+      ch.x = x;
+      ch.y = 0;
+      const size = ch.__layout(cardW);
+      rowH = Math.max(rowH, size.h);
+      x += cardW + GAP_X;
     }
+    y += rowH;
+  }
 
-    return { h: y };
-  };
+  return { h: y };
+};
+
 
   return section;
 }
@@ -369,7 +568,7 @@ const infoContent = new Container();
 infoScrollViewport.addChild(infoContent);
 
 // We’ll use 2 text blocks + a paytable section in-between
-const INFO_TEXT_TOP = `
+const INFO_TEXT_TOP_EN = `
 GAME RULES
 Blocky Farm is a 6×5 tumbling slot game that pays wins in clusters.
 A win is formed when 5 or more identical symbols connect anywhere on the grid.
@@ -390,15 +589,15 @@ GLOBAL MULTIPLIER
 • Resets when no further winning tumbles occur
 
 FREE SPINS
-• Triggered by landing 3 or more Scatter symbols
-• Awards Free Spins
+• In base game, FREE SPINS is triggered by landing 3 or more Scatter symbols
+• 3 or more Scatters award 5 additional Free Spins
 • Uses the same tumbling and cluster mechanics as the base game
 • The Global Multiplier does NOT reset during Free Spins
 • Multiplier progression persists for the entire Free Spins session
 
 SECOND CHANCE WILD
 After a winning spin finishes tumbling, if no further cluster wins are available:
-• A Wild symbol may land anywhere on the grid
+• A Wild symbol may randomly land anywhere on the grid
 • This can create a final chance for an additional cluster win
 
 BOOSTED WILDS
@@ -408,20 +607,40 @@ If a winning cluster contains 2 or more Wild symbols:
 • The boost is applied before the Global Multiplier
 
 INFUSED SCATTERS
-If exactly 2 Scatter symbols are present on the grid and a win occurs:
+If exactly 2 Scatter symbols are present on the grid when a winning tumble occurs:
 • The winning tumble is infused
 • The Global Multiplier temporarily advances by one additional step for that tumble
 • This effect can occur once per spin
+
+Music by: 
+Cody O’Quinn
 `;
 
-const INFO_TEXT_BOTTOM = `
+const INFO_TEXT_BOTTOM_EN = `
 GENERAL TERMS
-• Theoretical RTP is approximately 97%
+• Theoretical RTP is approximately 97% over a long period of play
 • Maximum win is 10,000× the bet
 • All wins are paid according to the paytable and active multipliers
-• Malfunctions void all pays and play
-• Incomplete or interrupted games may be resumed
+
+Malfunction voids all wins and plays. A consistent internet connection is required. In the event of a disconnection, reload the game to finish any uncompleted rounds. The expected return is calculated over many plays. The game display is not representative of any physical device and is for illustrative purposes only. Winnings are settled according to the amount received from the Remote Game Server and not from events within the web browser. TM and © 2025 Stake Engine
 `;
+
+
+type InfoBundle = {
+  INFO_TEXT_TOP: string;
+  INFO_TEXT_BOTTOM: string;
+};
+
+function getInfoBundle(lang: string): InfoBundle {
+  const hit = (infoI18n as any)[lang] as InfoBundle | undefined;
+  if (hit?.INFO_TEXT_TOP && hit?.INFO_TEXT_BOTTOM) {
+    return hit;
+  }
+  return {
+    INFO_TEXT_TOP: INFO_TEXT_TOP_EN,
+    INFO_TEXT_BOTTOM: INFO_TEXT_BOTTOM_EN,
+  };
+}
 
 const infoTextStyle = new TextStyle(localizeInfoSystemStyle({
   fontSize: 20,
@@ -432,10 +651,10 @@ const infoTextStyle = new TextStyle(localizeInfoSystemStyle({
   lineHeight: 30,
 } as any));
 
-const infoBodyTop = new Text(INFO_TEXT_TOP, infoTextStyle);
+const infoBodyTop = new Text(INFO_TEXT_TOP_EN, infoTextStyle);
 infoBodyTop.anchor.set(0.5, 0);
 
-const infoBodyBottom = new Text(INFO_TEXT_BOTTOM, infoTextStyle);
+const infoBodyBottom = new Text(INFO_TEXT_BOTTOM_EN, infoTextStyle);
 infoBodyBottom.anchor.set(0.5, 0);
 
 infoContent.addChild(infoBodyTop);
@@ -454,23 +673,59 @@ let infoViewportY = 0;
 let infoViewportW = 0;
 let infoViewportH = 0;
 
-// drag to scroll (dragging the panel)
+// drag to scroll (MOBILE PORTRAIT ONLY) — thumb scroll on the viewport
+let dragEnabled = false;
 let dragging = false;
 let dragStartY = 0;
 let scrollStartY = 0;
 
-infoPanel.on("pointerdown", (e: any) => {
-  dragging = true;
-  dragStartY = e.global.y;
-  scrollStartY = infoScrollY;
-});
-infoPanel.on("pointerup", () => (dragging = false));
-infoPanel.on("pointerupoutside", () => (dragging = false));
-infoPanel.on("pointermove", (e: any) => {
-  if (!dragging) return;
-  const dy = e.global.y - dragStartY;
-  setInfoScroll(scrollStartY + dy);
-});
+function setInfoDragEnabled(v: boolean) {
+  dragEnabled = v;
+
+  // We only want drag gestures when enabled.
+  infoScrollViewport.eventMode = v ? "static" : "passive";
+  infoScrollViewport.cursor = v ? "grab" : "default";
+
+  // Clear any previous listeners so we don’t double-bind on resize/layout.
+  infoScrollViewport.removeAllListeners?.("pointerdown");
+  infoScrollViewport.removeAllListeners?.("pointerup");
+  infoScrollViewport.removeAllListeners?.("pointerupoutside");
+  infoScrollViewport.removeAllListeners?.("pointermove");
+
+  if (!v) return;
+
+  // Important: don’t let drag gestures bubble to backdrop/panel tap handlers.
+  infoScrollViewport.on("pointerdown", (e: any) => {
+    e.stopPropagation?.();
+    dragging = true;
+    dragStartY = e.global.y;
+    scrollStartY = infoScrollY;
+    infoScrollViewport.cursor = "grabbing";
+  });
+
+  infoScrollViewport.on("pointerup", (e: any) => {
+    e.stopPropagation?.();
+    dragging = false;
+    infoScrollViewport.cursor = "grab";
+  });
+
+  infoScrollViewport.on("pointerupoutside", () => {
+    dragging = false;
+    infoScrollViewport.cursor = "grab";
+  });
+
+  infoScrollViewport.on("pointermove", (e: any) => {
+    if (!dragEnabled || !dragging) return;
+    e.stopPropagation?.();
+
+    const dy = e.global.y - dragStartY;
+
+    // Thumb gesture: drag up -> content moves up (scrolls down)
+    // So subtract dy (classic mobile feel).
+    setInfoScroll(scrollStartY + dy);
+  });
+}
+
 
 function getInfoContentHeight() {
   const b = infoContent.getLocalBounds();
@@ -490,7 +745,9 @@ function setInfoScroll(y: number) {
 
 window.addEventListener("wheel", (e) => {
   if (!infoLayer.visible) return;
-  setInfoScroll(infoScrollY - e.deltaY);
+
+  // ✅ keep wheel scrolling "natural" (match thumb drag)
+  setInfoScroll(infoScrollY + e.deltaY);
 }, { passive: true });
 
 // close button (X)
@@ -502,12 +759,35 @@ infoLayer.addChild(infoClose);
 
 function showInfo() {
   infoLayer.visible = true;
-  layoutInfo();
+  refreshInfoTextForLanguage();  // ✅ set correct language
+  layoutInfo();                  // ✅ then measure + layout
 }
-
 function hideInfo() {
   infoLayer.visible = false;
 }
+
+function isMobilePortraitInfoLayout(W: number, H: number) {
+  const aspect = W / H;
+  const mobileish = !!IS_TOUCH || W < 820 || aspect < 0.90;
+  return mobileish && H >= W; // portrait
+}
+
+function refreshInfoTextForLanguage() {
+  const lang = getLang();
+  const b = getInfoBundle(lang);
+
+  infoBodyTop.text = b.INFO_TEXT_TOP;
+  infoBodyBottom.text = b.INFO_TEXT_BOTTOM;
+
+  // ✅ Force center alignment (including Arabic)
+  infoBodyTop.style.align = "center";
+  infoBodyBottom.style.align = "center";
+
+  infoBodyTop.anchor.x = 0.5;
+  infoBodyBottom.anchor.x = 0.5;
+}
+
+
 
 function layoutInfo() {
   const W = app.screen.width;
@@ -562,7 +842,23 @@ function layoutInfo() {
   paytableSection.y = Math.round(topEndY);
 
   // layout paytable to viewport width
-  const paySize = (paytableSection as any).__layout?.(infoViewportW);
+  const PORTRAIT_INFO = isMobilePortraitInfoLayout(W, H);
+  // ✅ Mobile portrait: split header into 2 lines
+if (PORTRAIT_INFO) {
+  infoModalTitle.text = "BLOCKY FARM\nGAME INFO";
+  (infoModalTitle.style as any).align = "center";
+  // Optional: make the two lines sit nicer
+  (infoModalTitle.style as any).lineHeight = 40; // tweak if you want
+} else {
+  // keep whatever your localized title is in non-portrait
+  infoModalTitle.text = uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO");
+  (infoModalTitle.style as any).lineHeight = 0;
+}
+
+    // ✅ Thumb-scroll only on mobile portrait
+  setInfoDragEnabled(PORTRAIT_INFO);
+const paySize = (paytableSection as any).__layout?.(infoViewportW, PORTRAIT_INFO);
+
   const payEndY = paytableSection.y + (paySize?.h ?? paytableSection.height) + 26;
 
   infoBodyBottom.x = Math.round(infoViewportW / 2);

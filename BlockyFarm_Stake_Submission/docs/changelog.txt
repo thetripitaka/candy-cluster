@@ -1,0 +1,19 @@
+CHANGELOG
+==========
+
+Version 1.0.0 – Initial Submission
+---------------------------------
+- First public submission to Stake Engine
+- Finalized gameplay logic and math model
+- Mobile portrait orientation locked by design
+- Desktop supported with responsive scaling
+- Implemented cluster-pay mechanics with tumbling wins
+- Global multiplier progression across cascades
+- Free Spins feature with persistent multiplier
+- Audio, UI, and animations finalized
+- Localization system enabled
+- Removed all debug tools and developer overlays
+- Performance optimized for mobile devices
+- Store assets prepared (tile, thumbnail, screenshots)
+
+No known issues at time of submission.

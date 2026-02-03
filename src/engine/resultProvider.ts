@@ -1,37 +1,47 @@
 // src/engine/resultProvider.ts
-import type { Mode, SpinResult, SimConfig } from "../game/simulate";
+import type { EngineSpinRequest, EngineSpinOutcome } from "./types";
 import { simulateSpin } from "../game/simulate";
+import { callStakeEngine } from "./stakeClient";
 
-export type SpinRequest = {
-  cfg: SimConfig;
-  mode: Mode;
-  fsRemainingIn: number;
-  ladderIndexIn: number;
-  seed?: number;      // dev only
-  betAmount?: number; // engine will care later
-};
+function isEngineEnabled(): boolean {
+  const p = new URLSearchParams(window.location.search);
+  return p.get("engine") === "1";
+}
 
-export type ResultProvider = (req: SpinRequest) => Promise<SpinResult>;
-
-export const devResultProvider: ResultProvider = async (req) => {
-  return simulateSpin(
+// -------------------------
+// SIM provider (WORKING NOW)
+// -------------------------
+async function simResultProvider(req: EngineSpinRequest): Promise<EngineSpinOutcome> {
+  const res = simulateSpin(
     req.cfg,
     req.mode,
     req.fsRemainingIn,
     req.ladderIndexIn,
     req.seed
   );
-};
 
-export const engineResultProvider: ResultProvider = async (_req) => {
-  throw new Error(
-    "[ENGINE] engineResultProvider not implemented yet. Use devResultProvider for now."
-  );
-};
+  // ✅ engine-compatible wallet rules
+  const betAmount = req.mode === "BASE" ? req.betAmount : 0;
+  const winAmount = res.totalWinX * betAmount;
 
-// ✅ IMPORTANT: named export must match your import in main.ts
-export function getResultProvider(): ResultProvider {
-  const useEngine =
-    new URLSearchParams(window.location.search).get("engine") === "1";
-  return useEngine ? engineResultProvider : devResultProvider;
+  return {
+    result: res,
+    betAmount,
+    winAmount,
+  };
+}
+
+// -------------------------
+// ENGINE provider (STUB FOR NOW)
+// -------------------------
+async function engineResultProvider(req: EngineSpinRequest): Promise<EngineSpinOutcome> {
+  // ✅ if the engine endpoint isn’t running yet, you’ll get a useful error
+  return callStakeEngine(req);
+}
+
+// -------------------------
+// Public: choose provider
+// -------------------------
+export function getResultProvider() {
+  return isEngineEnabled() ? engineResultProvider : simResultProvider;
 }

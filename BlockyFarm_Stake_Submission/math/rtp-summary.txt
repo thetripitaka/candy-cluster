@@ -1,0 +1,36 @@
+RTP SUMMARY
+===========
+
+Game Title: Blocky Farm
+Provider: 8-bit Wizardry
+Version: 1.0.0
+
+THEORETICAL RTP
+---------------
+The theoretical Return to Player (RTP) for Blocky Farm is:
+
+- RTP: 97.00%
+
+This RTP value is calculated over a long-term statistical average
+and includes all game features, including base game play,
+tumbling mechanics, multipliers, and Free Spins.
+
+CALCULATION METHOD
+------------------
+- RTP was calculated using large-scale Monte Carlo simulations
+- Simulations were run over millions of spins to ensure statistical stability
+- All symbol weights, feature triggers, and multipliers were included
+- No RTP adjustments occur during gameplay
+
+GAMEPLAY NOTES
+--------------
+- RTP is fixed and does not change based on player actions
+- All players experience the same RTP profile
+- Free Spins are included in the overall RTP calculation
+- No progressive or adaptive RTP logic is used
+
+DISCLAIMER
+----------
+Actual player results may vary in the short term.
+RTP represents a theoretical long-term average only.
+	

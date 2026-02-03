@@ -1,0 +1,108 @@
+{"frames": {
+
+"apple_big_win.png":
+{
+	"frame": {"x":4,"y":338,"w":179,"h":209},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":179,"h":209},
+	"sourceSize": {"w":179,"h":209}
+},
+"axe_epic_win.png":
+{
+	"frame": {"x":189,"y":553,"w":159,"h":176},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":20,"y":0,"w":159,"h":176},
+	"sourceSize": {"w":179,"h":179}
+},
+"cow_mega_win.png":
+{
+	"frame": {"x":520,"y":474,"w":109,"h":178},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":36,"y":1,"w":109,"h":178},
+	"sourceSize": {"w":179,"h":179}
+},
+"grapes_big_win.png":
+{
+	"frame": {"x":189,"y":338,"w":177,"h":209},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":1,"y":0,"w":177,"h":209},
+	"sourceSize": {"w":179,"h":209}
+},
+"pear_big_win.png":
+{
+	"frame": {"x":635,"y":526,"w":175,"h":184},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":1,"y":10,"w":175,"h":184},
+	"sourceSize": {"w":179,"h":209}
+},
+"rake_super_win.png":
+{
+	"frame": {"x":372,"y":474,"w":142,"h":256},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":142,"h":256},
+	"sourceSize": {"w":142,"h":256}
+},
+"sheep_super_win.png":
+{
+	"frame": {"x":396,"y":4,"w":254,"h":243},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":2,"y":6,"w":254,"h":243},
+	"sourceSize": {"w":256,"h":256}
+},
+"spade_mega_win.png":
+{
+	"frame": {"x":654,"y":264,"w":174,"h":256},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":174,"h":256},
+	"sourceSize": {"w":174,"h":256}
+},
+"tractor_epic_win.png":
+{
+	"frame": {"x":4,"y":4,"w":386,"h":328},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":386,"h":328},
+	"sourceSize": {"w":386,"h":328}
+},
+"wateringcan_super_win.png":
+{
+	"frame": {"x":4,"y":553,"w":179,"h":175},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":0,"y":2,"w":179,"h":175},
+	"sourceSize": {"w":179,"h":179}
+},
+"watermelon_epic_win.png":
+{
+	"frame": {"x":396,"y":253,"w":252,"h":215},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":3,"y":23,"w":252,"h":215},
+	"sourceSize": {"w":256,"h":256}
+},
+"wheelbarrow_mega_win.png":
+{
+	"frame": {"x":656,"y":4,"w":231,"h":254},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":13,"y":0,"w":231,"h":254},
+	"sourceSize": {"w":256,"h":256}
+}},
+"meta": {
+	"app": "https://www.codeandweb.com/texturepacker",
+	"version": "1.1",
+	"image": "bigwin_items.png",
+	"format": "RGBA8888",
+	"size": {"w":891,"h":734},
+	"scale": "1",
+	"smartupdate": "$TexturePacker:SmartUpdate:2ad7d7c3e28fbae5ae60e062d5a423fd:57dbabd7164f46817050fbce02fa595b:1024778ae4d17a750bba5c7cbf52be9e$"
+}
+}

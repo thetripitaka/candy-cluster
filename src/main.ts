@@ -1,27 +1,29 @@
 
+
 import { setLang, getLang, t } from "./i18n/i18n";
 import type { Lang } from "./i18n/i18n";
 import { ensureUiFontLoaded } from "./i18n/loadFonts";
 import "./style.css";
 import { localizeStyle, applyUiTextCase, splashSubtitleFontFamilyFor } from "./i18n/uiTextStyle";
 import { micro5ForLatinUiFontFamily } from "./i18n/uiTextStyle";
-import { createPerfHud } from "./dev/perfHud";
+
 
 import { getResultProvider } from "./engine/resultProvider";
 import { setRtpScale } from "./game/simulate";
 import {
-      Application,
-      Container,
-      Sprite,
-      Texture,
-      Assets,
-      BlurFilter,
-      Graphics,
-      Text,
-      TextStyle,
-      Rectangle,
-      AnimatedSprite,
-    } from "pixi.js";
+  Application,
+  Container,
+  Sprite,
+  Texture,
+  Assets,
+  BlurFilter,
+  ColorMatrixFilter, // ✅ ADD
+  Graphics,
+  Text,
+  TextStyle,
+  Rectangle,
+  AnimatedSprite,
+} from "pixi.js";
 
 import {
   MOBILE_LANDSCAPE_REELHOUSE_MUL,
@@ -47,8 +49,6 @@ import {
   import { addSystem, ensureTickerRouter } from "./core/tickerRouter";
 
 
-  import { simulateSpin } from "./game/simulate";
-
   import { buildSimConfig, LADDER, SYMBOL_FRAMES, WEIGHTS_BASE, } from "./game/simConfig";
 
   import { createSettingsMenu } from "./ui/settingsMenu";
@@ -61,7 +61,7 @@ import {
   import { applyClickToContinueStyle } from "./ui/textStyles";
   import { safeInsetBottomPx, safeInsetTopPx } from "./ui/safeArea";
   import { makeTurboTiming } from "./core/turboTiming";
-import { makeGrid, rngChoiceWeighted } from "./game/gridGen";
+import { makeGrid } from "./game/gridGen";
   
 import { idxToXY, xyToIdx } from "./game/gridMath";
 import { fmtMoney } from "./ui/money";
@@ -88,14 +88,11 @@ import type { SfxKey } from "./audio/audio";
   let settingsApi: any = null;
   let buyMenuApi: any = null;
 let autoMenuApi: any = null;
+// --- DEV / REPLAY SUPPORT ---
 
 
-// --------------------------------------
-// DEV STUBS (build-only helpers)
-// --------------------------------------
-let debugForceFsOutro = (_amt: number) => {
-  // stub until main() installs the real implementation
-};
+
+
 
 // ✅ TDZ-safe forward declarations (must be BEFORE any use)
 let PANEL_HEIGHT_FRAC = 0.1;
@@ -125,14 +122,18 @@ async function main() {
 
   setLang(detectedLang as any);
 
-  // ✅ PRELOAD UI FONTS
+// Kick off font loads early, but DON'T block boot visuals
+const fontWarmupP = (async () => {
   await ensureUiFontLoaded("en");
   await ensureUiFontLoaded(getLang());
 
-    // 🔥 FONT WARM-UP (prevents 1-frame fallback in canvas)
-  await document.fonts.load('16px "Micro5"');
-  await document.fonts.load('16px "Pixeldown"');
-  await document.fonts.ready;
+  // load specific faces you actually use
+  await Promise.allSettled([
+    document.fonts.load('16px "Micro5"'),
+    document.fonts.load('16px "Pixeldown"'),
+  ]);
+})();
+
 
   // force browser to actually rasterize the font once
   const warmCanvas = document.createElement("canvas");
@@ -153,17 +154,14 @@ document
 
 
 
-console.log("[LANG]", getLang());
-console.log("[FONT]", uiFontFamilyFor(getLang()));
-console.log('[FONT CHECK ZH]', document.fonts.check('16px "ZCOOLKuaiLe"'));
-console.log('[FONT CHECK AR]', document.fonts.check('16px "Marhey"'));
+
       // =====================
 // INPUT MODE DETECTION (declare ONCE)
 // =====================
 const IS_TOUCH =
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   window.matchMedia?.("(pointer: coarse)")?.matches;
-      const FINAL_BUILD = false;
+  
 
       
 
@@ -316,7 +314,7 @@ if (typeof loadingTitle !== "undefined") loadingTitle.text = t("ui.loading");
 if (typeof loadingPct !== "undefined") {
   // keep whatever % you’re currently showing
   const pct = parseInt(String(loadingPct.text).replace(/[^\d]/g, ""), 10) || 0;
-  loadingPct.text = `${t("ui.loadingPct")} ${pct}%`;
+  loadingPct.text = `${pct}%`;
 }
 
 // Also re-apply localized fonts to loader styles
@@ -415,7 +413,20 @@ try {
 
     if (typeof multTitleLabel !== "undefined") forceBottomUiFont(multTitleLabel);
     if (typeof multAmountLabel !== "undefined") forceBottomUiFont(multAmountLabel);
+
+    // ✅ FIX: bet pill initial size (font swap changes text metrics)
+    // Recompute pill bg using the *final* font measurements.
+    try {
+      updateBetUI();
+
+      // ✅ portrait only: re-center pivots so layout doesn’t “remember” old bounds
+      if (isMobilePortraitUILayout(__layoutDeps)) {
+        centerPivot(betAmountUI);
+        centerPivot(betGroup);
+      }
+    } catch {}
   } catch {}
+
 // =====================
 // SPLASH LOCALISATION
 // =====================
@@ -466,50 +477,6 @@ try {
 
 
 
-
-
-
-
-    // --- KILL OLD TOP-LEFT HTML HUD (if it exists) ---
-    function removeOldTopLeftHud() {
-      // Common ids/classes
-      const selectors = [
-        "#hud",
-        "#topLeftHud",
-        "#debugHud",
-        ".hud",
-        ".top-left-hud",
-        ".debug-hud",
-      ];
-
-      selectors.forEach((sel) => {
-        document.querySelectorAll(sel).forEach((el) => (el as HTMLElement).remove());
-      });
-
-      // Fallback: remove any element that literally contains these strings
-      const needles = ["Mode:", "Mult:", "Win:", "FS:", "SPIN"];
-      document.querySelectorAll("body *").forEach((el) => {
-        const t = (el as HTMLElement).innerText;
-        if (!t) return;
-        if (needles.some((n) => t.includes(n))) {
-          // Only remove small HUD-like blocks, not the whole body
-          const r = (el as HTMLElement).getBoundingClientRect();
-          if (r.width < 900 && r.height < 120) (el as HTMLElement).remove();
-        }
-      });
-    }
-
-
-
-    removeOldTopLeftHud();
-
-    
-
-
-
-
-
-
     
 
       // =====================
@@ -517,6 +484,7 @@ try {
   // =====================
   const state = {
     overlay: {
+       boot: true,   
       splash: false,
       startup: false,
       studio: false,
@@ -594,16 +562,7 @@ const audio = new AudioManager({
   sfxVolume01: 0.8,
   musicVolume01: 0.6,
 });
-window.addEventListener("keydown", async (e) => {
-  if (e.key.toLowerCase() !== "m") return;
-  await (audio as any)?.initFromUserGesture?.();
 
-  const muted = audio?.getMusicMuted?.() ?? false;
-  audio?.setMusicMuted?.(!muted);
-  audio?.apply?.();
-
-  console.log("[M TEST] musicMuted ->", !muted);
-});
 
 
 // =====================
@@ -705,7 +664,7 @@ window.addEventListener("keydown", async (e) => {
     fsIntroLabel.alpha = 0;
 
 
-      console.log("🔥 FORCED FREE SPINS", state.fs.remaining);
+   
     }
 
 
@@ -774,20 +733,19 @@ window.addEventListener("keydown", async (e) => {
       const stageEl = document.getElementById("stage") as HTMLDivElement | null;
       if (!stageEl) throw new Error("Missing #stage div. Check index.html.");
 
-    const SHOW_TOP_LEFT_HUD = false;
 
 
 
-
-    // =====================
-    // DEBUG: FORCE ANTICIPATION (press A)
-    // =====================
-    let FORCE_ANTICIPATION = false;
-
-  
 
 
      const app = new Application();
+     let __layoutReady = false;
+
+// TDZ-safe helpers
+function canLayoutAll() {
+  return __layoutReady && typeof layoutAll === "function";
+}
+
 
 const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 const maxRes = isMobile ? 1.25 : 2;
@@ -823,48 +781,9 @@ function computeCellSize() {
 }
 
       
-      let maxDt = 0;
-    addSystem(() => {
-    const dtMs = app.ticker.deltaMS;
-    if (dtMs > maxDt) {
-      maxDt = dtMs;
-      if (maxDt > 300) console.log("[HITCH]", Math.round(maxDt), "ms");
-    }
-  });
 
-  // =====================
-  // SPLASH BACKGROUND WATCHDOG (prevents black frame)
-  // =====================
-  addSystem(() => {
-    if (!bgBase || !bgFree) return;
 
-    if (!state.overlay.splash) return;
-
-    const baseOn = bgBase.visible && bgBase.alpha > 0.02;
-    const freeOn = bgFree.visible && bgFree.alpha > 0.02;
-
-    if (!baseOn && !freeOn) {
-      console.warn("[SPLASH BLACK] background sprites both OFF", {
-        bgBaseVisible: bgBase.visible,
-        bgBaseAlpha: bgBase.alpha,
-        bgFreeVisible: bgFree.visible,
-        bgFreeAlpha: bgFree.alpha,
-        cloudLive: cloudLive.length,
-        leafLive: leafLive.length,
-        smokeLive: smokeLive.length,
-        bgChildren: backgroundLayer.children.length,
-      });
-
-      // 🚑 emergency repair so player never sees black
-      backgroundLayer.visible = true;
-      backgroundLayer.alpha = 1;
-
-      bgBase.visible = true;
-      bgBase.alpha = 0.9;
-      bgFree.visible = false;
-      bgFree.alpha = 0;
-    }
-  });
+  
 // =====================
 // PORTRAIT-ONLY LOCK (MOBILE)
 // =====================
@@ -888,42 +807,11 @@ if (!disableCustomCursorOnMobile(__layoutDeps)) {
   (document.getElementById("stage") as any)?.style &&
     (((document.getElementById("stage") as any).style.cursor = "auto"));
 }
-let perfHud: ReturnType<typeof createPerfHud> | null = null;
+
 
       // ROOT + LAYERS
       const root = new Container();
-      // =====================
-// DEV ONLY: PERF HUD (FPS + memory)
-// =====================
-if (import.meta.env.DEV) {
-  perfHud = createPerfHud({
-    root, // ✅ attach to your top-most root
-    width: () => app.renderer.screen.width,
-    height: () => app.renderer.screen.height,
-    anchor: "tl",
-    margin: 10,
-  });
 
-  // start hidden by default (optional)
-  perfHud.setEnabled(false);
-
-  // ✅ Mobile toggle: 3-finger tap
-  window.addEventListener(
-    "touchstart",
-    (e) => {
-      if ((e as TouchEvent).touches?.length >= 3) perfHud?.toggle();
-    },
-    { passive: true }
-  );
-
-  // ✅ Desktop toggle: press ` (backtick)
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "`") perfHud?.toggle();
-  });
-}
-addSystem((dt) => {
-  perfHud?.update(dt);
-});
 
       // =====================
 // MOBILE LANDSCAPE BLOCKER (PORTRAIT-ONLY LOCK)
@@ -1095,22 +983,7 @@ function layoutFsCounter() {
     }
 
 
-    // =====================
-    // DEBUG: Force FS retrigger
-    // =====================
-    function debugForceFsRetrigger(amount = 5) {
-      if (state.game.mode !== "FREE_SPINS") return;
-
-      const prev = state.fs.remaining;
-      state.fs.remaining = Math.min(state.fs.totalCap, state.fs.remaining + amount);
-
-      const added = state.fs.remaining - prev;
-      if (added <= 0) return;
-
-      refreshFsCounter();
-      void showFsAddedPopup(added);
-    }
-
+  
 
     // keep it positioned + updated
     layoutFsCounter();
@@ -1148,7 +1021,8 @@ function layoutFsCounter() {
 
 
       app.stage.addChild(root);
-
+app.stage.eventMode = "static";
+app.stage.hitArea = app.screen;
       // =====================
 // ROTATION / RESIZE -> RELAYOUT (portrait <-> landscape)
 // =====================
@@ -1160,18 +1034,16 @@ function scheduleViewportRelayout() {
   __vpTimer = window.setTimeout(() => {
     __vpTimer = null;
 
-    // If you use resizeTo: window, Pixi already resized.
-    // We just re-layout.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        layoutAll();
-        perfHud?.layout();
-        root.sortChildren();
+ requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    if (!__layoutReady) return; // ✅ prevents TDZ
+    layoutAll();
 
-        // keep stage hit area correct after a resize (important on iOS)
-        app.stage.hitArea = app.screen;
-      });
-    });
+    root.sortChildren();
+    app.stage.hitArea = app.screen;
+  });
+});
+
   }, 120);
 }
 
@@ -1222,15 +1094,25 @@ function __buildSceneGraphOnce() {
 
 
 
-    // =====================
-    // LOADING SCREEN (boot)
-    // =====================
-    const loadingLayer = new Container();
-    loadingLayer.zIndex = 999999;
-    loadingLayer.eventMode = "static"; // blocks input
-    loadingLayer.cursor = "default";
-    root.addChild(loadingLayer);
-    root.sortChildren();
+ // =====================
+// LOADING SCREEN (boot)
+// =====================
+const loadingLayer = new Container();
+loadingLayer.zIndex = 999999;
+
+// ✅ IMPORTANT: loader must NOT be visible before studio intro
+loadingLayer.visible = false;
+loadingLayer.alpha = 1;
+
+// keep it blocking input ONLY when we show it later
+loadingLayer.eventMode = "none";
+loadingLayer.cursor = "default";
+
+root.addChild(loadingLayer);
+root.sortChildren();
+
+
+
    // =====================
 // MAGIC CURSOR (LOADER ONLY) — moved to src/ui/loaderMagicCursor.ts
 // =====================
@@ -1265,8 +1147,8 @@ const loadingTitle = new Text({
     loadingTitle.anchor.set(0.5);
     loadingLayer.addChild(loadingTitle);
 
-  const loadingPct = new Text({
-  text: `${t("ui.loadingPct")} 0%`,
+const loadingPct = new Text({
+  text: "0%",
   style: localizeStyle({
     fontFamily: "Micro5", // base (will be overridden per-language)
     fill: 0xffd36a,
@@ -1279,8 +1161,7 @@ const loadingTitle = new Text({
   } as any),
 } as any);
 
-loadingTitle.anchor.set(0.5);
-loadingLayer.addChild(loadingTitle);
+
 
 loadingPct.anchor.set(0.5);
 loadingLayer.addChild(loadingPct);
@@ -1289,8 +1170,7 @@ loadingLayer.addChild(loadingPct);
 forceLoaderFont(loadingTitle);
 forceLoaderFont(loadingPct);
 
-    loadingPct.anchor.set(0.5);
-    loadingLayer.addChild(loadingPct);
+    
 
     const loadingBarBg = new Graphics();
     const loadingBarFill = new Graphics();
@@ -1346,6 +1226,7 @@ forceLoaderFont(loadingPct);
     function updateLoadingProgress(p01: number) {
       const p = Math.max(0, Math.min(1, p01));
       loadingPct.text = `${Math.round(p * 100)}%`;
+
 
       const W = app.screen.width;
       const barW = Math.min(520, W * 0.7);
@@ -1443,8 +1324,17 @@ async function runFinalBootPipelineOnce() {
     const MIN_SEG_W = 14;     // minimum block width (controls how many blocks fit)
 
 
-    layoutLoadingScreen();
-    updateLoadingProgress(0);
+  
+function removeBootCoverSoon() {
+  // wait for at least 2 frames so the canvas actually painted
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.getElementById("boot-cover")?.remove();
+    });
+  });
+}
+
+
     window.addEventListener("resize", () => {
       layoutLoadingScreen();
       // keep the bar consistent with whatever % we’re currently showing
@@ -1624,7 +1514,7 @@ let studioLogoHouseTex: Texture | null = null;
 
     const tex = Assets.get(STUDIO_LOGO_URL) as Texture | undefined;
     if (!tex) {
-      console.warn("[STUDIO] Missing logo texture:", STUDIO_LOGO_URL);
+     
       return;
     }
 
@@ -1640,7 +1530,7 @@ let studioLogoHouseTex: Texture | null = null;
     const rows = Math.floor((tex.height || 1) / tile);
 
     if (cols <= 0 || rows <= 0) {
-      console.warn("[STUDIO] Logo too small for tiles.", { w: tex.width, h: tex.height, tile });
+      
       return;
     }
 
@@ -1991,8 +1881,17 @@ let splashFarmBaseSX   = 1, splashFarmBaseSY   = 1;
 
     // ensure ordering: shadows behind words
     splashLayer.sortableChildren = true;
-    splashLogoBlocky.zIndex = 20;
-    splashLogoFarm.zIndex  = 20;
+// Title should be ABOVE cards in mobile portrait
+const titleZ = isMobilePortraitUILayout(__layoutDeps) ? 120 : 20;
+
+splashLogoBlocky.zIndex = titleZ;
+splashLogoFarm.zIndex  = titleZ;
+
+// keep shadows just under the title (still above cards if you want)
+const shadowZ = isMobilePortraitUILayout(__layoutDeps) ? 110 : 5;
+splashShadowBlocky.zIndex = shadowZ;
+splashShadowFarm.zIndex  = shadowZ;
+
 
     splashLayer.addChild(splashShadowBlocky, splashShadowFarm, splashLogoBlocky, splashLogoFarm);
 
@@ -2019,7 +1918,9 @@ const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
 
 
     const splashInfoLayer = new Container();
-    splashInfoLayer.zIndex = 40;
+   // Cards layer (below title in portrait)
+splashInfoLayer.zIndex = isMobilePortraitUILayout(__layoutDeps) ? 40 : 40; // keep cards at 40
+
     splashLayer.addChild(splashInfoLayer);
 
 const SPLASH_INFO = [
@@ -2128,6 +2029,9 @@ box.addChild(subtitle);
     const SPLASH_CONTINUE_TARGET_Y_N = 0.96;
     // ✅ PORTRAIT: keep a clean gap between the last card and "CLICK TO CONTINUE"
 const SPLASH_PORTRAIT_CONTINUE_GAP_PX = 26; // 🔧 try 18..40
+// ✅ PORTRAIT: keep a clean gap between title (BLOCKY/FARM) and the first card
+const SPLASH_PORTRAIT_TITLE_TO_CARDS_GAP_PX = 26; // 🔧 try 18..44
+
 
     const SPLASH_CONTINUE_OFFSCREEN_PAD = 90;
 
@@ -2257,6 +2161,8 @@ const leftX = W * 0.5 - pairW / 2;
 splashLogoBlocky.x = leftX + blockyW / 2;
 splashLogoFarm.x   = splashLogoBlocky.x + blockyW / 2 + SPLASH_FINAL_GAP_PX + farmW / 2;
 
+
+
 const isDesktop = !isMobilePortraitUILayout(__layoutDeps) && !isMobileLandscapeUILayout(__layoutDeps);
 if (isDesktop) splashLogoFarm.x += FARM_X_OFFSET_DESKTOP;
 
@@ -2279,7 +2185,7 @@ let LOGO_Y_N_LANDSCAPE = 0.150;
 let FARM_Y_OFFSET_LANDSCAPE = 34;
 
 // Mobile portrait
-let LOGO_Y_N_PORTRAIT = 0.1;
+let LOGO_Y_N_PORTRAIT = 0.075;
 let FARM_Y_OFFSET_PORTRAIT = 10;
 
 let LOGO_Y_N: number;
@@ -2349,8 +2255,14 @@ splashShadowFarm.scale.set(farmShadowS, farmShadowS * SHADOW_SQUASH_Y);
 
 
 // base Y
+const SPLASH_CARDS_PORTRAIT_Y_PUSH_PX = 40; // 🔧 try 20..90 (positive = down)
+
 let infoY =
-  H * (portrait ? 0.58 : SPLASH_BOX_Y_N) + SPLASH_BOX_Y_PX;
+  H * (portrait ? 0.62 : SPLASH_BOX_Y_N) + SPLASH_BOX_Y_PX;
+
+// ✅ PORTRAIT ONLY: push the whole stack down
+if (portrait) infoY += SPLASH_CARDS_PORTRAIT_Y_PUSH_PX;
+
 
 // ✅ MOBILE LANDSCAPE ONLY: raise cards
 if (landscapeMobile) {
@@ -2388,8 +2300,13 @@ const targetW = Math.max(
 
 
 
-// portrait needs shorter cards
-const boxH = Math.round(targetW * (portrait ? 0.7 : SPLASH_BOX_H_MULT));
+// ✅ PORTRAIT: card height scale knob
+const SPLASH_CARD_H_PORTRAIT_MUL = 0.840; // 🔧 try 0.82..0.95 (smaller = shorter cards)
+
+const boxH = Math.round(
+  targetW * (portrait ? 0.7 * SPLASH_CARD_H_PORTRAIT_MUL : SPLASH_BOX_H_MULT)
+);
+
 
 
 
@@ -2409,7 +2326,12 @@ for (let i = 0; i < splashInfoBoxes.length; i++) {
   const artWrap = (box as any)._splashArt as Container;
 
   // ---------- draw bg ----------
-  bg.clear();
+bg.clear();
+
+// ✅ MOBILE PORTRAIT ONLY: hide the splash card backgrounds
+if (portrait) {
+  // do nothing (bg stays empty / invisible)
+} else {
   if (SPLASH_BOX_RADIUS > 0) {
     bg
       .roundRect(-targetW / 2, -boxH / 2, targetW, boxH, SPLASH_BOX_RADIUS)
@@ -2421,6 +2343,7 @@ for (let i = 0; i < splashInfoBoxes.length; i++) {
       .fill({ color: 0x000000, alpha: SPLASH_BOX_ALPHA })
       .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
   }
+}
 
   // ---------- position ----------
   if (portrait) {
@@ -2576,6 +2499,33 @@ sp.y = Math.round(availH * 0.55) + ((SPLASH_ART_NUDGE as any)[key].y || 0);
 
 }
 
+// =====================
+// ✅ PORTRAIT: enforce gap between TITLE and the FIRST CARD
+// =====================
+if (portrait) {
+  // Get title bottom (use both words; FARM may sit lower)
+  const b1 = splashLogoBlocky.getBounds();
+  const b2 = splashLogoFarm.getBounds();
+  const titleBottomY = Math.max(b1.y + b1.height, b2.y + b2.height);
+
+  // First card top edge (global bounds)
+  const firstBox = splashInfoBoxes[0];
+  if (firstBox) {
+    const fb = firstBox.getBounds();
+    const firstTopY = fb.y;
+
+    // We want: firstTopY >= titleBottomY + GAP
+    const wantTopY = Math.round(titleBottomY + SPLASH_PORTRAIT_TITLE_TO_CARDS_GAP_PX);
+
+    const shiftDown = Math.max(0, Math.round(wantTopY - firstTopY));
+
+    if (shiftDown > 0) {
+      for (const box of splashInfoBoxes) {
+        box.y = Math.round(box.y + shiftDown);
+      }
+    }
+  }
+}
 
 
   // =====================
@@ -2605,7 +2555,7 @@ if (portrait) {
     }
   }
 }
-
+splashLayer.sortChildren();
 
 
     }
@@ -4159,7 +4109,7 @@ audio?.playSfx?.("car", 0.5, 1.2);
         t: 0,
       };
 
-      console.log("[BG CAR] spawnBgCar OK", { force, mode: state.game.mode });
+      
     }
 
 
@@ -4198,35 +4148,9 @@ audio?.playSfx?.("car", 0.5, 1.2);
   
 
   function onKeyDown(e: KeyboardEvent) {
-    // =====================
-// DEBUG: FS RETRIGGER
-// =====================
-if (!FINAL_BUILD && e.key.toLowerCase() === "r") {
-  e.preventDefault();
 
-  // modifiers give you fast variants
-  if (e.shiftKey) {
-    debugForceFsRetrigger(10);   // SHIFT+R = +10 FS
-  } else if (e.altKey) {
-    debugForceFsRetrigger(1);    // ALT+R   = +1 FS
-  } else {
-    debugForceFsRetrigger(5);    // R       = +5 FS
-  }
 
-  console.log("[DEBUG] FS retrigger");
-  return;
-}
 
-    // T = test tickhigh (forces unlock + plays)
-if (e.key.toLowerCase() === "t") {
-  __blockEvent(e);
-  audio?.initFromUserGesture?.();
-  console.log("[TEST] tickhigh: play once + start loop");
-  audio?.playSfx?.("tickhigh", 1.0, 1.0);
-  audio?.startTickHighLoop?.(0, 0.35, 1.0);
-  setTimeout(() => audio?.stopTickHighLoop?.(80), 800);
-  return;
-}
     // stop page scroll from Space
     if (e.code === "Space") e.preventDefault();
 
@@ -4261,117 +4185,7 @@ if (e.key.toLowerCase() === "t") {
       return;
     } 
 
-    // =========
-    // 2) DEBUG KEYS (only when not in overlays)
-    // =========
-    // allow just this one test key even in FINAL builds
-if (e.key.toLowerCase() === "i") {
-  console.log("[DEBUG] INFUSED popup");
-  void showInfusedPopup();
-  return;
-}
-if (FINAL_BUILD) {
-  // skip all debug keys in release
-} else {
-  // I = debug INFUSED popup
-if (e.key.toLowerCase() === "i") {
-  console.log("[DEBUG] INFUSED popup");
-  void showInfusedPopup();
-  return;
-}
-    // Big win tiers 1-5
-    if (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4" || e.key === "5") {
-      // make sure your constants exist
-      let winX: number | null = null;
-      if (e.key === "1") winX = BIG_WIN_X;
-      if (e.key === "2") winX = SUPER_WIN_X;
-      if (e.key === "3") winX = MEGA_WIN_X;
-      if (e.key === "4") winX = EPIC_WIN_X;
-      if (e.key === "5") winX = MAX_WIN_X;
 
-      if (winX != null) {
-        const bet = state.bank.betLevels[state.bank.betIndex];
-        const winAmount = winX * bet;
-        void showBigWinAndWait(winAmount, winX);
-      }
-      return;
-    }
-
-    // Toggle anticipation
-    if (e.key.toLowerCase() === "a") {
-      FORCE_ANTICIPATION = !FORCE_ANTICIPATION;
-      console.log("FORCE_ANTICIPATION =", FORCE_ANTICIPATION);
-      return;
-    }
-
-    // X = voxel burst test
-    if (e.key.toLowerCase() === "x") {
-      const lp = voxelExplodeLayer.toLocal({
-        x: app.renderer.width * 0.5,
-        y: app.renderer.height * 0.5,
-      });
-      spawnVoxelBurstAt(lp.x, lp.y, 0xffd36a);
-      return;
-    }
-
-    // C = force car spawn (shift=base, alt=fs)
-    if (e.key.toLowerCase() === "c") {
-      const forceBase = e.shiftKey;
-      const forceFs = e.altKey;
-
-   const wantMode = (forceBase ? "BASE" : forceFs ? "FREE_SPINS" : state.game.mode) as Mode;
-
-
-      if (bgCarLive) {
-        bgCarLive.s.removeFromParent();
-        bgCarLive = null;
-      }
-      if (typeof fsCarLive !== "undefined" && fsCarLive) {
-        fsCarLive.s.removeFromParent();
-        fsCarLive = null;
-      }
-
-      if (wantMode === "BASE") {
-        bgCarCooldown = 999;
-        spawnBgCar(true);
-        console.log("[BG CAR] Forced spawn (BASE)");
-      } else {
-        if (typeof spawnFsCar === "function") {
-          fsCarCooldown = 999;
-          spawnFsCar();
-          console.log("[BG CAR] Forced spawn (FREE_SPINS)");
-        } else {
-          console.log("[BG CAR] FS car not wired yet (spawnFsCar missing)");
-        }
-      }
-      return;
-    }
-
-    // O = debug FS outro
-    if (e.key.toLowerCase() === "o") {
-      e.preventDefault();
-      if (e.shiftKey) debugForceFsOutro(2500.0);
-      else if (e.altKey) debugForceFsOutro(25.0);
-      else debugForceFsOutro(233.0);
-      return;
-    }
-
-    // R = debug FS retrigger
-    if (e.key.toLowerCase() === "r") {
-      debugForceFsRetrigger(5);
-      return;
-    }
-
-    // F/B = debug enter FS
-    if (e.key.toLowerCase() === "f") {
-      if (state.game.mode !== "FREE_SPINS") enterFreeSpins(10, 1);
-      return;
-    }
-    if (e.key.toLowerCase() === "b") {
-      if (state.game.mode !== "FREE_SPINS") enterFreeSpins(10, 2);
-      return;
-    }
-}
     // =========
     // 3) GAMEPLAY SPACE (tap = spin, hold = temp auto)
     // =========
@@ -4707,8 +4521,8 @@ p.c.y = H * (yMin + Math.random() * (yMax - yMin));
 
 
 
-    seedCloudFx(6);   // spawn 6 clouds immediately on load
-    startCloudFx();
+  cloudFxEnabled = false;
+startCloudFx();
 
     // ✅ start with a random delay so it doesn't spawn instantly
     bgCarCooldown =
@@ -6103,7 +5917,40 @@ function layoutFsAddedPopup() {
 
   const s = maxW / widest;
   return Math.max(0.58, Math.min(1, s)); // clamp so it doesn’t get microscopic
-}// =====================
+}
+
+function clampFsOutroScaleToScreen(proposedScale: number) {
+  // Only needed on mobile portrait
+  if (!isMobilePortraitUILayout(__layoutDeps)) return proposedScale;
+
+  const W = app.screen.width;
+
+  // Same edge padding idea as computeFsOutroPortraitScale
+  const PAD = Math.round(W * 0.10);
+  const maxW = Math.max(1, W - PAD * 2);
+
+  // Try the proposed scale
+  fsOutroTotalLabel.scale.set(proposedScale, proposedScale);
+  fsOutroWinAmount.scale.set(proposedScale, proposedScale);
+
+  const widest = Math.max(
+    fsOutroTotalLabel.getBounds().width,
+    fsOutroWinAmount.getBounds().width
+  );
+
+  // If it fits, we're done
+  if (widest <= maxW) return proposedScale;
+
+  // Otherwise shrink just enough to fit
+  const fitMul = maxW / Math.max(1, widest);
+  const s = proposedScale * fitMul;
+
+  // Keep your same “don’t go microscopic” floor
+  return Math.max(0.58, s);
+}
+
+
+// =====================
 // FS OUTRO — GAP TUNING
 // =====================
 const FS_OUTRO_LABEL_Y_DESKTOP = 0.41;
@@ -6173,69 +6020,90 @@ let fsOutroPortraitScaleLocked = false;
     let fsOutroBurstDone = false;
     let fsOutroPulseToken = 0;
 
-    function startFsOutroIdlePulse() {
-      fsOutroPulseToken++;
-      const token = fsOutroPulseToken;
+function startFsOutroIdlePulse() {
+  fsOutroPulseToken++;
+  const token = fsOutroPulseToken;
 
-      const baseScale = fsOutroWinAmount.scale.x;
-      const UP_SCALE = baseScale * 1.08; // ✅ 8% relative to base
-    // strength (1.04–1.08 sweet spot)
-      const UP_MS = 260;
-      const DOWN_MS = 320;
-      const PAUSE_MS = 220;
+  const base = (fsOutroPortraitScaleLocked ? fsOutroPortraitScale : (fsOutroWinAmount.scale.x || 1));
+  const portrait = isMobilePortraitUILayout(__layoutDeps);
 
-      async function loop() {
-        while (token === fsOutroPulseToken && state.overlay.fsOutro) {
-          // scale up
-          await animateMs(UP_MS, (t) => {
-            if (token !== fsOutroPulseToken) return;
-            const e = easeOutCubic(t);
-            const s = baseScale + (UP_SCALE - baseScale) * e;
-            fsOutroWinAmount.scale.set(s, s);
-          });
+  // Portrait: pulse vertically only. Non-portrait: uniform (clamped).
+  const upX = portrait ? base : clampFsOutroScaleToScreen(base * 1.08);
+  const upY = portrait ? base * 1.10 : upX;
 
-          // scale down
-          await animateMs(DOWN_MS, (t) => {
-            if (token !== fsOutroPulseToken) return;
-            const e = t * t * (3 - 2 * t); // smoothstep
-            const s = UP_SCALE + (baseScale - UP_SCALE) * e;
-            fsOutroWinAmount.scale.set(s, s);
-          });
+  const UP_MS = 260;
+  const DOWN_MS = 320;
+  const PAUSE_MS = 220;
 
-          fsOutroWinAmount.scale.set(baseScale, baseScale);
-          await waitMs(PAUSE_MS);
-        }
+  async function loop() {
+    while (token === fsOutroPulseToken && state.overlay.fsOutro) {
+      await animateMs(UP_MS, (t) => {
+        if (token !== fsOutroPulseToken) return;
+        const e = easeOutCubic(t);
+        const sx = base + (upX - base) * e;
+        const sy = base + (upY - base) * e;
+        fsOutroWinAmount.scale.set(sx, sy);
+      });
 
-        // safety settle
-        fsOutroWinAmount.scale.set(baseScale, baseScale);
-      }
+      await animateMs(DOWN_MS, (t) => {
+        if (token !== fsOutroPulseToken) return;
+        const e = t * t * (3 - 2 * t);
+        const sx = upX + (base - upX) * e;
+        const sy = upY + (base - upY) * e;
+        fsOutroWinAmount.scale.set(sx, sy);
+      });
 
-      void loop();
+      fsOutroWinAmount.scale.set(base, base);
+      await waitMs(PAUSE_MS);
     }
 
-    function pulseBigWinAmount() {
-      // reset so it always pops cleanly
-      bigWinAmount.scale.set(1, 1);
+    fsOutroWinAmount.scale.set(base, base);
+  }
 
-      tween(
-        140,
-        (k) => {
-          const e = easeOutBack(k, 1.05);
-          const s = 1 + 0.06 * e;        // same feel as fsOutro
-          bigWinAmount.scale.set(s, s);
-        },
-        () => {
-          tween(220, (k2) => {
-            const e2 = k2 * k2 * (3 - 2 * k2); // smoothstep
-            bigWinAmount.scale.set(1.06 + (1 - 1.06) * e2);
-          });
-        }
-      );
+  void loop();
+}
+
+
+
+   function pulseBigWinAmount() {
+  // ✅ use the portrait-locked base scale (or current scale elsewhere)
+  const base =
+    (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked)
+      ? bigWinPortraitScale
+      : (bigWinAmount.scale.x || 1);
+
+  // ✅ clamp the peak so it can’t exceed screen width
+  const peak = clampBigWinScaleToScreen(base * 1.06); // 6% pop
+
+  // start from base (NOT 1)
+  bigWinAmount.scale.set(base, base);
+
+  tween(
+    140,
+    (k) => {
+      const e = easeOutBack(k, 1.05);
+      const s = base + (peak - base) * e;
+      bigWinAmount.scale.set(s, s);
+    },
+    () => {
+      tween(220, (k2) => {
+        const e2 = k2 * k2 * (3 - 2 * k2); // smoothstep
+        const s = peak + (base - peak) * e2;
+        bigWinAmount.scale.set(s, s);
+      });
     }
+  );
+}
 
- function pulseFsOutroAmount() {
-  // ✅ use whatever scale is currently applied (portrait-fit safe)
-  const base = fsOutroWinAmount.scale.x || 1;
+
+function pulseFsOutroAmount() {
+  const base = (fsOutroPortraitScaleLocked ? fsOutroPortraitScale : (fsOutroWinAmount.scale.x || 1));
+
+  // Portrait: pulse vertically only (keeps width inside bounds)
+  const portrait = isMobilePortraitUILayout(__layoutDeps);
+
+  const peakX = base;
+  const peakY = portrait ? base * 1.08 : clampFsOutroScaleToScreen(base * 1.06);
 
   fsOutroWinAmount.scale.set(base, base);
 
@@ -6243,20 +6111,20 @@ let fsOutroPortraitScaleLocked = false;
     140,
     (k) => {
       const e = easeOutBack(k, 1.05);
-      const s = base * (1 + 0.06 * e); // 6% pop relative to base
-      fsOutroWinAmount.scale.set(s, s);
+      const sx = base + (peakX - base) * e;
+      const sy = base + (peakY - base) * e;
+      fsOutroWinAmount.scale.set(sx, sy);
     },
     () => {
       tween(220, (k2) => {
         const e2 = k2 * k2 * (3 - 2 * k2); // smoothstep
-        const s = base * (1.06 + (1 - 1.06) * e2);
-        fsOutroWinAmount.scale.set(s, s);
+        const sx = peakX + (base - peakX) * e2;
+        const sy = peakY + (base - peakY) * e2;
+        fsOutroWinAmount.scale.set(sx, sy);
       });
     }
   );
 }
-
-
 
 
 
@@ -6431,34 +6299,7 @@ function showFsOutroP(on: boolean, totalWin: number, ms = 420) {
     setTimeout(resolve, ms + 30);
   });
 }
-// =====================
-// DEBUG: FORCE FS OUTRO (wired to O key)
-// =====================
-debugForceFsOutro = (amt: number) => {
-  if (FINAL_BUILD) return;
 
-  console.log("[DEBUG] Force FS OUTRO", amt);
-
-  // make sure audio is unlocked (outro has click-to-continue)
-  audio?.initFromUserGesture?.();
-
-  // kill any other overlay states that could block input/visibility
-  state.overlay.bigWin = false;
-  state.overlay.fsIntro = false;
-  state.overlay.fsOutroPending = false;
-
-  // stop any running FS-outro tick if it was mid-way
-  fsOutroTickToken++;          // cancels RAF
-  fsOutroCountDone = true;
-  audio?.stopTickLoop?.(0);
-
-  // optional: ensure reel dimmer isn't stuck from something else
-  // (your setReelDimmer no-ops on mobile anyway)
-  void setReelDimmer(false);
-
-  // show the FS outro with this amount
-  showFsOutro(true, amt, 420);
-};
 
 
     function showFsOutro(on: boolean, totalWin: number, ms = 420) {
@@ -6766,51 +6607,68 @@ function setBigWinTitleForTier(tier: BigWinTier) {
     bigWinAmount.alpha = 0;
     root.addChild(bigWinAmount);
 
+    // ✅ BIG WIN: allow tap/click anywhere on title/amount to skip/close (same as dimmer)
+for (const t of [bigWinTitle, bigWinAmount]) {
+  t.eventMode = "static";
+  t.cursor = "pointer";
+
+  // generous hit area so taps are easy
+  t.hitArea = new Rectangle(-800, -220, 1600, 440);
+
+  t.removeAllListeners?.("pointertap");
+  t.on("pointertap", (e: any) => {
+    e?.stopPropagation?.();
+    fsDimmer.emit("pointertap", {} as any);
+  });
+}
+
+
     // =====================
     // BIG WIN AMOUNT — IDLE PULSE (loop)
     // =====================
     let bigWinPulseToken = 0;
 
-    function startBigWinIdlePulse() {
-      bigWinPulseToken++;
-      const token = bigWinPulseToken;
+  function startBigWinIdlePulse() {
+  bigWinPulseToken++;
+  const token = bigWinPulseToken;
 
-      // IMPORTANT: use whatever the CURRENT resting scale is
-      const baseScale = bigWinAmount.scale.x;
+  const baseScale =
+    (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked)
+      ? bigWinPortraitScale
+      : (bigWinAmount.scale.x || 1);
 
-      const UP_SCALE = baseScale * 1.08; // scale relative to base
-      const UP_MS = 240;
-      const DOWN_MS = 320;
-      const PAUSE_MS = 220;
+  const UP_SCALE = clampBigWinScaleToScreen(baseScale * 1.08);
 
-      async function loop() {
-        while (token === bigWinPulseToken && state.overlay.bigWin) {
-          // scale up
-          await animateMs(UP_MS, (t) => {
-            if (token !== bigWinPulseToken) return;
-            const e = easeOutCubic(t);
-            const s = baseScale + (UP_SCALE - baseScale) * e;
-            bigWinAmount.scale.set(s, s);
-          });
+  const UP_MS = 240;
+  const DOWN_MS = 320;
+  const PAUSE_MS = 220;
 
-          // scale down
-          await animateMs(DOWN_MS, (t) => {
-            if (token !== bigWinPulseToken) return;
-            const e = t * t * (3 - 2 * t); // smoothstep
-            const s = UP_SCALE + (baseScale - UP_SCALE) * e;
-            bigWinAmount.scale.set(s, s);
-          });
+  async function loop() {
+    while (token === bigWinPulseToken && state.overlay.bigWin) {
+      await animateMs(UP_MS, (t) => {
+        if (token !== bigWinPulseToken) return;
+        const e = easeOutCubic(t);
+        const s = baseScale + (UP_SCALE - baseScale) * e;
+        bigWinAmount.scale.set(s, s);
+      });
 
-          bigWinAmount.scale.set(baseScale, baseScale);
-          await waitMs(PAUSE_MS);
-        }
+      await animateMs(DOWN_MS, (t) => {
+        if (token !== bigWinPulseToken) return;
+        const e = t * t * (3 - 2 * t);
+        const s = UP_SCALE + (baseScale - UP_SCALE) * e;
+        bigWinAmount.scale.set(s, s);
+      });
 
-        // safety settle
-        bigWinAmount.scale.set(baseScale, baseScale);
-      }
-
-      void loop();
+      bigWinAmount.scale.set(baseScale, baseScale);
+      await waitMs(PAUSE_MS);
     }
+
+    bigWinAmount.scale.set(baseScale, baseScale);
+  }
+
+  void loop();
+}
+
 
     function stopBigWinIdlePulse() {
       bigWinPulseToken++; // cancels loop
@@ -7001,6 +6859,30 @@ function computeBigWinPortraitScale(finalAmount: number) {
   const s = base * fit;
 
   return Math.max(base * 0.58, Math.min(base, s));
+}
+function clampBigWinScaleToScreen(proposedScale: number) {
+  if (!isMobilePortraitUILayout(__layoutDeps)) return proposedScale;
+
+  const W = app.screen.width;
+  const PAD = Math.round(W * 0.10);
+  const maxW = Math.max(1, W - PAD * 2);
+
+  // apply proposed scale to measure
+  bigWinTitle.scale.set(proposedScale, proposedScale);
+  bigWinAmount.scale.set(proposedScale, proposedScale);
+
+  const widest = Math.max(
+    bigWinTitle.getBounds().width,
+    bigWinAmount.getBounds().width
+  );
+
+  if (widest <= maxW) return proposedScale;
+
+  const fitMul = maxW / Math.max(1, widest);
+  const s = proposedScale * fitMul;
+
+  // don’t let it get microscopic
+  return Math.max(0.45, s);
 }
 
 
@@ -7372,6 +7254,7 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
       let p = applePool.pop();
       if (!p) {
         const s = new Sprite(tex);
+        s.eventMode = "none";
         s.anchor.set(0.5);
         s.roundPixels = true;
         p = { s, vx: 0, vy: 0, vr: 0, life: 0 };
@@ -7646,6 +7529,7 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
       }
 
       const g = p.g;
+      g.eventMode = "none";
 
       const W = app.renderer.width;
 
@@ -7798,6 +7682,8 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
       if (coinFxLayer) return;
 
       coinFxLayer = new Container();
+      coinFxLayer.eventMode = "none";
+coinFxLayer.interactiveChildren = false;
       coinFxLayer.sortableChildren = true;
 
       // Put coins above the dimmer, but below the big win texts
@@ -7828,8 +7714,10 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
 
       if (!p) {
         const a = new AnimatedSprite(tex);
+        
         a.anchor.set(0.5);
         a.loop = true;
+        a.eventMode = "none";
 
         // IMPORTANT: animated frames
         a.animationSpeed = 0.28 + Math.random() * 0.25; // ✅ slightly calmer (tweak)
@@ -7842,6 +7730,7 @@ const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smal
       } else {
         // reuse
         p.s.textures = tex;
+        p.s.eventMode = "none";
         p.s.animationSpeed = 0.28 + Math.random() * 0.25;
         p.s.gotoAndPlay(0);
       }
@@ -8777,15 +8666,18 @@ if (!bgBase || !bgFree) return;
     }
 
 
-    function layoutFsDimmer() {
-      // draw in ROOT coords (since fsDimmer is a child of root)
-      const w = app.screen.width;
-      const h = app.screen.height;
+function layoutFsDimmer() {
+  // draw in ROOT coords (since fsDimmer is a child of root)
+  const w = app.screen.width;
+  const h = app.screen.height;
 
   fsDimmer.clear();
   fsDimmer.rect(0, 0, w, h).fill(0x000000);
 
-    }
+  // ✅ CRITICAL: make it reliably clickable/tappable
+  fsDimmer.hitArea = new Rectangle(0, 0, w, h);
+}
+
 
 
     layoutFsAddedPopup();
@@ -9783,6 +9675,7 @@ const multPlaqueLayer = new Container();
 multPlaqueLayer.zIndex = 1400;
 
 root.addChild(multPlaqueLayer);
+multPlaqueLayer.visible = false;
 root.sortChildren();
 
 // ✅ SAFETY: never allow ladder plaque during FS intro/outro (even if some layout re-enables it)
@@ -10263,7 +10156,7 @@ if (dir === 1) {
   const muted = audio?.getSfxMuted?.() ?? false;
   const vol = audio?.getSfxVolume01?.() ?? 1;
 
-  console.log("[SFX] multiplier step", { muted, vol });
+ 
 
   if (!muted && vol > 0.001) {
     const throttled = audio?.playSfxThrottled?.bind(audio);
@@ -10536,23 +10429,36 @@ applyGameTitleScaleFromBase();
     // Position + scale plaque relative to board (called from layoutAll)
 function layoutMultiplierPlaque() {
   
-  // ✅ NEVER show ladder during loader/splash/startup
-  if (loadingLayer?.visible || state.overlay.splash || state.overlay.startup) {
+ // 🔒 HARD HIDE during boot / splash / startup
+  if (
+    state.overlay.boot ||  
+    loadingLayer?.visible ||
+    state.overlay.splash ||
+    state.overlay.startup
+  ) {
     multPlaqueLayer.visible = false;
     return;
   }
 
-  // ✅ NEVER show ladder during FS intro/outro overlays
+  // 🔒 HARD HIDE during FS overlays
   if (state.overlay.fsIntro || state.overlay.fsOutro) {
     multPlaqueLayer.visible = false;
     return;
   }
 
-  // ✅ NEVER show ladder over menus
+  // 🔒 HARD HIDE during menus
   if (state.ui.settingsOpen || state.ui.buyMenuOpen) {
     multPlaqueLayer.visible = false;
     return;
   }
+  // ✅ MOBILE PORTRAIT ONLY: hide the main in-game PNG title
+  if (isMobilePortraitUILayout(__layoutDeps)) {
+    gameTitle.visible = false;
+    gameTitle.alpha = 0;
+  }
+
+  // 👇 only below here is the plaque EVER allowed to show
+  multPlaqueLayer.visible = true;
 
   
 // ---- GAME TITLE POSITION ----
@@ -10587,7 +10493,7 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
 
   // 🔧 TUNING (adjust once, works everywhere)
   const PAD_X = 70;    // distance from right edge
-  const PAD_Y = -27;    // distance from top edge
+  const PAD_Y = -40;    // distance from top edge
   const SCALE = 0.6;   // ladder size in portrait
 
   multPlaqueLayer.scale.set(SCALE);
@@ -10888,10 +10794,10 @@ function centerPivot(c: Container) {
     // =====================
     // UI PANEL TEXT STYLES (shared)
     // =====================
-    const UI_TITLE_STYLE = localizeStyle({
+const UI_TITLE_STYLE = localizeStyle({
   fontFamily: "Micro5",
   fill: 0xffd36a,
-  fontSize: 32,
+  fontSize: isMobilePortraitUILayout(__layoutDeps) ? 24 : 32, // ✅ portrait smaller
   fontWeight: "200",
   letterSpacing: 2,
 } as any);
@@ -10899,11 +10805,12 @@ function centerPivot(c: Container) {
 const UI_VALUE_STYLE = localizeStyle({
   fontFamily: "Micro5",
   fill: 0xffffff,
-  fontSize: 40,
+  fontSize: isMobilePortraitUILayout(__layoutDeps) ? 30 : 40, // ✅ portrait smaller
   fontWeight: "200",
   letterSpacing: 1,
   stroke: { color: 0x000000, width: 4 },
 } as any);
+
 
 
 
@@ -10993,10 +10900,40 @@ const UI_VALUE_STYLE = localizeStyle({
     uiPanel.addChild(winUI);
 
     function setWinAmount(v: number) {
+       winPanelValue = v; 
       state.bank.lastWin = v;
       winAmountLabel.text = fmtMoney(v);
     }
 
+    let __winTweenToken = 0;
+
+async function animateWinAmountTo(target: number, ms = 140) {
+  __winTweenToken++;
+  const token = __winTweenToken;
+
+  const from = winPanelValue;
+  const to = target;
+
+  // tiny dead-zone (prevents jitter on tiny deltas)
+  if (Math.abs(to - from) < 0.001) {
+    setWinAmount(to);
+    return;
+  }
+
+  await animateMs(ms, (t) => {
+    if (token !== __winTweenToken) return; // ✅ cancelled by a newer tween
+    const e = t * t * (3 - 2 * t); // smoothstep
+    const v = from + (to - from) * e;
+    setWinAmount(v);
+  });
+
+  if (token === __winTweenToken) {
+    setWinAmount(to); // ✅ hard snap final
+  }
+}
+
+
+let winPanelValue = 0; // ✅ current displayed value in the WIN panel
 
 
 
@@ -11138,11 +11075,13 @@ function applyUiLocks() {
   const fsLock = isInFreeSpinsMode();
 
 // --- SETTINGS + TURBO rules ---
-const allowSettings = !hardOverlay && !isInFreeSpinsMode();
-const allowTurbo    = !hardOverlay; // keep turbo allowed if you want
+// ✅ Allow settings during FREE_SPINS gameplay (but still NOT during hard overlays)
+const allowSettings = !hardOverlay;
+const allowTurbo    = !hardOverlay;
 
 settingsBtnPixi?.setEnabled?.(allowSettings);
 turboBtnPixi?.setEnabled?.(allowTurbo);
+
 
 
   // Everything else:
@@ -11158,23 +11097,28 @@ turboBtnPixi?.setEnabled?.(allowTurbo);
     return;
   }
 
-  if (fsLock) {
-    // ✅ FREE SPINS: lock these completely (greyed out via setEnabled)
-    spinBtnPixi?.setEnabled?.(false);
-    buyBtnPixi?.setEnabled?.(false);
-    autoBtnPixi?.setEnabled?.(false);
-    betUpBtnPixi?.setEnabled?.(false);
-    betDownBtnPixi?.setEnabled?.(false);
+ if (fsLock) {
+  // ✅ FREE SPINS: lock these completely
+  spinBtnPixi?.setEnabled?.(false);
+  autoBtnPixi?.setEnabled?.(false);
+  betUpBtnPixi?.setEnabled?.(false);
+  betDownBtnPixi?.setEnabled?.(false);
 
-    // Also kill any armed/auto state so nothing weird persists
-    stopAutoNow("free spins lock");
+  // ✅ BUY: always disabled, but FULL opacity + GREY filter
+  buyBtnPixi?.setEnabled?.(false);   // disables interactivity (and would dim alpha)
+  buyBtnPixi.eventMode = "none";     // double-safety
+  buyBtnPixi.cursor = "default";
+  buyBtnPixi.alpha = 1.0;            // ✅ override the 0.5 dim
+  (buyBtnPixi as any)?.resetVisual?.();
+  buyBtnPixi.filters = [buyGreyFilter];
 
-    // If you want: ensure spin visuals aren’t in “STOP AUTO / PLAY AUTO”
-    // (optional safety)
-    refreshAutoSpinSpinButton?.();
+  // Also kill any armed/auto state so nothing weird persists
+  stopAutoNow("free spins lock");
+  refreshAutoSpinSpinButton?.();
 
-    return;
-  }
+  return;
+}
+
 
   // ✅ BASE GAME rules (your normal behavior)
   // Let your existing affordability logic decide SPIN.
@@ -11183,12 +11127,29 @@ turboBtnPixi?.setEnabled?.(allowTurbo);
   // Other buttons depend on menus + spinning
   const uiFree = !anyMenuOpen && !state.ui.spinning;
 
-  buyBtnPixi?.setEnabled?.(uiFree);
+// BUY: during spinning, keep FULL opacity but NO interaction + GREYED visuals
+buyBtnPixi?.setEnabled?.(uiFree);
+
+if (state.ui.spinning) {
+  buyBtnPixi.eventMode = "none";         // blocks clicks/taps
+  buyBtnPixi.alpha = 1.0;               // keep opaque
+  buyBtnPixi.cursor = "default";
+  (buyBtnPixi as any)?.resetVisual?.();  // force UP state
+
+  // ✅ grey it out (like a 50% overlay)
+  buyBtnPixi.filters = [buyGreyFilter];
+} else {
+  // ✅ restore normal color
+  buyBtnPixi.filters = null;
+}
+
+
   autoBtnPixi?.setEnabled?.(uiFree);
 
   // bet arrows are disabled while spinning or menus
   betUpBtnPixi?.setEnabled?.(!anyMenuOpen && !state.ui.spinning);
   betDownBtnPixi?.setEnabled?.(!anyMenuOpen && !state.ui.spinning);
+
 }
 function restoreUiAfterFsOutro() {
   // make sure UI layer can receive events again
@@ -11984,7 +11945,7 @@ const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
       const texMap = sheet?.textures as Record<string, Texture> | undefined;
 
       if (!texMap) {
-        console.warn("[COINS] Sheet not ready or missing textures:", COINS_SHEET_URL, sheet);
+     
         coinFramesCache = [];
         return coinFramesCache;
       }
@@ -12001,9 +11962,9 @@ const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
       coinFramesCache = keys.map((k) => texMap[k]).filter(Boolean);
 
       if (!coinFramesCache.length) {
-        console.warn("[COINS] No frames found in sheet:", COINS_SHEET_URL, keys);
+        
       } else {
-        console.log("[COINS] Frames:", coinFramesCache.length, "from", COINS_SHEET_URL);
+        
       }
 
       return coinFramesCache;
@@ -12014,16 +11975,27 @@ const AUTO_MENU_UI_ATLAS_URL = "/assets/atlases/auto_menu_ui.json";
 
 
 
-  await Assets.load([
-    AUTO_MENU_UI_ATLAS_URL,
-    STUDIO_LOGO_URL,
-    STUDIO_LOGO_HOUSE_URL,
-  ]);
-  // ✅ cache this once to avoid Assets warnings during early layout
+await Assets.load([
+  AUTO_MENU_UI_ATLAS_URL,
+  STUDIO_LOGO_URL,
+  STUDIO_LOGO_HOUSE_URL,
+]);
+
 studioLogoHouseTex = (Assets.get(STUDIO_LOGO_HOUSE_URL) as Texture) || null;
 
-  await playStudioIntroTilesReel();
+// ✅ Black (DOM) -> Studio intro (Pixi): remove DOM cover now
+document.getElementById("boot-cover")?.remove();
 
+await playStudioIntroTilesReel();
+
+// ✅ Studio intro finished -> now show the loader
+loadingLayer.visible = true;
+loadingLayer.alpha = 1;
+loadingLayer.eventMode = "static";
+layoutLoadingScreen();
+removeBootCoverSoon();
+updateLoadingProgress(0);
+root.sortChildren();
 
 
     await Assets.load(
@@ -12047,7 +12019,7 @@ studioLogoHouseTex = (Assets.get(STUDIO_LOGO_HOUSE_URL) as Texture) || null;
            INFINITY_ICON_URL,
 
       ],
-      (p: number) => updateLoadingProgress(0.5 + p * 0.5)
+      (p: number) => updateLoadingProgress(p)
     );
 
 
@@ -12072,7 +12044,7 @@ function texAutoMenu(frame: string): Texture {
 
 symbolsSheet = Assets.get(SYMBOLS_ATLAS_URL) as any;
 
-  console.log("[SYMBOLS] frames:", Object.keys(symbolsSheet.textures || {}));
+ 
 
   for (const tex of Object.values(symbolsSheet.textures)) {
     (tex as Texture).source.scaleMode = "nearest";
@@ -12108,7 +12080,7 @@ function texSymbols(frame: string): Texture {
   // =====================
 reelhouseSheet = Assets.get(REELHOUSE_ATLAS_URL) as any;
 
-  console.log("[REELHOUSE] frames:", Object.keys(reelhouseSheet.textures || {}));
+ 
 
   for (const tex of Object.values(reelhouseSheet.textures)) {
     (tex as Texture).source.scaleMode = "nearest";
@@ -12128,7 +12100,7 @@ reelhouseSheet = Assets.get(REELHOUSE_ATLAS_URL) as any;
 vehiclesSheet = Assets.get(VEHICLES_ATLAS_URL) as any;
 
 
-  console.log("[VEHICLES] frames:", Object.keys(vehiclesSheet.textures || {}));
+ 
 
   for (const tex of Object.values(vehiclesSheet.textures)) {
     (tex as Texture).source.scaleMode = "nearest";
@@ -12141,7 +12113,7 @@ vehiclesSheet = Assets.get(VEHICLES_ATLAS_URL) as any;
     return t;
   }
 
-  console.log("[UI_EXTRA] frames:", Object.keys(uiExtraSheet.textures || {}));
+
 
   // crisp pixels for ui_extra too
   for (const tex of Object.values(uiExtraSheet.textures)) {
@@ -12583,24 +12555,17 @@ refreshLocalizedText();
   if (state.ui.settingsOpen) settingsApi?.open?.();
   else settingsApi?.close?.();
 
-      // Disable everything else
-      spinBtnPixi.setEnabled(!state.ui.settingsOpen && !state.ui.spinning);
-      // keep the right visual showing
-    spinBtnPixi.visible = !state.ui.spinning;
-    spinningBtnPixi.visible = state.ui.spinning;
+      // Let the single source of truth decide which buttons are enabled/greyed
+applyUiLocks();
 
-      buyBtnPixi.setEnabled(!state.ui.settingsOpen);
-      autoBtnPixi.setEnabled(!state.ui.settingsOpen);
-      turboBtnPixi.setEnabled(!state.ui.settingsOpen);
-      betDownBtnPixi.setEnabled(!state.ui.settingsOpen);
-      betUpBtnPixi.setEnabled(!state.ui.settingsOpen);
 
-      settingsBtnPixi.setEnabled(true);
+      // ✅ Opening settings should NOT disrupt FREE SPINS auto-chaining.
+// Only stop BASE auto (your state.ui.auto system) when NOT in free spins.
+if (state.ui.settingsOpen && !isInFreeSpinsMode()) {
+  stopAutoNow("settings opened");
+  autoBtnPixi.setOn(false);
+}
 
-      if (state.ui.settingsOpen) {
-        state.ui.auto = false;
-        autoBtnPixi.setOn(false);
-      }
     }
 
     );
@@ -12623,14 +12588,18 @@ t,
     settingsBtnPixi,
 
     // when settings closes, re-enable UI buttons
-    onClosed: () => {
-      spinBtnPixi.setEnabled(!state.ui.spinning);
-      buyBtnPixi.setEnabled(true);
-      autoBtnPixi.setEnabled(true);
-      turboBtnPixi.setEnabled(true);
-      betDownBtnPixi.setEnabled(true);
-      betUpBtnPixi.setEnabled(true);
-    },
+ onClosed: () => {
+  // SettingsMenu can be closed by clicking outside, so force-sync the toggle state.
+  state.ui.settingsOpen = false;
+  uiDimmer.visible = false;
+
+  // ensure the settings toggle looks OFF
+  settingsBtnPixi?.setOn?.(false);
+
+  // re-apply your "only turbo+settings in FS" rules
+  applyUiLocks();
+},
+
 
     texUI,
     texSymbols,
@@ -12679,7 +12648,7 @@ setMusicValue01: (v01: number) => audio?.setMusicVolume01?.(v01),
    () => {
     if (state.ui.spinning) return; // ✅ block during spin
     stopAutoNow("buy button");
-    console.log("[BUY BTN] clicked");
+    
 
     // close settings if open
 if (state.ui.settingsOpen) {
@@ -12690,6 +12659,15 @@ if (state.ui.settingsOpen) {
   }
 
     );
+
+    // ✅ BUY "greyed but opaque" filter (used during spinning)
+const buyGreyFilter = new ColorMatrixFilter();
+
+// Desaturate fully (greyscale)
+buyGreyFilter.saturate(0, false);
+buyGreyFilter.contrast(0.75, false);
+buyGreyFilter.brightness(0.6, false);
+
     // ✅ Bigger hit area for BUY only
 const BUY_HIT_PAD_X = IS_TOUCH ? 36 : 6;
 const BUY_HIT_PAD_Y = IS_TOUCH ? 30 : 6;
@@ -12750,7 +12728,7 @@ buyBtnPixi.hitArea = new Rectangle(
 function stopAutoNow(reason = "") {
   if (!state.ui.auto && (state.ui.autoRounds ?? -1) === -1 && (state.ui.autoPendingRounds ?? -1) === -1) return;
 
-  console.log("[AUTO] stop", reason);
+  
 
   state.ui.auto = false;
   state.ui.autoArmed = false; // ✅ clear armed state too
@@ -12957,18 +12935,14 @@ t,
 
 
 
-    const betValueBtn = makeButton(`BET: ${state.bank.betLevels[state.bank.betIndex]}`, 160, 56, () => {
-      // optional: tap cycles bet too
-      state.bank.betIndex = (state.bank.betIndex + 1) % state.bank.betLevels.length;
-      betValueBtn.setLabel(`BET: ${state.bank.betLevels[state.bank.betIndex]}`);
-    });
+    
 
 
 
 
 
 
-    let uiPanelH = 0;              // updated each layoutUI()
+   
 
 
 
@@ -13027,16 +13001,29 @@ function ensureBetParentingForLayout() {
   }
 }
 
-
+let uiPanelH = 0; 
   function layoutUI() {
-  const panelW = app.screen.width;
-  const targetH = Math.round(app.screen.height * PANEL_HEIGHT_FRAC);
-  uiPanelH = targetH;
+ const panelW = app.screen.width;
+
+// ✅ base layout height (keeps button sizes the same)
+const layoutH = Math.round(app.screen.height * PANEL_HEIGHT_FRAC);
+
+// ✅ background-only height (portrait can be taller)
+const PORTRAIT_PANEL_BG_FRAC = 0.1; // 🔧 tune this (0.12..0.18)
+const bgH = Math.round(
+  app.screen.height *
+    (isMobilePortraitUILayout(__layoutDeps) ? PORTRAIT_PANEL_BG_FRAC : PANEL_HEIGHT_FRAC)
+);
+
+// keep uiPanelH tracking the *background* height (used elsewhere like uiTop calc)
+uiPanelH = bgH;
+
 
   // uiPanel container pinned to bottom (safe area)
   uiPanel.x = 0;
   const safeB = safeInsetBottomPx();
-  uiPanel.y = Math.round(app.screen.height - targetH - safeB);
+  uiPanel.y = Math.round(app.screen.height - bgH - safeB);
+
 
   // -----------------------------
   // PANEL BG DRAW (code)
@@ -13051,26 +13038,26 @@ function ensureBetParentingForLayout() {
 
   if (PANEL_RADIUS > 0) {
     panelBgG
-      .roundRect(0, 0, panelW, targetH, PANEL_RADIUS)
+      .roundRect(0, 0, panelW, bgH, PANEL_RADIUS)
       .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
       .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
   } else {
     panelBgG
-      .rect(0, 0, panelW, targetH)
+      .rect(0, 0, panelW, bgH)
       .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
       .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
   }
 
   uiDimmer.clear();
-  uiDimmer.rect(0, 0, panelW, targetH).fill(0x000000);
+  uiDimmer.rect(0, 0, panelW, bgH).fill(0x000000);
 
 // ✅ Ensure BET parenting is correct BEFORE we position things
 ensureBetParentingForLayout();
 
-// Decide which layout to use
-if (isMobilePortraitUILayout(__layoutDeps)) layoutUIMobile(panelW, targetH);
-else if (isMobileLandscapeUILayout(__layoutDeps)) layoutUIMobileLandscape(panelW, targetH);
-else layoutUIDesktop(panelW, targetH);
+// ✅ pass layoutH so button scaling stays the same
+if (isMobilePortraitUILayout(__layoutDeps)) layoutUIMobile(panelW, layoutH);
+else if (isMobileLandscapeUILayout(__layoutDeps)) layoutUIMobileLandscape(panelW, layoutH);
+else layoutUIDesktop(panelW, layoutH);
 
   // Keep spinning overlay aligned
   spinningBtnPixi.x = spinBtnPixi.x;
@@ -13320,7 +13307,7 @@ winAmountLabel.visible = false;
   winAmountLabel.y = 4;
 
 // ===== SPIN (portrait: always centered horizontally) =====
-const SPIN_Y = -0.7; // tweak 0.55..0.78
+const SPIN_Y = -1; // tweak 0.55..0.78
 const SPIN_Y_OFFSET = -h * 0.12; 
 spinBtnPixi.x = Math.round(w * 0.5);        // ✅ center horizontally
 spinBtnPixi.y = Math.round(h * SPIN_Y + SPIN_Y_OFFSET);// keep Y tunable
@@ -13355,7 +13342,7 @@ setScaleToHeight(turboBtnPixi, MINI_BTN_H);
 
 
 // =====================
-// PORTRAIT: center Settings + BetGroup + BalanceGroup as a row
+// PORTRAIT: BET + BALANCE are INDEPENDENT (no shared row / no shared scaling)
 // =====================
 
 // (keep WIN hidden for portrait)
@@ -13363,67 +13350,41 @@ winUI.visible = false;
 winTitleLabel.visible = false;
 winAmountLabel.visible = false;
 
-
-
-
-
-// ---------- SETTINGS (scale only; position is handled by the row layout) ----------
+// ---------- SETTINGS ----------
 setScaleToHeight(settingsBtnPixi, MINI_BTN_H * 0.75);
 centerPivot(settingsBtnPixi);
 
-// ✅ Portrait: rebuild SETTINGS hit area after scaling
-const SETTINGS_HIT_PAD_X = Math.round(w * 0.04); // tweak 0.03..0.06
-const SETTINGS_HIT_PAD_Y = Math.round(h * 0.10); // tweak 0.08..0.16
-
-{
-  const bb = settingsBtnPixi.getLocalBounds();
-  settingsBtnPixi.hitArea = new Rectangle(
-    bb.x - SETTINGS_HIT_PAD_X,
-    bb.y - SETTINGS_HIT_PAD_Y,
-    bb.width + SETTINGS_HIT_PAD_X * 2,
-    bb.height + SETTINGS_HIT_PAD_Y * 2
-  );
-}
-
-
-// ---------- BET GROUP (internal layout, then pivot center) ----------
+// ---------- BET (internal layout) ----------
 setScaleToHeight(betAmountUI, h * 0.36);
 centerPivot(betAmountUI);
 
-// tuning for bet internals
-const BET_TITLE_Y = -betAmountUI.height * 0.75;
-const BET_BTN_X   = -betAmountUI.width  * 0.95;
-const BET_BTN_GAP =  betAmountUI.height * 0.3;
 
-// 👇 NEW: raise arrows to align with BET group visual center
-const BET_BTN_Y_BIAS = -betAmountUI.height * .24;
+
+
+// portrait-only: gap between bet arrows and pill
+const BET_ARROW_TO_PILL_MUL = 0.78; // 🔧 0.70..0.85
+
+// ✅ PORTRAIT ONLY: move bet arrows left (more negative = further left)
+const BET_ARROWS_X_OFFSET_PX = 18; // 🔧 try 8..30
+
+const BET_BTN_X   = -betAmountUI.width * BET_ARROW_TO_PILL_MUL - BET_ARROWS_X_OFFSET_PX;
+const BET_BTN_GAP = 25; // ✅ fixed gap in px (portrait only). Tweak 28..44
+
+const BET_BTN_Y_BIAS = -betAmountUI.height * 0.24;
+
 
 betAmountUI.position.set(0, 0);
+
+// 🔧 PORTRAIT ONLY: move the "BET" label up/down (negative = up, positive = down)
+const BET_LABEL_Y_OFFSET_PX = -10; // <- change this
+
+const BET_TITLE_Y = -betAmountUI.height * 0.6 + BET_LABEL_Y_OFFSET_PX;
 
 betTitleLabel.anchor.set(0.5);
 betTitleLabel.position.set(0, Math.round(BET_TITLE_Y));
 
 setScaleToHeight(betUpBtnPixi, h * 0.32);
 setScaleToHeight(betDownBtnPixi, h * 0.32);
-
-// ✅ Rebuild BET +/- hit areas AFTER scaling (portrait)
-// (atlas textures can be trimmed; this uses real bounds)
-const BET_HIT_PAD_X = Math.round(w * 0.03); // tweak 0.02..0.05
-const BET_HIT_PAD_Y = Math.round(h * 0.12); // tweak 0.08..0.18
-
-function padHit(btn: Container) {
-  const bb = btn.getLocalBounds();
-  btn.hitArea = new Rectangle(
-    bb.x - BET_HIT_PAD_X,
-    bb.y - BET_HIT_PAD_Y,
-    bb.width + BET_HIT_PAD_X * 2,
-    bb.height + BET_HIT_PAD_Y * 2
-  );
-}
-
-padHit(betUpBtnPixi);
-padHit(betDownBtnPixi);
-
 
 betUpBtnPixi.position.set(
   Math.round(BET_BTN_X),
@@ -13435,46 +13396,63 @@ betDownBtnPixi.position.set(
   Math.round(+BET_BTN_GAP + BET_BTN_Y_BIAS)
 );
 
-
 centerPivot(betGroup);
 
-// ---------- BALANCE GROUP (internal layout, then pivot center) ----------
-balanceLabel.anchor.set(0.5);
-balanceTitleLabel.anchor.set(0.5);
-const BALANCE_Y_OFFSET = -h * 0.09; // ⬆️ up (negative), ⬇️ down (positive)
-// tuning
-const BAL_TITLE_GAP = 33;
+// ---------- BALANCE (internal layout) ----------
+balanceLabel.anchor.set(1, 0.5);
+balanceTitleLabel.anchor.set(1, 0.5);
 
-balanceLabel.position.set(0, 0);
-balanceTitleLabel.position.set(0, -BAL_TITLE_GAP);
+// ✅ portrait: BALANCE label ABOVE the amount (purely local, affects ONLY balance)
+const BALANCE_TITLE_Y_OFFSET  = -70; // label up
+const BALANCE_AMOUNT_Y_OFFSET =  -45; // amount down
 
-centerPivot(balanceGroup);
+balanceTitleLabel.position.set(0, BALANCE_TITLE_Y_OFFSET);
+balanceLabel.position.set(0, BALANCE_AMOUNT_Y_OFFSET);
 
-// ---------- ROW LAYOUT (center the 3 items horizontally) ----------
-const ROW_Y = Math.round(h * 0.55);         // vertical position of the whole row
-const GAP = Math.round(w * 0.06);           // spacing between items (tune 0.04..0.08)
 
-// order in the row:
-const items: Container[] = [settingsBtnPixi, betGroup, balanceGroup];
-
-// compute widths after pivots are set
-const widths = items.map(it => it.getLocalBounds().width);
-const totalW = widths.reduce((a, b) => a + b, 0) + GAP * (items.length - 1);
-
-let x = Math.round(w * 0.5 - totalW / 2);
-
-for (let i = 0; i < items.length; i++) {
-  const it = items[i];
-  const bw = it.getLocalBounds().width;
-
-  it.x = Math.round(x + bw / 2);
-  it.y = ROW_Y;
-
-  x += bw + GAP;
+// ✅ pivot to RIGHT edge so the group can be pinned to the device right side
+{
+  const b = balanceGroup.getLocalBounds();
+  balanceGroup.pivot.set(b.x + b.width, b.y + b.height / 2);
 }
 
-// ----- BALANCE vertical tweak (portrait only) -----
-balanceGroup.y = Math.round(balanceGroup.y + BALANCE_Y_OFFSET);
+
+// ===================================================
+// ✅ INDEPENDENT SCREEN POSITIONS (NO COUPLING)
+// Tweak these freely — changing BET will NOT change BALANCE.
+// ===================================================
+
+// overall vertical line for these HUD items
+const HUD_Y = Math.round(h * 0.55);
+
+
+// SETTINGS position (✅ portrait: left-anchored to device)
+const SAFE_L = 0; // (no safeInsetLeft helper yet)
+const SETTINGS_PAD_L = 10;  // 🔧 left padding from device edge
+const SETTINGS_PAD_Y = -6;  // 🔧 vertical nudge (negative = up)
+
+const sb = settingsBtnPixi.getLocalBounds(); // assumes centerPivot(settingsBtnPixi) was called
+const SETTINGS_X = Math.round(SAFE_L + SETTINGS_PAD_L + sb.width * 0.5);
+const SETTINGS_Y = Math.round(HUD_Y + SETTINGS_PAD_Y);
+
+settingsBtnPixi.position.set(SETTINGS_X, SETTINGS_Y);
+
+
+// BET position
+const BET_X = Math.round(w * 0.42);       // 🔧
+const BET_Y = HUD_Y;                      // 🔧
+betGroup.position.set(BET_X, BET_Y);
+
+// BALANCE position (✅ portrait: right aligned to device edge)
+const BAL_RIGHT_PAD = 5;                 // 🔧 distance from device right edge
+const BAL_Y = HUD_Y - (h * 0.09);         // keep your existing vertical behavior
+balanceGroup.position.set(
+  Math.round(w - BAL_RIGHT_PAD),
+  Math.round(BAL_Y)
+);
+
+
+
 
   // (Optional) reset hover visuals on mobile
   spinBtnPixi.resetVisual?.();
@@ -13894,8 +13872,17 @@ const b = reelHouse.getBounds();
 tumbleBanner.x = Math.round(b.x + b.width * 0.5);
 
 // vertical: place above the reel house top edge
-const ABOVE_REEL_GAP_PX = -60; // 🔧 tweak 10..40
+const ABOVE_REEL_GAP_PX = -20; // ✅ positive = above reel (try 12..36)
+
+// ✅ portrait-only extra lift (negative = move UP)
+const PORTRAIT_TUMBLE_BANNER_Y_NUDGE = -22; // 🔧 try -10 .. -40
+
 let y = Math.round(b.y - ABOVE_REEL_GAP_PX);
+
+// apply portrait-only nudge
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  y += PORTRAIT_TUMBLE_BANNER_Y_NUDGE;
+}
 
 // ✅ keep it out of the notch/safe-top
 y = Math.max(y, safeT + 8);
@@ -14052,6 +14039,7 @@ tumbleBanner.scale.set(base * 1.05);
       tumbleBanner.visible = false;
       tumbleBanner.alpha = 0;
     }
+
 
 
     // =====================
@@ -14390,10 +14378,11 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   boostedText.x = Math.round(W * 0.5);
   boostedText.y = Math.round(H * 0.45);
 
-  // 🔊 BOOSTED word SFX (PLAY IT HERE)
+
+  if (token === boostedToken) {
   audio?.playSfxThrottled?.("boosted", 120, 1, 1.0);
-  // or if you don’t have throttled:
-  // audio?.playSfx?.("boosted", 0.85, 1.0);
+}
+  
 
   boostedText.visible = true;
   boostedText.alpha = 0;
@@ -14799,10 +14788,23 @@ root.sortChildren();
 
     let activeWinPopups: Container[] = [];
 
-    function clearWinPopups() {
-      for (const p of activeWinPopups) p.destroy({ children: true });
-      activeWinPopups = [];
-    }
+function clearWinPopups() {
+  for (const p of activeWinPopups) {
+    if (!p || (p as any).destroyed) continue;
+
+    p.removeFromParent();
+
+    requestAnimationFrame(() => {
+      if (!(p as any).destroyed) p.destroy({ children: true });
+    });
+  }
+  activeWinPopups = [];
+}
+
+function isPopupAlive(p: any): boolean {
+  return !!p && !(p as any).destroyed && !!(p as any).parent;
+}
+
 
     function clusterBoundsInLayer(c: Cluster, layer: Container) {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -14979,7 +14981,9 @@ requestAnimationFrame(tick);
     }
 
 
-
+function isAlive(d: any) {
+  return !!d && !d.destroyed && d.parent !== null;
+}
 
     async function showClusterWinPopups(
       clusters: Cluster[],
@@ -15043,19 +15047,27 @@ p.scale.set(s);
                 await waitMs(holdMs);
 
                 // drift up + fade out
-                const startY = p.y;
-                tween(
-                  220,
-                  (k) => {
-                    const e = Math.max(0, Math.min(1, k));
-                    p.alpha = 1 - e;
-                    p.y = startY - 18 * e;
-                  },
-                  () => {
-                    p.destroy({ children: true });
-                    resolve();
-                  }
-                );
+const startY = p.y;
+
+tween(
+  220,
+  (k) => {
+    if (!isPopupAlive(p)) return;      // ✅ bail if it got cleared/destroyed
+    const e = Math.max(0, Math.min(1, k));
+    p.alpha = 1 - e;
+    p.y = startY - 18 * e;
+  },
+  () => {
+  // ✅ safest: just hide + detach; let clearWinPopups own destruction
+  if (isAlive(p)) {
+    p.visible = false;
+    p.alpha = 0;
+    p.removeFromParent();
+  }
+  resolve();
+}
+);
+
               },
               (t) => easeOutBack(t, 1.18)
             );
@@ -15287,7 +15299,8 @@ if (!bgBase || !bgFree) return;
 
 
   addSystem((dt) => {
-    if (!gameTitle.visible) return;
+      if (isMobilePortraitUILayout(__layoutDeps)) return;
+
     if (titleDropActive) return;
 
     titleFloatT += dt;
@@ -15304,7 +15317,7 @@ if (!bgBase || !bgFree) return;
   });
 
   function layoutAll() {
-perfHud?.layout();
+
   // =====================
   // PORTRAIT-ONLY LOCK (MOBILE)
   // =====================
@@ -15509,7 +15522,7 @@ if (isMob) {
 }
 
 
-
+__layoutReady = true;
     layoutAll();
     root.sortChildren();
     refreshLocalizedText();
@@ -15518,8 +15531,7 @@ if (isMob) {
         try {
           updateLoadingProgress(1);
 
-          const LOADER_TEST_HOLD_MS = 0;
-          await new Promise<void>((r) => setTimeout(r, LOADER_TEST_HOLD_MS));
+         
 
           snapBackgroundToTop();
           setSplashBackgroundFraming(1, 0);
@@ -15530,7 +15542,7 @@ await runFinalBootPipelineOnce();
 
 
         } catch (err) {
-          console.error("[BOOT] failed after loading:", err);
+      
           // optional: show loader text so you can see it
           loadingPct.text = "BOOT ERROR";
         }
@@ -15698,6 +15710,8 @@ if (!bgBase || !bgFree) return;
           showGameCoreDelayed(STARTUP_REVEAL_DELAY, 420, 0.92);
           fadeUiLayerTo(1, 320);
           audio?.playMusic?.("music_base", 600);
+          state.overlay.boot = false;  
+layoutMultiplierPlaque();  
 
 
           // ✅ BASE GAME START: spawn the base car immediately
@@ -16181,6 +16195,10 @@ const { wait, waitT, durT, turboFactor } = makeTurboTiming(() => !!state.ui.turb
 
 let __fsAutoKickToken = 0;
 
+function allowFsSpinWhileSettingsOpen(): boolean {
+  return state.game.mode === "FREE_SPINS" && state.fs.remaining > 0;
+}
+
 function kickFreeSpinsAuto(delayMs = 250) {
   __fsAutoKickToken++;
   const token = __fsAutoKickToken;
@@ -16193,16 +16211,15 @@ function kickFreeSpinsAuto(delayMs = 250) {
     if (state.fs.remaining <= 0) return;
 
     // do NOT spin during overlays/menus
-    if (
-      state.overlay.splash ||
-      state.overlay.startup ||
-      state.overlay.fsIntro ||
-      state.overlay.fsOutro ||
-      state.overlay.fsOutroPending ||
-      state.overlay.bigWin ||
-      state.ui.settingsOpen ||
-      state.ui.buyMenuOpen
-    ) return;
+   if (
+  state.overlay.splash ||
+  state.overlay.startup ||
+  state.overlay.fsIntro ||
+  state.overlay.fsOutro ||
+  state.overlay.fsOutroPending ||
+  state.overlay.bigWin ||
+  state.ui.buyMenuOpen
+) return;
 
     // don’t interrupt an in-flight spin
     if (state.ui.spinning) return;
@@ -16213,6 +16230,22 @@ function kickFreeSpinsAuto(delayMs = 250) {
 
 
     async function doSpin() {
+      function computeTotalWinXFromSteps(res: SpinResult): number {
+  // Prefer explicit total if provider gives it
+  const direct = (res as any).totalWinX;
+  if (Number.isFinite(direct)) return direct;
+
+  // Otherwise sum step wins
+  const steps = (res as any).steps as any[] | undefined;
+  if (!steps || !Array.isArray(steps)) return 0;
+
+  let sum = 0;
+  for (const st of steps) {
+    const v = st?.stepWinX;
+    if (Number.isFinite(v)) sum += v;
+  }
+  return sum;
+}
       if (state.overlay.splash) return;
 
     // 🔒 Startup intro: absolutely no spinning / input should work
@@ -16223,16 +16256,19 @@ function kickFreeSpinsAuto(delayMs = 250) {
       if (state.overlay.fsIntro || state.overlay.fsOutro) return;
 
       // Optional extra safety: block spins while menus are open
-      if (
-        (typeof state.ui.settingsOpen !== "undefined" && state.ui.settingsOpen) ||
-        (typeof state.ui.buyMenuOpen !== "undefined" && state.ui.buyMenuOpen)
-      ) {
-        return;
-      }
+// ✅ BUT allow FREE SPINS to continue even if SETTINGS is open
+if (
+  state.ui.buyMenuOpen ||
+  (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen())
+) {
+  return;
+}
+
 
         // ✅ Don't allow spinning while FS intro overlay is up
         if (state.overlay.fsIntro || state.overlay.fsOutro) return;
-        if (state.ui.settingsOpen) return;
+        // ✅ Settings blocks manual/base spins, but NOT FREE SPINS auto-chaining
+if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
 
       if (state.ui.spinning) return;
 
@@ -16266,7 +16302,13 @@ if (state.ui.auto) {
       betDownBtnPixi.setEnabled(false);
       betUpBtnPixi.setEnabled(false);
       // ✅ disable BUY + AUTO during spinning
-buyBtnPixi?.setEnabled?.(false);
+// ✅ disable BUY during spinning but keep it visually FULL (no dim)
+buyBtnPixi.eventMode = "none";  // blocks clicks/taps
+buyBtnPixi.alpha = 1.0;         // keep full opacity
+buyBtnPixi.cursor = "default";
+(buyBtnPixi as any)?.resetVisual?.(); // force UP state (optional)
+
+// ✅ disable AUTO during spinning (keep dimmed as normal)
 autoBtnPixi?.setEnabled?.(false);
 
     const bet = state.bank.betLevels[state.bank.betIndex];
@@ -16335,13 +16377,9 @@ autoBtnPixi?.setEnabled?.(uiFree);
     }
 
 
-    // ✅ subtract only for BASE
-    if (spinCost > 0) {
-      state.bank.balance = Math.max(0, state.bank.balance - spinCost);
-      balanceLabel.text = fmtMoney(state.bank.balance);
-      refreshSpinAffordability();
+    
 
-    }
+
 
 
 
@@ -16368,7 +16406,8 @@ autoBtnPixi?.setEnabled?.(uiFree);
 
 
       let openedFsIntro = false;           // if true, don't auto-chain spins
-      let res: SpinResult | null = null;   // so finally can see it
+      let outcome: any = null; // we’ll type it properly after compile is green
+
 
 
     try {
@@ -16384,16 +16423,31 @@ autoBtnPixi?.setEnabled?.(uiFree);
     fsTotalCap: state.fs.totalCap,
   });
 
-const resultProvider = getResultProvider();
+const provider = getResultProvider();
 
-res = await resultProvider({
+outcome = await provider({
   cfg: simCfg,
   mode,
   fsRemainingIn: state.fs.remaining,
   ladderIndexIn: state.fs.ladderIndex,
-  seed: undefined, // keep undefined unless you want deterministic dev runs
-  betAmount: bet,  // handy later for engine
+  seed: undefined,
+  betAmount: bet,
 });
+
+const res = outcome.result as SpinResult;
+// ✅ Wallet: apply bet cost ONLY in BASE
+const charged = (mode === "BASE") ? (outcome.betAmount ?? spinCost) : 0;
+
+if (charged > 0) {
+  state.bank.balance = Math.max(0, state.bank.balance - charged);
+  balanceLabel.text = fmtMoney(state.bank.balance);
+  refreshSpinAffordability();
+}
+
+
+
+
+
 
 
 
@@ -16431,26 +16485,34 @@ refreshFsCounter();
 // ✅ back to calm idle after the spin
 audio?.setBaseMusicIntensity?.(0.15, 300);
 
-        // apply winnings AFTER the spin is done
-        const winAmount = res.totalWinX * bet;
-        if (mode === "FREE_SPINS") {
-      state.fs.sessionTotalWin += winAmount;
-    }
+// ✅ WIN: robust totals (stake provider may not fill res.totalWinX/outcome.winAmount)
+const winX = computeTotalWinXFromSteps(res);
+const winAmount = winX * bet;
 
-      if (winAmount > 0) {
-      setWinAmount(state.bank.lastWin + winAmount);
-    } else {
-      setWinAmount(0);
-    }
-        // ✅ BIG WIN OVERLAY (10x+)
-        const winX = res.totalWinX;
-        if (winX >= BIG_WIN_X) {
-          await showBigWinAndWait(winAmount, winX);
-        }
+// (Optional) store it back so other code sees it
+(res as any).totalWinX = winX;
 
 
-        state.bank.balance += winAmount;
-        balanceLabel.text = fmtMoney(state.bank.balance);
+// ✅ Track FS session total for the FS outro
+if (mode === "FREE_SPINS") {
+  state.fs.sessionTotalWin += winAmount;
+}
+
+// ✅ WIN label should show THIS spin's win (not accumulated)
+setWinAmount(winAmount);
+
+// ✅ BIG WIN overlay should use the same derived winAmount
+if (winX >= BIG_WIN_X && winAmount > 0) {
+  await showBigWinAndWait(winAmount, winX);
+}
+
+// ✅ Wallet: apply win (never during replay)
+if ( winAmount > 0) {
+  state.bank.balance += winAmount;
+  balanceLabel.text = fmtMoney(state.bank.balance);
+}
+
+
             // ✅ If we just triggered Free Spins from BASE (eg. 3 scatters),
         // open the intro overlay instead of immediately chaining into FS spins.
         if (mode === "BASE" && res.fsAwarded > 0) {
@@ -16475,7 +16537,7 @@ applyUiLocks();
 // optional: if your button helper supports it, snap visuals back to UP
 (buyBtnPixi as any)?.resetVisual?.();
 
-    betValueBtn.setEnabled(true);
+
 
 
         // ✅ If we opened the FS intro, don't auto-spin yet
@@ -16563,22 +16625,16 @@ applyUiLocks();
       }
     }
 
-    // --- UI readouts ---
-    const modeLabel = new Text({ text: "MODE: BASE", style: { fill: 0xffffff, fontSize: 16 } });
-    const multLabel = new Text({ text: "MULT: x1",  style: { fill: 0xffffff, fontSize: 16 } });
-    const winLabel  = new Text({ text: "WIN: 0",    style: { fill: 0xffffff, fontSize: 16 } });
-    const fsLabel   = new Text({ text: "FS: 0",     style: { fill: 0xffffff, fontSize: 16 } });
-    // hard-hide the old debug HUD
-    [modeLabel, multLabel, winLabel, fsLabel].forEach((t) => {
-      t.visible = SHOW_TOP_LEFT_HUD;
-      t.alpha = SHOW_TOP_LEFT_HUD ? 1 : 0;
-    });
 
-    // ✅ hide them
-    modeLabel.visible = false;
-    multLabel.visible = false;
-    winLabel.visible = false;
-    fsLabel.visible = false;
+// =====================
+// SCATTER AWARD SAFETY (CLIENT AUTHORITATIVE)
+// =====================
+const BASE_FS_AWARD = 10;      // base game: 3+ scatters => 10 FS
+const FS_RETRIGGER_AWARD = 5;  // free spins: 3+ scatters => +5 FS (retrigger)
+
+// Per-spin latch: allow only ONE award per spin outcome
+let __scatterAwardedThisSpin = false;
+  
 
   function countScatters(grid: Cell[]) {
     let n = 0;
@@ -16587,6 +16643,44 @@ applyUiLocks();
     }
     return n;
   }
+async function ensureScatterAwardOnSettledGrid(grid: Cell[], res?: SpinResult) {
+  const sc = countScatters(grid);
+  if (sc < 3) return;
+
+  // only award once per spin result
+  if (__scatterAwardedThisSpin) return;
+  __scatterAwardedThisSpin = true;
+
+  // FREE SPINS: retrigger immediately (even if provider forgot)
+  if (state.game.mode === "FREE_SPINS") {
+    // Prefer the provider-derived pendingFsAward if we have it; otherwise force +5.
+    const add =
+      pendingFsAward > 0 ? pendingFsAward :
+      (res && (res as any).fsAwarded > 0 ? (res as any).fsAwarded : FS_RETRIGGER_AWARD);
+
+    if (add > 0) {
+      state.fs.remaining = Math.min(state.fs.totalCap, state.fs.remaining + add);
+      state.fs.total = Math.min(state.fs.totalCap, state.fs.total + add);
+      refreshFsCounter();
+
+      await showFsAddedPopup(add);
+
+      // consume any pending award so we never double-pay
+      pendingFsAward = 0;
+    }
+
+    return;
+  }
+
+  // BASE GAME: force the spin result to report FS award (so your existing enterFreeSpins() path runs)
+  if (state.game.mode === "BASE") {
+    const award =
+      (res && (res as any).fsAwarded > 0) ? (res as any).fsAwarded : BASE_FS_AWARD;
+
+    if (res) (res as any).fsAwarded = award;
+    return;
+  }
+}
 
 
 
@@ -16790,7 +16884,7 @@ applyUiLocks();
       // Trigger ONLY when we just reached 2 scatters, or just reached 3 scatters
     const hitSecond = prevSc < 2 && nextSc >= 2;
     const hitThird  = prevSc < 3 && nextSc >= 3;
-    const anticipation = FORCE_ANTICIPATION || hitSecond || hitThird;
+   const anticipation = hitSecond || hitThird;
 
 
     if (anticipation) {
@@ -16882,22 +16976,11 @@ applyUiLocks();
 
       // snap-safe: ensure final textures + sizing are correct
       applyGridToSprites(nextGrid);
-      // ✅ Apply FS retrigger ONLY after the tumble has fully settled and 3 scatters are visible
-if (state.game.mode === "FREE_SPINS" && pendingFsAward > 0) {
-  if (countScatters(nextGrid) >= 3) {
-    state.fs.remaining = Math.min(state.fs.totalCap, state.fs.remaining + pendingFsAward);
-    state.fs.total = Math.min(state.fs.totalCap, state.fs.total + pendingFsAward);
+// ✅ SAFETY: after ANY tumble settles, if 3+ scatters are visible, force award
+await ensureScatterAwardOnSettledGrid(nextGrid);
 
-    refreshFsCounter();
-    await showFsAddedPopup(pendingFsAward);
-
-    pendingFsAward = 0; // ✅ fire once
-  }
-}
 
     }
-
-
 
 
 
@@ -17062,7 +17145,7 @@ for (let col = 0; col < COLS; col++) {
     // ANTICIPATION ZOOM (initial landing)
     // =====================
     const revealAnticipation =
-      FORCE_ANTICIPATION || hit2Col !== null || hit3Col !== null;
+      hit2Col !== null || hit3Col !== null;
 
     if (revealAnticipation) {
       // When does the "2nd scatter column" finish landing?
@@ -17263,16 +17346,23 @@ function colsThatMovedFromExplosions(explodePositions: number[], COLS: number) {
 
 
       async function playSpin(res: SpinResult) {
+        // New spin outcome => allow scatter award again
+__scatterAwardedThisSpin = false;
         hideTumbleWinBannerNow(); // reset from any previous spin
+          // ✅ reset the WIN panel for this spin
+  setWinAmount(0);
+
 
       setBackgroundForMode(res.mode, false);
 
-      modeLabel.text = `MODE: ${res.mode}`;
-      winLabel.text = `WIN: 0`;
+ 
         hideTumbleWinBannerNow(); // reset banner for this spin
+       
       let tumbleTotalSoFar = 0;
 
       await animateBoardReveal(res.initialGrid);
+      // ✅ SAFETY: if initial drop has 3+ scatters, force award
+await ensureScatterAwardOnSettledGrid(res.initialGrid, res);
 
 
     // ✅ FREE SPINS retrigger popup (3+ scatters)
@@ -17336,31 +17426,26 @@ drawGrid(step.grid);
     const bumpP = winBumpReelHouse();
 
 
-    // wait until all have finished
-    await Promise.all([dimmerInP, bumpP, glowP]);
-if ((step.enchantedClusters ?? 0) > 0) {
-  void showBoostedPopup();
-}
+ 
 
     hi.forEach((p) => setHighlight(p, true));
 
     const CLUSTER_HOLD_MS = 500;
     // ✅ Accumulate TOTAL WIN so far across tumbles, update sticky banner
     const stepWinAmount = step.stepWinX * state.bank.betLevels[state.bank.betIndex];
-    tumbleTotalSoFar += stepWinAmount;
+tumbleTotalSoFar += stepWinAmount;
 
-    // Only show/update if this tumble actually paid
-    if (stepWinAmount > 0.000001) {
-      void showOrUpdateTumbleWinBanner(tumbleTotalSoFar);
-    }
+// ✅ bottom WIN panel: tween up to the new total
+await animateWinAmountTo(tumbleTotalSoFar, durT(state.ui.turbo ? 80 : 140));
 
-  // 🔍 DEBUG: inspect infused / enchanted flags per step
-  console.log("[STEP FLAGS]", {
-    i: si,
-    infusedScatters: (step as any).infusedScatters,
-    enchantedClusters: (step as any).enchantedClusters,
-    scattersInGrid: countScatters(step.grid),
-  });
+
+// banner stays as-is
+if (stepWinAmount > 0.000001) {
+  void showOrUpdateTumbleWinBanner(tumbleTotalSoFar);
+}
+
+
+
 
 // ✅ show BOOSTED first (tiny lead-in), then popups
 if ((step.enchantedClusters ?? 0) > 0) {
@@ -17529,10 +17614,7 @@ if (!bgBase || !bgFree) return;
     // ---- BOOT: show an initial grid ONCE on startup ----
     function bootInitialBoard() {
       const bootGrid = makeGrid(COLS, ROWS, WEIGHTS_BASE);
-      modeLabel.text = "MODE: BASE";
-      multLabel.text = "MULT: x1";
-      winLabel.text  = "WIN: 0";
-      fsLabel.text   = `FS: ${state.fs.remaining}`;
+      
 
       // draw immediately so you never start empty
       drawGrid(bootGrid);
@@ -17540,16 +17622,13 @@ if (!bgBase || !bgFree) return;
     }
 
 
-    // call boot AFTER first layout pass has fully applied
-    layoutAll();
+
+}
 
 
 
 
 
-
-} // closes main()
-
-    main().catch((err) => {
-      console.error("Fatal error in main():", err);
-    });
+main().catch((err) => {
+  console.error("[BOOT ERROR]", err);
+});

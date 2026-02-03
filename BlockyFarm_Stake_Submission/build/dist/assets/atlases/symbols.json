@@ -1,0 +1,100 @@
+{"frames": {
+
+"symbol_high_H1_choco.png":
+{
+	"frame": {"x":188,"y":201,"w":177,"h":177},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":7,"y":7,"w":177,"h":177},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_high_H2_choco.png":
+{
+	"frame": {"x":201,"y":4,"w":141,"h":174},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":25,"y":10,"w":141,"h":174},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_high_H3_hard.png":
+{
+	"frame": {"x":371,"y":4,"w":134,"h":143},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":28,"y":27,"w":134,"h":143},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_high_H4_hard.png":
+{
+	"frame": {"x":371,"y":153,"w":108,"h":146},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":43,"y":23,"w":108,"h":146},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_high_H5_hard.png":
+{
+	"frame": {"x":401,"y":305,"w":103,"h":136},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":47,"y":28,"w":103,"h":136},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_low_L1_gummy.png":
+{
+	"frame": {"x":202,"y":384,"w":112,"h":116},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":38,"y":40,"w":112,"h":116},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_low_L2_gummy.png":
+{
+	"frame": {"x":4,"y":398,"w":93,"h":109},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":49,"y":41,"w":93,"h":109},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_low_L3_gummy.png":
+{
+	"frame": {"x":103,"y":398,"w":93,"h":107},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":48,"y":44,"w":93,"h":107},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_low_L4_gummy.png":
+{
+	"frame": {"x":320,"y":384,"w":75,"h":85},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":58,"y":53,"w":75,"h":85},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_scatter_S1_gold.png":
+{
+	"frame": {"x":4,"y":201,"w":178,"h":191},
+	"rotated": false,
+	"trimmed": true,
+	"spriteSourceSize": {"x":9,"y":0,"w":178,"h":191},
+	"sourceSize": {"w":191,"h":191}
+},
+"symbol_wild_W1_gummy.png":
+{
+	"frame": {"x":4,"y":4,"w":191,"h":191},
+	"rotated": false,
+	"trimmed": false,
+	"spriteSourceSize": {"x":0,"y":0,"w":191,"h":191},
+	"sourceSize": {"w":191,"h":191}
+}},
+"meta": {
+	"app": "https://www.codeandweb.com/texturepacker",
+	"version": "1.1",
+	"image": "symbols.png",
+	"format": "RGBA8888",
+	"size": {"w":509,"h":511},
+	"scale": "0.374",
+	"smartupdate": "$TexturePacker:SmartUpdate:0d54cace459ac53650eb75ad6b178b5d:b68f770994468bfcbd17b6d58e3b7baf:d295ed7153fe372207e34d26d380974a$"
+}
+}

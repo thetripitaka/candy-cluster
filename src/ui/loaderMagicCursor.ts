@@ -75,7 +75,7 @@ export function installLoaderMagicCursor(opts: {
   function drawWandTip() {
     wandTip.clear();
 
-    const SIZE = 12;
+    const SIZE = 20;
     wandTip.rect(-Math.floor(SIZE / 2), -Math.floor(SIZE / 2), SIZE, SIZE).fill(0xffffff);
 
     wandTip.roundPixels = true;
@@ -126,7 +126,8 @@ export function installLoaderMagicCursor(opts: {
     const g = p.g;
     g.clear();
 
-    const vox = burst ? 4 + ((Math.random() * 3) | 0) : 3 + ((Math.random() * 2) | 0);
+    const vox = burst ? 5 + ((Math.random() * 3) | 0) : 4 + ((Math.random() * 2) | 0);
+
     const blocks = burst ? 4 + ((Math.random() * 4) | 0) : 2 + ((Math.random() * 3) | 0);
 
     const cols = [0x2a9df4];
@@ -265,7 +266,7 @@ export function installLoaderMagicCursor(opts: {
   const CURSOR_OFFSET_X = -2;
   const CURSOR_OFFSET_Y = -2;
 
-  const CURSOR_STEP = 8;
+  const CURSOR_STEP = 10; 
 
   function snapToStep(v: number, step: number) {
     return Math.round(v / step) * step;
@@ -326,8 +327,9 @@ export function installLoaderMagicCursor(opts: {
 
     drawRibbon(trail);
 
-    const tt = performance.now() * 0.0032;
-    wandTip.scale.set(1 + Math.sin(tt) * 0.06);
+   const tt = performance.now() * 0.0032;
+wandTip.scale.set(1 + Math.sin(tt) * 0.18); // 🔧 try 0.14–0.26
+
 
     const allowSparks = isLoadingVisible() || CURSOR_SPARKS_IN_GAME;
     if (allowSparks) {
