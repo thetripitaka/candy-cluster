@@ -1137,16 +1137,19 @@ buyHeader.x = Math.round(W / 2);
 buyHeader.y = Math.round(H * headerYFrac);
 
 
-    // divider
-    const DIVIDER_W = Math.min(340, W * 0.55);
-  const DIVIDER_Y = Math.round(buyHeader.y + (isMobileLandscapeBuyLayout() ? 26 : 34));
+      // divider (draw AFTER we potentially move the header)
+    const drawBuyHeaderDivider = () => {
+      const DIVIDER_W = Math.min(340, W * 0.55);
+      const DIVIDER_Y = Math.round(buyHeader.y + (isMobileLandscapeBuyLayout() ? 26 : 34));
 
-    const half = (DIVIDER_W * buyHeaderDividerProgress) * 0.5;
+      const half = (DIVIDER_W * buyHeaderDividerProgress) * 0.5;
 
-    buyHeaderDivider.clear();
-    buyHeaderDivider.moveTo(Math.round(W / 2 - half), DIVIDER_Y);
-    buyHeaderDivider.lineTo(Math.round(W / 2 + half), DIVIDER_Y);
-    buyHeaderDivider.stroke({ width: 3, color: 0xffffff, alpha: 0.85 } as any);
+      buyHeaderDivider.clear();
+      buyHeaderDivider.moveTo(Math.round(W / 2 - half), DIVIDER_Y);
+      buyHeaderDivider.lineTo(Math.round(W / 2 + half), DIVIDER_Y);
+      buyHeaderDivider.stroke({ width: 3, color: 0xffffff, alpha: 0.85 } as any);
+    };
+
 
     // close button
     const closePad = 26;
@@ -1197,6 +1200,22 @@ const BUY_CARDS_LANDSCAPE_Y_OFFSET = -30; // 🔧 negative = move up
 buyCardsRow.scale.set(rowScale);
 buyCardsRow.x = Math.round(W / 2);
 buyCardsRow.y = Math.round(H * 0.55) + (isMobileLandscapeBuyLayout() ? BUY_CARDS_LANDSCAPE_Y_OFFSET : 0);
+// ✅ Anchor header ABOVE the cards (desktop + landscape)
+{
+  const cardsTopY = buyCardsRow.y - (DESKTOP_CARD_H * rowScale) * 0.5;
+
+  // gap between divider/header and the cards
+  const HEADER_TO_CARDS_GAP = isMobileLandscapeBuyLayout() ? 22 : 28;
+
+  // header is anchor 0.5, so subtract half its height
+  const targetHeaderY = cardsTopY - HEADER_TO_CARDS_GAP - (buyHeader.height * 0.5);
+
+  // keep it from going too high on tiny heights
+  buyHeader.y = Math.round(Math.max(52, targetHeaderY));
+}
+
+// draw divider after header settles
+drawBuyHeaderDivider();
 
 
 
@@ -1481,9 +1500,13 @@ body.y = Math.round(-cardH * 0.5 + 205 + BODY_PUSH_DOWN);
   cardsScrollY = clamp(cardsScrollY, -cardsScrollMax, 0);
   buyCardsRow.y = Math.round(cardsScrollY);
 
+  // divider for portrait too (header already positioned by frac logic)
+  drawBuyHeaderDivider();
+
   layoutBuyToast();
   if (buyConfirmLayer.visible) layoutBuyConfirm();
   return;
+
 }
 
 // -----------------------------

@@ -98,7 +98,7 @@ root.sortChildren?.();
   layer.addChild(panel);
 
   // ✅ scale the entire menu panel (50% smaller)
-panel.scale.set(0.6);
+panel.scale.set(0.42);
 
   const panelBg = new Graphics();
   panel.addChild(panelBg);
@@ -125,7 +125,7 @@ localizeAutoStyle({
 const titleGroup = new Container();
 panel.addChild(titleGroup);
 
-titleGroup.scale.set(1.12); // 25% bigger
+titleGroup.scale.set(1.2); // 25% bigger
 
 const title = new Text({
   text: uiLabel("ui.autoPlayTitle", "AUTO PLAY"),
@@ -331,10 +331,12 @@ function close() {
   dimmer.endFill();
 
   // Panel sizing (responsive)
+   // Panel sizing (LOCKED to desktop "maximised" look)
   const isPortrait = h >= w;
 
-  const panelW = Math.min(w * (isPortrait ? 0.86 : 0.55), 640);
-  const panelH = Math.min(h * (isPortrait ? 0.95 : 0.82), isPortrait ? 1100 : 980);
+  // ✅ Keep the menu looking the same; only reposition later.
+  const panelW = 640;
+  const panelH = isPortrait ? 1100 : 980;
 
 const scale = panel.scale.x;
 
@@ -417,7 +419,7 @@ const bw = Math.max(tUp.width || 1, tDn.width || 1, tOn.width || 1);
 const bh = Math.max(tUp.height || 1, tDn.height || 1, tOn.height || 1);
 
 // Fit sprite to targetD (disc diameter)
-const BUTTON_SCALE_MULT = 2; // 20% bigger buttons
+const BUTTON_SCALE_MULT = 2.4; // 20% bigger buttons
 
 const bs = Math.min(targetD / bw, targetD / bh) * BUTTON_SCALE_MULT;
 

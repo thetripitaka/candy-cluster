@@ -75,7 +75,7 @@ export function installLoaderMagicCursor(opts: {
   function drawWandTip() {
     wandTip.clear();
 
-    const SIZE = 20;
+    const SIZE = 13;
     wandTip.rect(-Math.floor(SIZE / 2), -Math.floor(SIZE / 2), SIZE, SIZE).fill(0xffffff);
 
     wandTip.roundPixels = true;

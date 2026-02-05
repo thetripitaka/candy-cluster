@@ -19,7 +19,7 @@ export function uiFontFamilyFor(lang: Lang): string {
       return `"DoHyeon", system-ui, sans-serif`;
 
     case "vi":
-      return `"Neucha", system-ui, sans-serif`; // or "RoadRage"
+      return `"Neucha", system-ui, sans-serif`; 
 
     case "ru":
       return `"Neucha", system-ui, sans-serif`;

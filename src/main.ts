@@ -1,5 +1,4 @@
 
-
 import { setLang, getLang, t } from "./i18n/i18n";
 import type { Lang } from "./i18n/i18n";
 import { ensureUiFontLoaded } from "./i18n/loadFonts";
@@ -10,6 +9,15 @@ import rgsClient from "./rgs/rgsClient";
 import { createUIBottom } from "./ui/uiBottom";
 import { createUiController } from "./ui/uiController";
 import { installUiInputController } from "./ui/uiInputController";
+import { makeLayoutAll } from "./layout/layoutAll";
+import { makeLayoutUI } from "./layout/layoutUI";
+import { makeLayoutBackground } from "./layout/layoutBackground";
+import { makeStartupIntro } from "./layout/startupIntro";
+import { getReelAnchor } from "./layout/reelAnchor";
+function dollarsToMicro(amount: number): number {
+  return Math.max(0, Math.round((Number(amount) || 0) * 1_000_000));
+}
+
 
 import { getResultProvider } from "./engine/resultProvider";
 import { setRtpScale } from "./game/simulate";
@@ -134,6 +142,8 @@ async function main() {
 // RGS (Stake) boot handshake
 // =====================
 const isRgs = rgsClient.initFromUrl();
+const isDemo = isRgs ? rgsClient.isDemo() : false;
+console.log("[RGS] demo?", isDemo);
 
 const DEV_FORCE_RGS_OK =
   import.meta.env.DEV &&
@@ -144,6 +154,9 @@ let rgsAuthed = false;
 let rgsReady = !isRgs; // non-RGS builds are always "ready"
 let rgsInitialBalance: number | null = null;
 let rgsAuthP: Promise<void> | null = null;
+// ✅ RGS round lock (prevents "player has active bet" spam)
+let rgsRoundLock = false;
+let rgsLastRoundId: string | null = null;
 
 if (isRgs) {
   rgsAuthP = rgsClient
@@ -152,9 +165,23 @@ if (isRgs) {
       rgsAuthed = true;
       rgsReady = true;
       console.log("[RGS] authenticated", res);
+      // capture any round identifier Stake gives us (shape varies)
+rgsLastRoundId =
+  (res as any)?.round?.id ??
+  (res as any)?.round?.roundId ??
+  (res as any)?.roundId ??
+  null;
 
-      const balObj = (res as any)?.balance ?? (res as any)?.wallet?.balance ?? (res as any)?.player?.balance;
-      const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+
+    const balObj =
+  (res as any)?.balance ??
+  (res as any)?.wallet?.balance ??
+  (res as any)?.player?.balance ??
+  (res as any)?.data?.balance ??
+  null;
+
+const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+
 
       if (typeof amt === "number" && Number.isFinite(amt)) {
         // Stake balances are micro-units (1e6)
@@ -621,6 +648,40 @@ const audio = new AudioManager({
   sfxVolume01: 0.8,
   musicVolume01: 0.6,
 });
+// =====================
+// AUDIO UNLOCK (first user gesture)
+// =====================
+let __audioUnlocked = false;
+let __pendingMusic: { key: string; fadeMs?: number } | null = null;
+
+function __unlockAudioOnce() {
+  if (__audioUnlocked) return;
+  __audioUnlocked = true;
+
+  // this must be called from a real gesture to satisfy browser policies
+  audio?.initFromUserGesture?.();
+
+  // play any music we tried to start before unlock
+  if (__pendingMusic) {
+    playMusicWhenUnlocked(__pendingMusic.key as any, __pendingMusic.fadeMs ?? 400);
+    __pendingMusic = null;
+  }
+}
+
+// capture=true so we get the event early, once=true so it doesn’t stick around
+window.addEventListener("pointerdown", __unlockAudioOnce, { capture: true, once: true });
+window.addEventListener("keydown", __unlockAudioOnce, { capture: true, once: true });
+
+// helper: safe music start (won't trigger autoplay warnings)
+function playMusicWhenUnlocked(key: string, fadeMs = 400) {
+  if (__audioUnlocked) {
+    // actually start music here (NOT call itself)
+    audio?.playMusic?.(key as any, fadeMs); // <-- use your AudioManager method name
+    return;
+  }
+  __pendingMusic = { key, fadeMs };
+}
+
 
 
 
@@ -822,22 +883,60 @@ function computeCellSize() {
   const W = app.screen.width;
   const H = app.screen.height;
 
-  // available height above UI panel (rough estimate)
-  const uiFrac = PANEL_HEIGHT_FRAC; // you already have this
-  const safeB = safeInsetBottomPx();
-  const safeT = safeInsetTopPx();
+  const safeT = safeInsetTopPx?.() ?? 0;
+  const safeB = safeInsetBottomPx?.() ?? 0;
 
-  const availH = H * (1 - uiFrac) - safeT - safeB - 40;
-  const availW = W - 40;
+  // ✅ Prefer the *real* measured UI panel height once layoutUI has run.
+  // Fallback to PANEL_HEIGHT_FRAC until uiPanelH is known.
+  const uiApproxH = Math.round(H * PANEL_HEIGHT_FRAC);
+  const uiH = (typeof uiPanelH === "number" && uiPanelH > 0) ? uiPanelH : uiApproxH;
 
-  // we want COLS*cell to fit in availW and ROWS*cell to fit in availH
+  // ✅ breathing room so reelhouse never kisses edges or UI
+  const MARGIN_X = 24;
+
+  // ✅ bigger top breathing room (prevents reelhouse creeping upward too much)
+  const MARGIN_TOP = 18;
+
+  // ✅ hard gap between reelhouse bottom and UI panel
+  const GAP_ABOVE_UI = 15; // 🔧 try 36..70 if needed
+
+  // ✅ reserve space ABOVE the reelhouse for tumble banner
+  // (bigger on portrait because banner tends to sit higher)
+  const TUMBLE_RESERVE_TOP =
+    isMobilePortraitUILayout(__layoutDeps) ? 140 :
+    isMobileLandscapeUILayout(__layoutDeps) ? 110 :
+    120; // 🔧 try 90..160
+
+  const availW = Math.max(1, W - MARGIN_X * 2);
+
+  // ✅ available height = screen minus safe areas minus UI panel minus reserved banner strip minus gaps
+  const availH = Math.max(
+    1,
+    (H - safeT - safeB) - uiH - GAP_ABOVE_UI - TUMBLE_RESERVE_TOP - MARGIN_TOP
+  );
+
+
+  // raw fit cell based on available space
   const cellFromW = availW / COLS;
   const cellFromH = availH / ROWS;
 
-  // clamp so it doesn’t get microscopic
-  const s = Math.floor(Math.max(72, Math.min(130, Math.min(cellFromW, cellFromH))));
+  // ✅ choose the limiting dimension
+  let s = Math.floor(Math.min(cellFromW, cellFromH));
+
+  // ✅ clamp
+  const MIN_CELL = 70;   // don’t go microscopic
+  const MAX_CELL = 130;  // your current “full size”
+  s = Math.max(MIN_CELL, Math.min(MAX_CELL, s));
+
+  // ✅ mobile landscape: apply your reelhouse multiplier (if < 1 it shrinks)
+  // this keeps landscape from colliding with the bottom UI
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    s = Math.floor(s * MOBILE_LANDSCAPE_REELHOUSE_MUL);
+  }
+
   return s;
 }
+
 
       
 
@@ -942,6 +1041,8 @@ function layoutRotateBlocker() {
   solidUnderlay.rect(0, 0, window.innerWidth, window.innerHeight).fill(0x000000);
 
     });
+// ✅ TDZ-safe reel anchor getter (we assign this AFTER reelHouse is created)
+let getFsReelAnchor: null | (() => ReturnType<typeof getReelAnchor>) = null;
 
     // =====================
     // FREE SPINS COUNTER (centered)
@@ -1001,42 +1102,72 @@ fsCounterValue.roundPixels = true;
     root.addChild(fsCounterWrap);
 
 function layoutFsCounter() {
-  const W = app.renderer.width;
-  const H = app.renderer.height;
+  const W = app.screen.width;
+  const H = app.screen.height;
 
-  // ✅ MOBILE PORTRAIT ONLY
-  if (isMobilePortraitUILayout(__layoutDeps)) {
-  // 🔧 portrait scale tuning
-  const S = 0.62;          // try 0.65–0.80
-  const SY = 1.1;         // slightly taller so text stays readable
+  const safeT = safeInsetTopPx?.() ?? 0;
 
-  fsCounterWrap.scale.set(S, S * SY);
+  // ---- SCALE (based on reel sizing / cellSize) ----
+  const DESIGN_CELL = 130;
+  const cs = Math.max(1, cellSize || 1);
+  let responsive = cs / DESIGN_CELL;
+  responsive = Math.max(0.60, Math.min(1.15, responsive));
 
-  fsCounterWrap.position.set(
-    Math.round(W * 0.5),
-    Math.round(H * 0.06)
-  );
-  return;
-}
+  const base = isMobilePortraitUILayout(__layoutDeps) ? 0.72 : 1.0;
+  const SY = 1.10;
+  fsCounterWrap.scale.set(base * responsive, base * responsive * SY);
 
+  // ✅ If reelhouse anchor isn't ready yet, do a safe fallback
+  const A = getFsReelAnchor ? getFsReelAnchor() : null;
 
-  // ✅ MOBILE LANDSCAPE ONLY (NEW)
-  if (isMobileLandscapeUILayout(__layoutDeps)) {
-    fsCounterWrap.scale.set(0.65, 0.75);          // 🔧 smaller
+  if (!A) {
     fsCounterWrap.position.set(
-      Math.round(W * 0.78),                       // 🔧 move left/right
-      Math.round(H * 0.50)                        // 🔧 move up/down
+      Math.round(W * 0.5),
+      Math.max(Math.round(H * 0.06), Math.round(safeT + 18))
     );
     return;
   }
 
-  // ✅ ALL OTHER MODES (desktop etc)
-  fsCounterWrap.scale.set(1, 1.1);
-  fsCounterWrap.position.set(
-    Math.round(W * 0.81),
-    148
-  );
+
+  // ---- POSITION ----
+  // ✅ MOBILE PORTRAIT: centered + above reel house, always on-screen
+  if (isMobilePortraitUILayout(__layoutDeps)) {
+    const x = Math.round(A.cx);
+
+    // 🔧 gap above reel house (positive = more gap)
+    const GAP_ABOVE_REEL_PX = Math.round(cs * 0.22); // try 0.14..0.32
+
+    // get FS counter height in world coords (after scaling)
+    const b = fsCounterWrap.getBounds();
+    const halfH = (b.height || 0) * 0.5;
+
+    // place so bottom of counter sits above reel house top
+    let y = Math.round(A.top - GAP_ABOVE_REEL_PX - halfH);
+
+    // ✅ clamp to safe top so it never cuts off
+    const minY = Math.round(safeT + halfH + 6);
+    if (y < minY) y = minY;
+
+    fsCounterWrap.position.set(x, y);
+    return;
+  }
+
+  // ✅ NON-PORTRAIT: keep your existing behavior (top-right of reel house)
+  const PAD_X = Math.round(cs * 0.7);   // 🔧 0.35..0.90
+  const PAD_Y = Math.round(cs * 0.6);   // 🔧 -0.10..-0.55
+
+  const x = Math.round(A.right + PAD_X);
+  let y = Math.round(A.top + PAD_Y);
+
+  y = Math.max(y, Math.round(safeT + 18));
+  fsCounterWrap.position.set(x, y);
+
+
+
 }
+
+
+
 
 
 
@@ -1111,10 +1242,13 @@ function scheduleViewportRelayout() {
  requestAnimationFrame(() => {
   requestAnimationFrame(() => {
     if (!__layoutReady) return; // ✅ prevents TDZ
-    layoutAll();
+layoutAll();
+layoutStudioTag();
+// ✅ keep reel dimmer in sync with the reel window after every relayout
+if (reelDimmer.visible) redrawReelDimmer();
 
-    root.sortChildren();
-    app.stage.hitArea = app.screen;
+root.sortChildren();
+app.stage.hitArea = app.screen;
   });
 });
 
@@ -1128,10 +1262,14 @@ window.removeEventListener("orientationchange", scheduleViewportRelayout as any)
 window.addEventListener("resize", scheduleViewportRelayout, { passive: true });
 window.addEventListener("orientationchange", scheduleViewportRelayout, { passive: true });
 
+
+
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", scheduleViewportRelayout, { passive: true });
   window.visualViewport.addEventListener("scroll", scheduleViewportRelayout, { passive: true });
+
 }
+
 
 
 // =====================
@@ -1540,7 +1678,7 @@ let studioLogoHouseTex: Texture | null = null;
       style: {
         fontFamily: "Micro5",
         fill: 0xffffff,
-        fontSize: 35,
+        fontSize: 35, // base; real size is set in layoutSplash()
         align: "center",
         letterSpacing: 1,
 
@@ -1987,7 +2125,7 @@ splashShadowFarm.zIndex  = shadowZ;
 
 
 // ---- SPLASH INFO FRAME TUNING ----
-const SPLASH_BOX_TARGET_W_N = 0.24;  // ✅ revert: each box ~24% of screen
+const SPLASH_BOX_TARGET_W_N = 0.3;  // ✅ revert: each box ~24% of screen
 const SPLASH_BOX_MAX_W = 350;        // ✅ revert: slightly tighter
 const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
 
@@ -2176,12 +2314,23 @@ const SPLASH_PORTRAIT_TITLE_TO_CARDS_GAP_PX = 26; // 🔧 try 18..44
     splashContinue.y = splashContinueOffY(); // ✅ start offscreen (needs helper below)
     splashLayer.addChild(splashContinue);
 
-    // ✅ DESKTOP-only FARM nudges (must exist before layoutSplash runs)
-const FARM_X_OFFSET_DESKTOP = -30;  // +right, -left
-const FARM_Y_OFFSET_DESKTOP = 38; // +down, -up
+// ✅ Disable desktop-only FARM X nudges (breaks consistent spacing)
+const FARM_X_OFFSET_DESKTOP = -13;
+const FARM_Y_OFFSET_DESKTOP = 38;
+const FARM_X_OFFSET_DESKTOP_DROP = -20;
 
-// ✅ DESKTOP-only FARM nudges (INITIAL DROP only)
-const FARM_X_OFFSET_DESKTOP_DROP = -50; // +right, -left
+// ===============================
+// Splash logo scaling (separate)
+// ===============================
+const SPLASH_FINAL_SCALE_DESKTOP   = 0.80;
+const SPLASH_FINAL_SCALE_PORTRAIT  = 1.5;
+const SPLASH_FINAL_SCALE_LANDSCAPE = 0.35;
+
+const SPLASH_DROP_SCALE_DESKTOP    = 1.00; // base multiplier for drop
+const SPLASH_DROP_SCALE_PORTRAIT   = 0.92;
+const SPLASH_DROP_SCALE_LANDSCAPE  = 0.90;
+
+
 
 
     // layout
@@ -2196,20 +2345,40 @@ const landscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
       splashDim.alpha = 0.18; // subtle dim on top of blur
 
       splashPresents.position.set(W * 0.5, H * 0.08);
-// ✅ PORTRAIT ONLY: hide "8-BIT WIZARDRY PRESENTS"
-splashPresents.visible = !isMobilePortraitUILayout(__layoutDeps);
+      // ✅ make "PRESENTS" scale with the splash UI scale (same rule as title/cards)
+const splashUiScale = (() => {
+  const s = Math.min(W / 1920, H / 1080);
+  return Math.max(0.55, Math.min(1.0, s));
+})();
+splashPresents.scale.set(splashUiScale);
+
+// ✅ ONLY show on mobile landscape (hide on desktop + mobile portrait)
+splashPresents.visible = isMobileLandscapeUILayout(__layoutDeps);
 
 
 
 
-    // ----- SPLASH LOGO (BLOCKY + FARM) layout -----
-    // tuning knobs
-    const SPLASH_TARGET_W = Math.min(W * 0.80, 1200);
-const SPLASH_LOGO_SCALE = isMobileLandscapeUILayout(__layoutDeps)
-  ? 0.35   // 👈 MOBILE LANDSCAPE FINAL SETTLE (try 0.45–0.52)
-  : 0.60;  // desktop + portrait unchanged
+
+ const SPLASH_TARGET_W = Math.min(W * 0.80, 1200);
+
+// ✅ NEW: global splash UI scale based on viewport (desktop resizes won’t break the title)
+
+
+
+
+const SPLASH_LOGO_SCALE =
+  (landscapeMobile ? SPLASH_FINAL_SCALE_LANDSCAPE :
+   portrait        ? SPLASH_FINAL_SCALE_PORTRAIT :
+                     SPLASH_FINAL_SCALE_DESKTOP
+  ) * splashUiScale;
+
+
+const SPLASH_FINAL_GAP_PX =
+  portrait ? -20 :                    // ✅ portrait final horizontal gap
+  -15;
+
     const SPLASH_LOGO_SQUASH_X = 0.82;
-    const SPLASH_FINAL_GAP_PX = -15; // final settled gap (try 80–140)
+   
 
 
     // measure UN-SCALED widths
@@ -2251,46 +2420,28 @@ if (isDesktop) splashLogoFarm.x += FARM_X_OFFSET_DESKTOP;
 
 
 // =====================
-// SPLASH TITLE FINAL Y (normalized screen space)
+// SPLASH TITLE FINAL Y + CONSISTENT FARM GAP
 // =====================
 
-// Desktop
-let LOGO_Y_N_DESKTOP = 0.25;
-// FARM_Y_OFFSET_DESKTOP comes from the top-level const
+// Keep your existing per-mode "overall logo height" placement
+const LOGO_Y_N =
+  isMobilePortraitUILayout(__layoutDeps) ? 0.075 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 0.150 :
+  0.25;
+
+// ✅ One rule: FARM is always offset from BLOCKY by a gap that scales with the logo size
+const baseY = Math.round(H * LOGO_Y_N);
+
+splashLogoBlocky.y = baseY;
 
 
 
-// Mobile landscape
-let LOGO_Y_N_LANDSCAPE = 0.150;
-let FARM_Y_OFFSET_LANDSCAPE = 34;
 
-// Mobile portrait
-let LOGO_Y_N_PORTRAIT = 0.075;
-let FARM_Y_OFFSET_PORTRAIT = 10;
-
-let LOGO_Y_N: number;
-let FARM_Y_OFFSET: number;
-
-if (isMobilePortraitUILayout(__layoutDeps)) {
-  LOGO_Y_N = LOGO_Y_N_PORTRAIT;
-  FARM_Y_OFFSET = FARM_Y_OFFSET_PORTRAIT;
-} else if (isMobileLandscapeUILayout(__layoutDeps)) {
-  LOGO_Y_N = LOGO_Y_N_LANDSCAPE;
-  FARM_Y_OFFSET = FARM_Y_OFFSET_LANDSCAPE;
-} else {
-  // Desktop
-  LOGO_Y_N = LOGO_Y_N_DESKTOP;
-  FARM_Y_OFFSET = FARM_Y_OFFSET_DESKTOP;
-}
+// ✅ portrait uses a slightly smaller vertical separation
+const FARM_GAP_PX = Math.round(splashLogoBlocky.height * (portrait ? 0.30 : 0.38));
+splashLogoFarm.y = baseY + FARM_GAP_PX;
 
 
-// ✅ NEW: landscape splash ONLY final landing nudge for FARM
-const FARM_LANDSCAPE_FINAL_Y_OFFSET_PX = landscapeMobile
-  ? -28  // 👈 negative = move FARM UP, positive = move FARM DOWN
-  : 0;
-
-  splashLogoBlocky.y = H * LOGO_Y_N;
-splashLogoFarm.y   = H * LOGO_Y_N + FARM_Y_OFFSET + FARM_LANDSCAPE_FINAL_Y_OFFSET_PX;
 
 
   // --- shadow follow (layout) ---
@@ -2335,19 +2486,36 @@ splashShadowFarm.scale.set(farmShadowS, farmShadowS * SHADOW_SQUASH_Y);
 
 
 // base Y
-const SPLASH_CARDS_PORTRAIT_Y_PUSH_PX = 40; // 🔧 try 20..90 (positive = down)
+// =====================
+// ✅ CARDS: maximize space between TITLE and CLICK TO CONTINUE
+// =====================
 
-let infoY =
-  H * (portrait ? 0.62 : SPLASH_BOX_Y_N) + SPLASH_BOX_Y_PX;
+// “breathing room” above cards (below title) and below cards (above click)
+const GAP_BELOW_TITLE_PX = portrait ? 18 : 22;      // 🔧
+const GAP_ABOVE_CLICK_PX = portrait ? 18 : 22;      // 🔧
 
-// ✅ PORTRAIT ONLY: push the whole stack down
-if (portrait) infoY += SPLASH_CARDS_PORTRAIT_Y_PUSH_PX;
+// 1) title bottom (use both words)
+const b1 = splashLogoBlocky.getBounds();
+const b2 = splashLogoFarm.getBounds();
+const titleBottomY = Math.max(b1.y + b1.height, b2.y + b2.height);
 
+// 2) click-to-continue top (at its TARGET position, even while animating)
+const contY = Math.round(H * SPLASH_CONTINUE_TARGET_Y_N);
+const contTopY = contY - Math.round(splashContinue.height * 0.5);
 
-// ✅ MOBILE LANDSCAPE ONLY: raise cards
-if (landscapeMobile) {
-  infoY -= Math.round(H * 0.08); // 🔧 try 0.06–0.12
+// 3) usable vertical band for cards
+const bandTop = Math.round(titleBottomY + GAP_BELOW_TITLE_PX);
+const bandBot = Math.round(contTopY - GAP_ABOVE_CLICK_PX);
+
+// 4) center cards within that band
+let infoY = Math.round((bandTop + bandBot) * 0.5);
+
+// (optional) if band is tiny (very short screens), fall back to your old value
+const minBandH = 160;
+if (bandBot - bandTop < minBandH) {
+  infoY = Math.round(H * (portrait ? 0.62 : SPLASH_BOX_Y_N)) + SPLASH_BOX_Y_PX;
 }
+
 
 
     // desired box width based on screen
@@ -2357,8 +2525,9 @@ if (landscapeMobile) {
 const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
 // 🔧 TUNING
-const SPLASH_CARD_PORTRAIT_SCALE = 1.0; // try 0.85–1.05
-const SPLASH_CARD_DESKTOP_SCALE  = 2.5; // keep your big desktop look
+const SPLASH_CARD_PORTRAIT_SCALE = 1.18; // 🔧 try 1.10..1.30 (portrait only)
+
+const SPLASH_CARD_DESKTOP_SCALE  = 2.5; // your big desktop look
 
 const baseFrac = portrait ? 0.62 : SPLASH_BOX_TARGET_W_N;
 
@@ -2369,32 +2538,66 @@ const cardScale =
 
 const finalFrac = baseFrac * cardScale;
 
-
-
 const minW = isLandscapeMobile ? Math.round(SPLASH_BOX_MIN_W * 0.85) : SPLASH_BOX_MIN_W;
 
-const targetW = Math.max(
+// ✅ compute "raw" target based on your old rules
+let targetW = Math.max(
   minW,
   Math.min(SPLASH_BOX_MAX_W, W * finalFrac)
 );
 
 
+// ✅ NEW: hard clamp so 3 cards + gaps ALWAYS fit within screen on non-portrait
+if (!portrait) {
+  const SIDE_PAD = 24; // breathing room from screen edges
+
+  // gapX is computed as: targetW * SPLASH_BOX_GAP_MULT * (landscape ? 0.92 : 1.0)
+  const gapMul = SPLASH_BOX_GAP_MULT * (isLandscapeMobile ? 0.92 : 1.0);
+
+  // total span across screen = targetW + 2*gapX = targetW * (1 + 2*gapMul)
+  const maxWByScreen = Math.floor((W - SIDE_PAD * 2) / Math.max(1e-6, (1 + 2 * gapMul)));
+
+  targetW = Math.max(minW, Math.min(targetW, maxWByScreen));
+}
 
 // ✅ PORTRAIT: card height scale knob
 const SPLASH_CARD_H_PORTRAIT_MUL = 0.840; // 🔧 try 0.82..0.95 (smaller = shorter cards)
 
-const boxH = Math.round(
+let boxH = Math.round(
   targetW * (portrait ? 0.7 * SPLASH_CARD_H_PORTRAIT_MUL : SPLASH_BOX_H_MULT)
 );
+
+// ✅ Optional safety: if height is tight on non-portrait, shrink width to keep cards inside screen
+if (!portrait) {
+  const MAX_CARD_H = Math.round(H * 0.42); // 🔧 tweak 0.36..0.50
+  if (boxH > MAX_CARD_H) {
+    const wFromH = Math.floor(MAX_CARD_H / Math.max(0.01, SPLASH_BOX_H_MULT));
+    targetW = Math.max(minW, Math.min(targetW, wFromH));
+    boxH = Math.round(targetW * SPLASH_BOX_H_MULT);
+  }
+}
+
 
 
 
 
   
 
-const gapX = Math.round(targetW * SPLASH_BOX_GAP_MULT * (isLandscapeMobile ? 0.92 : 1.0));
+const isDesktopCards = !portrait && !isLandscapeMobile;
 
-const gapY = portrait ? Math.round(boxH * 0.10) : 0;   // portrait vertical gap (small!)
+// ✅ desktop-only spacing multiplier
+const DESKTOP_GAP_MUL = 1.18; // 🔧 try 1.10..1.30
+
+const gapMul =
+  SPLASH_BOX_GAP_MULT *
+  (isLandscapeMobile ? 0.92 : 1.0) *
+  (isDesktopCards ? DESKTOP_GAP_MUL : 1.0);
+
+const gapX = Math.round(targetW * gapMul);
+
+
+const gapY = portrait ? Math.round(boxH * 0.05) : 0;   // portrait: tighter stack
+
 
 for (let i = 0; i < splashInfoBoxes.length; i++) {
   const box = splashInfoBoxes[i];
@@ -2438,40 +2641,96 @@ if (portrait) {
   // ---------- text ----------
   const topY = -boxH / 2 + SPLASH_BOX_TEXT_TOP_PAD;
 
+
   title.y = topY;
-  subtitle.y = topY + title.height + 8;
+
+
+
+
+
 
 // =====================
-// SPLASH CARD TEXT SCALE
-// =====================
+// SPLASH CARD TEXT SCALE (CONSISTENT across cards)
 
-const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
-if (portrait) {
-  // 📱 Mobile portrait (already correct)
-  title.scale.set(0.75);
-  subtitle.scale.set(0.75);
-  subtitle.y = topY + title.height + 6;
+// available text width inside the card (local space)
+const TEXT_PAD_X = 16;
+const maxTextW = Math.max(40, targetW - TEXT_PAD_X * 2);
 
-} else if (isLandscapeMobile) {
-  // 📱 Mobile landscape (FIX overflow)
-  title.scale.set(0.68);
-  subtitle.scale.set(0.68);
-  subtitle.y = topY + title.height + 6;
+const TITLE_MAX_H = Math.round(boxH * (portrait ? 0.30 : 0.280));
+const SUB_MAX_H   = Math.round(boxH * (portrait ? 0.46 : 0.26));
 
-} else {
-  // 🖥 Desktop
-  title.scale.set(1);
-  subtitle.scale.set(1);
+// caps per mode (upper bound on how large text is allowed)
+const titleCap =
+  portrait ? 1.35 :
+  isLandscapeMobile ? 0.78 :
+  1.0;
+
+const subCap =
+  portrait ? 1.35 :
+  isLandscapeMobile ? 0.82 :
+  1.0;
+
+
+// ✅ Compute shared scales ONCE per layout pass (cache on splashInfoLayer)
+const cacheKey = "__splashTextFitCache";
+let cache = (splashInfoLayer as any)[cacheKey] as any;
+
+const cacheSig = `${targetW}|${boxH}|${portrait}|${isLandscapeMobile}|${getLang()}`;
+if (!cache || cache.sig !== cacheSig) {
+  const titles = splashInfoBoxes
+    .map((b: any) => b?._splashTitle as Text)
+    .filter(Boolean);
+
+  const subs = splashInfoBoxes
+    .map((b: any) => b?._splashSubtitle as Text)
+    .filter(Boolean);
+
+  // measure at scale=1
+  for (const tt of titles) tt.scale.set(1);
+  for (const ss of subs) ss.scale.set(1);
+
+  const maxTitleW0 = Math.max(1, ...titles.map((tt) => tt.getLocalBounds().width || 1));
+  const maxTitleH0 = Math.max(1, ...titles.map((tt) => tt.getLocalBounds().height || 1));
+
+  const maxSubW0 = Math.max(1, ...subs.map((ss) => ss.getLocalBounds().width || 1));
+  const maxSubH0 = Math.max(1, ...subs.map((ss) => ss.getLocalBounds().height || 1));
+
+  const titleFitW = Math.min(1, maxTextW / maxTitleW0);
+  const titleFitH = Math.min(1, TITLE_MAX_H / maxTitleH0);
+
+  const subFitW = Math.min(1, maxTextW / maxSubW0);
+  const subFitH = Math.min(1, SUB_MAX_H / maxSubH0);
+
+  const titleScale = Math.min(titleCap, titleFitW, titleFitH);
+  const subScale   = Math.min(subCap,   subFitW,   subFitH);
+
+  cache = { sig: cacheSig, titleScale, subScale };
+  (splashInfoLayer as any)[cacheKey] = cache;
 }
+
+// ✅ Apply the SAME scale to every card
+title.scale.set(cache.titleScale);
+subtitle.scale.set(cache.subScale);
+
+const TITLE_SUB_GAP =
+  (!portrait && !isLandscapeMobile)
+    ? -3
+    : (portrait ? 2 : 8);
+
+subtitle.y = topY + title.height + TITLE_SUB_GAP;
+
+
+
 
 // =====================
 // SPLASH CARD ART — PER-CARD TUNING (DESKTOP)
 // =====================
+// ✅ let fitSprite do the maximizing; multipliers are “flavor”
 const SPLASH_ART_SCALE = {
-  bonus: 1.2,      // card 0 (3 scatters)
-  multiplier: 1.15, // card 1 (multiplier PNG)
-  maxwin: 1,     // card 2 (max win PNG)
+  bonus: 1.0,
+  multiplier: 1.0,
+  maxwin: 1.0,
 };
 
 // optional per-card nudges (px)
@@ -2501,36 +2760,44 @@ const SPLASH_SCATTER = [
     } else {
       artWrap.visible = true;
 
-      const ART_TOP_GAP = 16;
-      artWrap.x = 0;
-      artWrap.y = subtitle.y + subtitle.height + ART_TOP_GAP;
+      // ✅ MAXIMIZE ART but NEVER overlap subtitle
+const ART_TOP_GAP = 6;     // was 16 (more room for art)
+artWrap.x = 0;
+artWrap.y = subtitle.y + subtitle.height + ART_TOP_GAP;
 
-      // ==========================
-      // ✅ DESKTOP: FIT ART TO CARD (reverts blown-out scale)
-      // ==========================
-      const PAD_X = 18;
-      const PAD_BOT = 18;
+// ✅ reduce wasted padding inside the card
+const PAD_X = 8;           // was 18
+const PAD_BOT = 10;        // was 18
 
-      const availW = Math.max(10, targetW - PAD_X * 2);
-      const bottomY = boxH / 2;
-      const availH = Math.max(10, bottomY - artWrap.y - PAD_BOT);
+const availW = Math.max(10, targetW - PAD_X * 2);
+const bottomY = boxH / 2;
+const availH = Math.max(10, bottomY - artWrap.y - PAD_BOT);
 
-      // helper: scale sprite to fit box
-      const fitSprite = (sp: Sprite, maxW: number, maxH: number, mul = 1) => {
-        const tw = sp.texture.width || 1;
-        const th = sp.texture.height || 1;
-        const s = Math.min(maxW / tw, maxH / th) * mul;
-        sp.scale.set(s);
-      };
+// ✅ “fill as much as possible” with a tiny safety margin
+const fitSprite = (sp: Sprite, maxW: number, maxH: number, mul = 1) => {
+  const tw = sp.texture.width || 1;
+  const th = sp.texture.height || 1;
+
+  // 0.98 keeps a tiny breathing room so you never clip on rounding
+  const sFit = Math.min(maxW / tw, maxH / th) * 0.98;
+
+  sp.scale.set(sFit * mul);
+};
+
 
       // layout per-card
       const kids = artWrap.children as any[];
 
       // Card 0: 3 scatters
       if (i === 0) {
-        const GAP = 14;
-        const eachW = Math.max(10, (availW - GAP * 2) / 3);
-        const eachH = availH;
+     const GAP = 12; // was 14 (a touch more room)
+const eachW = Math.max(10, (availW - GAP * 2) / 3);
+
+// ✅ give scatters basically the full height
+const eachH = availH;
+
+// center them in the available art area
+const centerY = Math.round(eachH * 0.5);
 
        for (let k = 0; k < Math.min(3, kids.length); k++) {
   const sp = kids[k] as Sprite;
@@ -2635,6 +2902,34 @@ if (portrait) {
     }
   }
 }
+// =====================
+// ✅ NON-PORTRAIT SAFETY: keep the card row fully on-screen
+// (desktop + mobile landscape)
+// =====================
+if (!portrait) {
+  // Measure the whole cards layer in screen coords
+  const cardsB = splashInfoLayer.getBounds();
+
+  const TOP_PAD = 12;
+  const BOT_PAD = 12;
+
+  const minY = TOP_PAD;
+  const maxY = H - BOT_PAD;
+
+  let shiftY = 0;
+
+  // If top goes above the screen
+  if (cardsB.y < minY) shiftY = Math.max(shiftY, Math.round(minY - cardsB.y));
+
+  // If bottom goes below the screen
+  if (cardsB.y + cardsB.height > maxY) shiftY = Math.min(shiftY, Math.round(maxY - (cardsB.y + cardsB.height)));
+
+  // Apply shift to the whole cards layer (keeps spacing intact)
+  if (shiftY !== 0) {
+    splashInfoLayer.y = Math.round(splashInfoLayer.y + shiftY);
+  }
+}
+
 splashLayer.sortChildren();
 
 
@@ -2652,6 +2947,15 @@ const SPLASH_LAND_FARM_DROP_PX = 18;
       // ✅ Splash background starts at TOP of PNG
     snapBackgroundToTop();
       state.overlay.splash = true;
+      layoutStudioTag(); // ✅ enforce portrait hide rule immediately
+      // ✅ SPLASH: hide studio tag in MOBILE PORTRAIT
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  studioTag.visible = false;
+  studioTag.alpha = 0;
+}
+root.addChild(studioTag);
+root.sortChildren();
+
       lockBackgroundForSplash(); // ✅ Solution B lock
     // ✅ kill any live cars when splash begins
     if (bgCarLive) {
@@ -2745,11 +3049,9 @@ const logoDropY = landscapeMobile
   ? H * SPLASH_LAND_DROP_Y_N
   : H * 0.48;
 
-// ✅ FARM initial drop landing offset (relative to BLOCKY) — mode-specific
-const FARM_DROP_Y_OFFSET =
-  landscapeMobile ? SPLASH_LAND_FARM_DROP_PX :
-  portraitMobile  ? 10 :                 // 🔧 PORTRAIT drop Y offset (tweak this)
-  38;                                   // desktop fallback (keep same or tune)
+
+// ✅ FARM drop landing offset should match the FINAL gap rule (scale-aware)
+const FARM_DROP_Y_OFFSET = Math.round(splashLogoBlocky.height * 0.38);                              // desktop fallback (keep same or tune)
 
 
 
@@ -2758,18 +3060,35 @@ const FARM_DROP_Y_OFFSET =
     const RISE_STAGGER_MS = 60;  // tighter, snappier settle
 
 
-    // start offscreen + oversized
-    const DROP_OVERSCALE_BLOCKY = 1.25; // tweak 1.15–1.40
-    const DROP_OVERSCALE_FARM   = 1.28; // usually a touch bigger feels nice
+ 
 
-    // ✅ gap while DROPPING (bigger so oversized words don't collide)
-    const SPLASH_DROP_GAP_PX = -15; // try 180–320
+// ✅ DROP-IN overscale (portrait only)
+const DROP_OVERSCALE_BLOCKY = portraitMobile ? 1.7 : 1.25;
+const DROP_OVERSCALE_FARM   = portraitMobile ? 1.7 : 1.28;
+
+const DROP_BASE =
+  landscapeMobile ? SPLASH_DROP_SCALE_LANDSCAPE :
+  portraitMobile  ? SPLASH_DROP_SCALE_PORTRAIT :
+                    SPLASH_DROP_SCALE_DESKTOP;
+
+// ✅ DROP-IN horizontal gap between BLOCKY and FARM while dropping (portrait only)
+// (more negative = closer / overlap, more positive = further apart)
+const SPLASH_DROP_GAP_PX = portraitMobile ? -29 : -15;
+
 
     splashLogoBlocky.y = logoOffY;
     splashLogoFarm.y   = logoOffY;
 
-    splashLogoBlocky.scale.set(splashBlockyBaseSX * DROP_OVERSCALE_BLOCKY, splashBlockyBaseSY * DROP_OVERSCALE_BLOCKY);
-    splashLogoFarm.scale.set(splashFarmBaseSX * DROP_OVERSCALE_FARM, splashFarmBaseSY * DROP_OVERSCALE_FARM);
+  splashLogoBlocky.scale.set(
+  splashBlockyBaseSX * DROP_BASE * DROP_OVERSCALE_BLOCKY,
+  splashBlockyBaseSY * DROP_BASE * DROP_OVERSCALE_BLOCKY
+);
+
+splashLogoFarm.scale.set(
+  splashFarmBaseSX * DROP_BASE * DROP_OVERSCALE_FARM,
+  splashFarmBaseSY * DROP_BASE * DROP_OVERSCALE_FARM
+);
+
 
     // ✅ compute DROP positions (use current oversized widths)
     const dropBlockyW = splashLogoBlocky.width;
@@ -2992,7 +3311,9 @@ splashShadowFarm.scale.set(base, base * squash);
       if (!state.overlay.splash) return;
       splashLayer.off("pointertap", onContinue);
       
-
+// ✅ HARD KILL tag immediately on continue (prevents 1-frame poke)
+studioTag.visible = false;
+studioTag.alpha = 0;
 
       // fade blur down (so the game starts crisp)
       const b0 = bgBlur.strength;
@@ -3005,7 +3326,14 @@ splashShadowFarm.scale.set(base, base * squash);
       splashLayer.visible = false;
       splashLayer.eventMode = "none";
       state.overlay.splash = false;
+      // ✅ restore studio tag after splash (non-portrait only)
+if (!isMobilePortraitUILayout(__layoutDeps)) {
+  studioTag.visible = true;
+  studioTag.alpha = 0.85;
+}
 
+
+gameTitle.visible = false;
     // ✅ Kick off the startup background pan + reveal sequence
     playStartupIntro();
 
@@ -3022,10 +3350,12 @@ leafSpawnAcc = 0;
     bootInitialBoard();
 
     // ✅ title drop AFTER the reveal finishes (matches old feel)
-    setTimeout(() => {
-      gameTitle.visible = false;
-      animateTitleDropIn();
-    }, STARTUP_PAN_MS + STARTUP_REVEAL_DELAY + 80);
+  setTimeout(() => {
+  allowGameTitle = true;      // ✅ NEW: only now the title is allowed to exist
+  gameTitle.visible = false;  // keep it hidden until the drop sets it
+  animateTitleDropIn();
+}, STARTUP_PAN_MS + STARTUP_REVEAL_DELAY + 80);
+
 
     };
 
@@ -3051,12 +3381,12 @@ leafSpawnAcc = 0;
 // =====================
 
 // mobile / shared defaults (keep what you already like)
-let TITLE_OFFSET_X = 60;   // px (+ right, - left)
-let TITLE_OFFSET_Y = -80;  // px (+ down, - up)
+// ✅ Title offsets now scale with reel sizing (cellSize)
+let TITLE_OFFSET_X = 0;     // (we'll compute it per layout)
+let TITLE_OFFSET_Y = -80;
 
-// ✅ DESKTOP ONLY overrides (tune these)
-let TITLE_OFFSET_X_DESKTOP = 60;   // start same as current, then tweak
-let TITLE_OFFSET_Y_DESKTOP = -80;  // start same as current, then tweak
+let TITLE_OFFSET_X_DESKTOP = 0;
+let TITLE_OFFSET_Y_DESKTOP = -80;
 
 
 // =====================
@@ -3785,7 +4115,7 @@ function killCarsNow() {
     // tuning
     const BG_CAR_MIN_DELAY = 18; // seconds
     const BG_CAR_MAX_DELAY = 35;
-    const BG_CAR_SPEED = 200;     // px/sec
+    const BG_CAR_SPEED = 160;     // px/sec
 
     // =====================
     // FREE SPINS BACKGROUND CAR (FS ONLY) — TUNING
@@ -3796,7 +4126,7 @@ function killCarsNow() {
     const FS_CAR_MIN_DELAY = 10; // seconds
     const FS_CAR_MAX_DELAY = 18;
 
-    const FS_CAR_SPEED = 260;    // px/sec
+    const FS_CAR_SPEED = 160;    // px/sec
 
     // ✅ FREE SPINS CAR: extra scale multiplier (LANDSCAPE ONLY)
 const FS_CAR_LANDSCAPE_SCALE_MUL = 0.78; // 🔧 try 0.70–0.90
@@ -3848,7 +4178,7 @@ function rescaleLiveCars() {
     // Tweak these to match your red road line
     // =====================
     const BG_CAR_START_X_N = .86; // near top-right
-    const BG_CAR_START_Y_N = -0.08;
+    const BG_CAR_START_Y_N = -0.06;
 
     const BG_CAR_END_X_N   = -.03 ; // near bottom-left
     const BG_CAR_END_Y_N   = 0.71;
@@ -4950,9 +5280,10 @@ setFsIntroBannerText();
 const BANNER_OFF_X = -290;
 
 const BANNER_OFF_Y =
-  isMobileLandscapeUILayout(__layoutDeps) ? -160 :   // mobile landscape
-  isMobilePortraitUILayout(__layoutDeps)  ? -275 :   // mobile portrait
-                                          -235;     // ✅ desktop (lower)
+  isMobileLandscapeUILayout(__layoutDeps) ? -130 :   // 🔧 less negative = lower
+  isMobilePortraitUILayout(__layoutDeps)  ? -235 :   // 🔧 was -275
+                                          -220;     // 🔧 was -235
+
 
 
 fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
@@ -5013,18 +5344,38 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
       const H = app.screen.height;
 
       // scale tuning (change these freely)
-      const TRACTOR_TARGET_W_N = 0.6; // fraction of screen width
-      const targetW = Math.round(W * TRACTOR_TARGET_W_N);
-      const texW = fsTractor.texture.width || 1;
+     const TRACTOR_TARGET_W_N =
+  isMobilePortraitUILayout(__layoutDeps) ? 1.2 :  // ✅ bigger in portrait
+  isMobileLandscapeUILayout(__layoutDeps) ? 0.70 : // optional tweak
+  0.9;                                           // desktop
 
-      const s = targetW / texW;
-      fsTractor.scale.set(s);
+const targetW = Math.round(W * TRACTOR_TARGET_W_N);
+
+// also cap by height so it doesn’t become *too* huge
+const MAX_H_N =
+  isMobilePortraitUILayout(__layoutDeps) ? 0.28 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 0.40 :
+  0.5;
+
+const targetH = Math.round(H * MAX_H_N);
+
+const texW = fsTractor.texture.width || 1;
+const texH = fsTractor.texture.height || 1;
+
+const s = Math.min(targetW / texW, targetH / texH);
+fsTractor.scale.set(s);
 
 
 
 
-      // vertical placement (tweak)
-      const y = Math.round(H * 0.62);
+// vertical placement (tweak) — must match fsTractorY()
+const FS_TRACTOR_Y_N =
+  isMobilePortraitUILayout(__layoutDeps) ? 0.68 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 0.64 :
+  0.66;
+
+const y = Math.round(H * FS_TRACTOR_Y_N);
+
 
       // if not currently animating, keep it centered
       if (!fsTractorLayer.visible) {
@@ -5076,9 +5427,16 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
     }
 
 
-    function fsTractorY() {
-      return Math.round(app.screen.height * 0.62);
-    }
+ function fsTractorY() {
+  // 🔧 bigger = lower
+  const FS_TRACTOR_Y_N =
+    isMobilePortraitUILayout(__layoutDeps) ? 0.68 :
+    isMobileLandscapeUILayout(__layoutDeps) ? 0.64 :
+    0.66; // desktop
+
+  return Math.round(app.screen.height * FS_TRACTOR_Y_N);
+}
+
 
     // Enter: left -> center
     function showFsTractorEnter(ms = 550) {
@@ -5923,7 +6281,7 @@ function clampFsOutroScaleToScreen(proposedScale: number) {
 // =====================
 // FS OUTRO — GAP TUNING
 // =====================
-const FS_OUTRO_LABEL_Y_DESKTOP = 0.41;
+const FS_OUTRO_LABEL_Y_DESKTOP = 0.39;
 const FS_OUTRO_AMOUNT_Y_DESKTOP = 0.59;
 
 // ✅ MOBILE LANDSCAPE: bigger gap
@@ -5949,30 +6307,38 @@ const isLand = isMobileLandscapeUILayout(__layoutDeps);
 const labelYFrac  = isLand ? FS_OUTRO_LABEL_Y_LAND  : FS_OUTRO_LABEL_Y_DESKTOP;
 const amountYFrac = isLand ? FS_OUTRO_AMOUNT_Y_LAND : FS_OUTRO_AMOUNT_Y_DESKTOP;
 
-fsOutroTotalLabel.position.set(
-  Math.round(W * 0.5),
-  Math.round(H * labelYFrac)
-);
+// --- ANCHORED STACK: label always above amount ---
 
-fsOutroWinAmount.position.set(
-  Math.round(W * 0.5),
-  Math.round(H * amountYFrac)
-);
+
+const cx = Math.round(W * 0.5);
+const cy = Math.round(H * 0.5);
+
+// 🔧 GAP between label and amount
+const GAP_PX =
+  isMobilePortraitUILayout(__layoutDeps) ? 0 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 56 :
+  -20;
+
+// measure heights AFTER scale is applied
+const labelH = fsOutroTotalLabel.getBounds().height;
+const amtH   = fsOutroWinAmount.getBounds().height;
+
+// total stack height
+const stackH = labelH + GAP_PX + amtH;
+
+// center the whole stack on screen
+const topY = Math.round(cy - stackH * 0.5);
+
+// place label + amount centered
+fsOutroTotalLabel.position.set(cx, Math.round(topY + labelH * 0.5));
+fsOutroWinAmount.position.set(cx, Math.round(topY + labelH + GAP_PX + amtH * 0.5));
+
+
 
 
       // continue at bottom
       fsOutroContinue.position.set(Math.round(W * 0.5), Math.round(H * 0.92));
-        // =====================
-  // PORTRAIT: LOCKED FIT-TO-WIDTH SCALE (prevents snapping during count-up)
-  // =====================
-  if (isMobilePortraitUILayout(__layoutDeps) && fsOutroPortraitScaleLocked) {
-    fsOutroTotalLabel.scale.set(fsOutroPortraitScale);
-    fsOutroWinAmount.scale.set(fsOutroPortraitScale);
-  } else if (!isMobilePortraitUILayout(__layoutDeps)) {
-    // non-portrait: normal
-    fsOutroTotalLabel.scale.set(1, 1);
-    fsOutroWinAmount.scale.set(1, 1);
-  }
+
 
     }
 
@@ -5996,6 +6362,7 @@ function startFsOutroIdlePulse() {
 
   const base = (fsOutroPortraitScaleLocked ? fsOutroPortraitScale : (fsOutroWinAmount.scale.x || 1));
   const portrait = isMobilePortraitUILayout(__layoutDeps);
+  const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
   // Portrait: pulse vertically only. Non-portrait: uniform (clamped).
   const upX = portrait ? base : clampFsOutroScaleToScreen(base * 1.08);
@@ -8168,7 +8535,7 @@ if (__bigWinPrevMusicVol01 != null) {
 }
 
 // keep your safety “resume correct track” (optional but fine)
-audio?.playMusic?.(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base", 350);
+playMusicWhenUnlocked(state.game.mode === "FREE_SPINS" ? "music_fs" : "music_base", 350);
 
 
 
@@ -8324,7 +8691,7 @@ setTimeout(() => {
 
         setReelHouseForMode("BASE");
         void setBackgroundForMode("BASE", true);
-        audio?.playMusic?.("music_base", 450);
+     playMusicWhenUnlocked("music_base", 450);
 
         snowFxEnabled = false;
         clearSnowNow();
@@ -8399,7 +8766,7 @@ if (!bgBase || !bgFree) return;
         setFsOverlay(false, 0.72, 8, FS_OVERLAY_FADE_OUT_MS);
         await waitMs(FS_BG_TO_CORE_PAUSE_MS);
         showGameCoreDelayed(120, 360, 0.9);
-        audio?.playMusic?.("music_fs", 450);
+        playMusicWhenUnlocked("music_fs", 450);
         fsCarCooldown = 0.6; // wait ~0.6s before car can spawn
 
         await waitMs(220);
@@ -8664,8 +9031,8 @@ function layoutFsDimmer() {
 const FS_ADDED_LAND_AMOUNT_SCALE = 1;   // try 0.65–0.85
 const FS_ADDED_LAND_LABEL_SCALE  = 1;
 
-const FS_ADDED_DESK_AMOUNT_SCALE = 2;
-const FS_ADDED_DESK_LABEL_SCALE  = 2;
+const FS_ADDED_DESK_AMOUNT_SCALE = 1.5;
+const FS_ADDED_DESK_LABEL_SCALE  = 1.5;
 
 const FS_ADDED_PORT_AMOUNT_SCALE = 0.75;
 const FS_ADDED_PORT_LABEL_SCALE  = 0.80;
@@ -8738,7 +9105,7 @@ fsAddedLabelText.scale.set(
     });
 
 
-      await waitT(holdMs);
+      await waitMs(holdMs);
 
       // fade out
     const startDim = fsAddedDimmer.alpha;
@@ -9327,23 +9694,38 @@ gameCore.sortChildren();
     });
     forceMicro5(studioTag);
     studioTag.anchor.set(0.5);
-    studioTag.zIndex = 1600; // inside gameCore; above reelhouse/grid if needed
+   studioTag.zIndex = 1700; // now on root, screen-space
     studioTag.eventMode = "none";
-    gameCore.addChild(studioTag);
+    root.addChild(studioTag);
+root.sortChildren();
 
-    function layoutStudioTag() {
-        const PAD_X = 24; // distance from left edge
-      const PAD_Y = 20; // distance from top edge
+function layoutStudioTag() {
+  // 🚫 NEVER show studio tag during splash / boot / loader (ALL devices)
+  if (
+  state.overlay.splash ||
+  state.overlay.boot ||
+  state.overlay.startup ||   // ✅ ADD THIS
+  loadingLayer?.visible
+) {
+  studioTag.visible = false;
+  studioTag.alpha = 0;
+  return;
+}
 
-      studioTag.anchor.set(0, 0); // 👈 top-left anchor
+  const safeT = safeInsetTopPx?.() ?? 0;
 
-      studioTag.x = PAD_X;
-      studioTag.y = PAD_Y;
-      studioTag.alpha = 0.85;
-    studioTag.scale.set(0.95);
+  studioTag.anchor.set(0, 0);
 
-      
-    }
+  const x = isMobilePortraitUILayout(__layoutDeps) ? 16 : 24;
+  const y = isMobilePortraitUILayout(__layoutDeps) ? (safeT + 12) : 20;
+
+  studioTag.position.set(Math.round(x), Math.round(y));
+  studioTag.alpha = 0.85;
+  studioTag.scale.set(isMobilePortraitUILayout(__layoutDeps) ? 0.90 : 0.95);
+}
+
+
+
 
 // =====================
 // GAME TITLE SCALE LOCK (prevents mobile snap)
@@ -9387,18 +9769,8 @@ let titleScaleLocked = false;
       gameCore.pivot.set(cx, cy);
       gameCore.position.set(cx, cy);
 
-   if (gameTitle) {
-if (!titleScaleLocked) {
-  const inv = 1 / gameCore.scale.x;
-  const titleMul = isMobileLandscapeUILayout(__layoutDeps)
-    ? MOBILE_LANDSCAPE_TITLE_MUL
-    : 1.0;
 
-  titleBaseScale = inv * titleMul;
-  gameTitle.scale.set(titleBaseScale);
-}
 
-}
     }
 
     window.addEventListener("resize", layoutGameCorePivot);
@@ -9409,20 +9781,16 @@ if (!titleScaleLocked) {
     // =====================
     let anticipationZoomToken = 0;
 
-    function applyGameTitleScaleFromBase() {
+function applyGameTitleScaleFromBase() {
   if (!gameTitle) return;
 
-  const titleMul = isMobileLandscapeUILayout(__layoutDeps) ? MOBILE_LANDSCAPE_TITLE_MUL : 1.0;
-  const inv = 1 / Math.max(0.0001, gameCore.scale.x);
+  // Cancel out gameCore "anticipation" zoom so the title doesn't pop larger.
+  const coreS = Math.max(0.001, gameCore?.scale?.x ?? 1);
 
-  // if locked, keep using the last locked base scale
-  if (titleScaleLocked) {
-    gameTitle.scale.set(titleBaseScale);
-    return;
-  }
+  // Keep the title sized from reel sizing (titleBaseScale), not from gameCore zoom.
+  const s = titleBaseScale / coreS;
 
-  // normal: keep it "screen-size stable" but with your landscape reduction
-  gameTitle.scale.set(inv * titleMul);
+  gameTitle.scale.set(s);
 }
 
 
@@ -9465,6 +9833,7 @@ audio?.setBaseMusicIntensity?.(0.25, 400);
           const e = k * k * (3 - 2 * k); // smoothstep
           const s = startCore + (baseCoreScale - startCore) * e;
           gameCore.scale.set(s);
+          applyGameTitleScaleFromBase();
         },
         () => {
           if (token === anticipationZoomToken) gameCore.scale.set(baseCoreScale);
@@ -9575,7 +9944,8 @@ audio?.setBaseMusicIntensity?.(0.25, 400);
 
 
   function layoutReelFlash() {
-  const b = reelHouse.getBounds(); // global bounds (root coords)
+const b = gridMask.getBounds(); // ✅ exact visible reel window
+
 
   const isPortrait = isMobilePortraitUILayout(__layoutDeps);
 
@@ -9644,7 +10014,7 @@ audio?.setBaseMusicIntensity?.(0.25, 400);
 const multPlaqueLayer = new Container();
 
 // ✅ Above reels/gameCore, but BELOW all menus/overlays (buy/settings/etc)
-multPlaqueLayer.zIndex = 1400;
+multPlaqueLayer.zIndex = 1600;
 
 root.addChild(multPlaqueLayer);
 multPlaqueLayer.visible = false;
@@ -10294,7 +10664,7 @@ if (dir === 1) {
 
     restyleAllSlots();
 
-
+let allowGameTitle = false;
     // =====================
     // TITLE DROP-IN (boot + return-to-base)
     // =====================
@@ -10323,11 +10693,21 @@ if (dir === 1) {
 
 
 let titleDropToken = 0;
-    function animateTitleDropIn(ms = TITLE_DROP_MS) {
+   function animateTitleDropIn(ms = TITLE_DROP_MS) {
+    // ✅ MOBILE PORTRAIT: never show the PNG title
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  allowGameTitle = false;
+  titleDropActive = false;
+  gameTitle.visible = false;
+  gameTitle.alpha = 0;
+  return;
+}
+  allowGameTitle = true; // ✅ safety: any drop-in call should permit title visibility
 
-    titleScaleLocked = true;
-applyGameTitleScaleFromBase(); // sets gameTitle scale correctly while locked
-gameTitle.scale.set(titleBaseScale);
+
+titleScaleLocked = true;
+applyGameTitleScaleFromBase(); // ✅ uses titleBaseScale and cancels gameCore zoom correctly
+
   // ✅ cancel any previous in-flight drop
   const token = ++titleDropToken;
 
@@ -10392,70 +10772,121 @@ gameTitle.scale.set(titleBaseScale);
       );
     }
   );
-  titleScaleLocked = false;
-applyGameTitleScaleFromBase(); 
+
 }
 
 
 
-    // Position + scale plaque relative to board (called from layoutAll)
 function layoutMultiplierPlaque() {
   
- // 🔒 HARD HIDE during boot / splash / startup
+ 
+
+  // -------------------------
+  // ✅ ALWAYS LAYOUT THE TITLE FIRST (so drop-in has a real target)
+  // -------------------------
+  const isDesktop =
+    !isMobilePortraitUILayout(__layoutDeps) &&
+    !isMobileLandscapeUILayout(__layoutDeps);
+
+// portrait: you intentionally hide the PNG title
+const TITLE_BLOCKED =
+  !allowGameTitle ||
+  state.overlay.boot ||
+  loadingLayer?.visible ||
+  state.overlay.splash ||
+  state.overlay.startup ||
+  state.overlay.fsIntro ||
+  state.overlay.fsOutro ||
+  state.overlay.fsOutroPending ||
+  state.overlay.bigWin ||
+  state.ui.settingsOpen ||
+  state.ui.buyMenuOpen;
+
+// ✅ HARD RULE: never show title in MOBILE PORTRAIT
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  gameTitle.visible = false;
+  gameTitle.alpha = 0;
+} else if (TITLE_BLOCKED && !titleDropActive) {
+  // ✅ Prevent the 1-frame “flash” before drop animation
+  gameTitle.visible = false;
+  gameTitle.alpha = 0;
+} else {
+  const GAP_X = Math.round(cellSize * 0.33);
+  const ox = (isDesktop ? TITLE_OFFSET_X_DESKTOP : TITLE_OFFSET_X) + GAP_X;
+  const oy = isDesktop ? TITLE_OFFSET_Y_DESKTOP : TITLE_OFFSET_Y;
+
+  gameTitle.visible = true;
+  gameTitle.alpha = 1;
+
+  const A = getReelAnchor(reelHouse);
+
+  const DESIGN_CELL = 130;
+  const TITLE_CELL_MUL = 1.3;
+  let titleS = (Math.max(1, cellSize) / DESIGN_CELL) * TITLE_CELL_MUL;
+
+  titleS = Math.max(0.45, Math.min(1.0, titleS));
+  titleBaseScale = titleS;
+  applyGameTitleScaleFromBase();
+
+  gameTitle.x = Math.round(A.right + ox);
+  const titleTargetY = Math.round(A.cy + oy);
+
+  const W = app.screen.width;
+  const PAD_R = 12;
+  const b = gameTitle.getBounds();
+  const over = (b.x + b.width) - (W - PAD_R);
+
+  if (over > 0) {
+    const fit = Math.max(0.35, (W - PAD_R - b.x) / Math.max(1, b.width));
+    titleBaseScale = titleS * fit;
+    applyGameTitleScaleFromBase();
+    gameTitle.x = Math.round(A.right + ox);
+  }
+
+  titleBaseX = gameTitle.x;
+  titleBaseY = titleTargetY;
+
+  if (!titleDropActive) {
+    gameTitle.y = titleTargetY;
+  }
+}
+
+
+
+
+  // -------------------------
+  // 🔒 NOW decide if PLAQUE is allowed to show
+  // -------------------------
   if (
-    state.overlay.boot ||  
+    (false && state.overlay.boot) ||
     loadingLayer?.visible ||
     state.overlay.splash ||
-    state.overlay.startup
+    state.overlay.startup ||
+    state.overlay.fsIntro ||
+    state.overlay.fsOutro ||
+    state.ui.settingsOpen ||
+    state.ui.buyMenuOpen
   ) {
     multPlaqueLayer.visible = false;
     return;
   }
 
-  // 🔒 HARD HIDE during FS overlays
-  if (state.overlay.fsIntro || state.overlay.fsOutro) {
-    multPlaqueLayer.visible = false;
-    return;
-  }
-
-  // 🔒 HARD HIDE during menus
-  if (state.ui.settingsOpen || state.ui.buyMenuOpen) {
-    multPlaqueLayer.visible = false;
-    return;
-  }
-  // ✅ MOBILE PORTRAIT ONLY: hide the main in-game PNG title
-  if (isMobilePortraitUILayout(__layoutDeps)) {
-    gameTitle.visible = false;
-    gameTitle.alpha = 0;
-  }
-
   // 👇 only below here is the plaque EVER allowed to show
   multPlaqueLayer.visible = true;
 
+
+
   
-// ---- GAME TITLE POSITION ----
-const isDesktop = !isMobilePortraitUILayout(__layoutDeps) && !isMobileLandscapeUILayout(__layoutDeps);
 
-
-const ox = isDesktop ? TITLE_OFFSET_X_DESKTOP : TITLE_OFFSET_X;
-const oy = isDesktop ? TITLE_OFFSET_Y_DESKTOP : TITLE_OFFSET_Y;
-
-gameTitle.x = Math.round(boardOx + boardTotalW + ox);
-const _titleTargetY = Math.round(boardOy + boardTotalH * 0.5 + oy);
-
-// ✅ ALWAYS update the “rest” targets so float follows new offsets
-titleBaseX = gameTitle.x;
-titleBaseY = _titleTargetY;
-
-// Only directly place the sprite if we’re not mid-drop animation
-if (!titleDropActive) {
-  gameTitle.y = _titleTargetY;
-}
 
 
  // ✅ MOBILE PORTRAIT — PIN TO TOP-RIGHT OF SCREEN
 if (isMobilePortraitUILayout(__layoutDeps)) {
   multPlaqueLayer.visible = true;
+
+    // ✅ PORTRAIT: put plaque BEHIND the reel house (gameCore is 1500)
+  multPlaqueLayer.zIndex = 1400;
+  root.sortChildren();
 
   const W = app.screen.width;
 
@@ -10487,48 +10918,37 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
 
 
 
-  // ✅ MOBILE LANDSCAPE: place ladder at top-right (screen space)
-if (isMobileLandscapeUILayout(__layoutDeps)) {
-  multPlaqueLayer.visible = true;
-
-  const b = reelHouse.getBounds(); // reel house bounds in screen/root space
-
-  // 🔧 TUNING (landscape)
-  const GAP_X = 0;     // gap between ladder and reel house
-  const Y_N   = 0.12;   // 0 = top, 0.5 = center, 1 = bottom
-  const S     = 0.70;   // ladder scale (try 0.60–0.85)
-
-  multPlaqueLayer.scale.set(S);
-
-  // IMPORTANT: ensure bounds are correct AFTER scaling
-  const lb = multPlaqueLayer.getBounds();
-
-  // ✅ place ladder to the LEFT of reel house
-  multPlaqueLayer.x = Math.round(b.x - GAP_X - lb.width);
-
-  // vertical alignment relative to reel house
-  multPlaqueLayer.y = Math.round(b.y + b.height * Y_N);
-
-  applyPlaqueState(plaqueIdx);
-  restyleAllSlots();
-  applyPlaqueSlotVisibility(plaqueIdx);
-  return;
-}
 
 
 
-// ✅ DESKTOP / NON-MOBILE: your original placement
+// ✅ DESKTOP / NON-MOBILE: anchor to reel house (bounds-correct)
+multPlaqueLayer.zIndex = 1600;
 multPlaqueLayer.visible = true;
 
-multPlaqueLayer.x = Math.round(boardOx + boardTotalW - 980);
-multPlaqueLayer.y = Math.round(boardOy + boardTotalH * 0.08 - 15);
 
+const A = getReelAnchor(reelHouse);
+
+// 🔧 TUNING
+const GAP_X = 23;     // space between plaque and reel house
+const Y_FRAC = 0.1; // 0=top, 0.5=center
+
+// 1) scale FIRST
 const desiredTotalH = cellSize * 4.1;
 const baseTotalH = PLAQUE_H * 4 + PLAQUE_GAP * 3;
 
 const s = Math.max(0.6, Math.min(1.3, desiredTotalH / baseTotalH));
-const sSnap = Math.round(s * 1000) / 1000;
-multPlaqueLayer.scale.set(sSnap);
+multPlaqueLayer.scale.set(s);
+
+// ✅ Use stable, design-time measurements instead of bounds (bounds drift w/ filters/scale)
+const localRight = PLAQUE_RIGHT_X; // right edge of the plaque box (NOT including arrow)
+const localTop = 0;               // plaque content starts at y=0 in its local space
+
+multPlaqueLayer.x = Math.round(A.left - GAP_X - localRight * s);
+multPlaqueLayer.y = Math.round(A.top + A.b.height * Y_FRAC - localTop * s);
+
+
+
+
 
 applyPlaqueState(plaqueIdx);
 restyleAllSlots();
@@ -10644,57 +11064,20 @@ let betDownBtnPixi: any = null;
     // ✅ enable UI interaction once visible
     uiLayer.alpha = 1;
     uiLayer.eventMode = "auto";
+    
   }
 );
       }, delayMs);
     }
 
 
-    function layoutBackgroundPivotToScreenCenter() {
-      // Make scaling happen around screen center (without shifting at scale=1)
-      const cx = app.screen.width / 2;
-      const cy = app.screen.height / 2;
 
-      backgroundLayer.pivot.set(cx, cy);
-      backgroundLayer.position.set(cx, cy);
-    }
-    layoutBackgroundPivotToScreenCenter();
-    window.addEventListener("resize", () => {
+   
+  
 
+  
 
-      layoutBackgroundPivotToScreenCenter();
-    });
-
-    let bgZoomToken = 0;
-
-    function zoomBackgroundTo(targetScaleMul: number, ms = 500) {
-      // ✅ HARD LOCK zoom during splash (Solution B)
-      if (state.overlay.splash) return;
-
-      // Ensure pivot stays correct (esp after resize)
-      layoutBackgroundPivotToScreenCenter();
-
-
-      const bg = backgroundLayer;
-      const start = bg.scale.x;
-
-      // cancel/ignore any previous background zoom tween
-      const token = ++bgZoomToken;
-
-      tween(
-        ms,
-        (k) => {
-          if (token !== bgZoomToken) return; // a newer zoom started
-          const e = Math.max(0, Math.min(1, k));
-          const s = start + (targetScaleMul - start) * e;
-          bg.scale.set(s);
-        },
-        () => {
-          if (token !== bgZoomToken) return;
-          bg.scale.set(targetScaleMul); // lock final scale, no snap
-        }
-      );
-    }
+   
 
 
 function centerPivot(c: Container) {
@@ -10702,17 +11085,7 @@ function centerPivot(c: Container) {
   c.pivot.set(b.x + b.width / 2, b.y + b.height / 2);
 }
 
-    // Place a thing using 0..1 coords inside the panel rectangle
-    function placeOnPanel(
-      c: Container,
-      nx: number,   // 0..1 left->right
-      ny: number,   // 0..1 top->bottom
-      panelW: number,
-      panelH: number
-    ) {
-      c.x = Math.round(panelW * nx);
-      c.y = Math.round(panelH * ny);
-    }
+ 
 
     function setTightHitArea(btn: Container, padX: number, padY: number) {
   const bb = btn.getLocalBounds();
@@ -10767,8 +11140,7 @@ if (isRgs) {
    if (rgsAuthed && rgsInitialBalance != null && !state.ui.spinning) {
   state.bank.balance = rgsInitialBalance;
       balanceLabel.text = fmtMoney(state.bank.balance);
-      uiController.refreshSpinAffordability();
-    }
+      uiController?.refreshSpinAffordability?.();    }
   })();
 }
 
@@ -11744,10 +12116,13 @@ const AUTO_MENU_UI_ATLAS_URL = "./assets/atlases/auto_menu_ui.json";
 
 
 
+
+
     // =====================
     // COIN SHOWER — SPRITESHEET (TexturePacker / Pixi atlas)
     // =====================
-    const COINS_SHEET_URL = "./assets/particles/coins.json"; // ✅ leading slash
+const COINS_SHEET_URL = "./assets/particles/coins.json";
+
 
     let coinFramesCache: Texture[] | null = null;
 
@@ -11995,6 +12370,11 @@ bigWinItemsSheet = Assets.get(BIGWIN_ITEMS_ATLAS_URL) as any;
       console.warn("[RGS] spin blocked — not authenticated yet");
       return;
     } 
+    // ✅ RGS: do not allow play spam while a round is "in flight"
+if (isRgs && rgsRoundLock) {
+  console.warn("[RGS] spin blocked — round still active (lock)");
+  return;
+}
         // ✅ If auto is running, SPIN becomes "STOP AUTO"
 if (state.ui.auto) {
   stopAutoNow("spin button (stop auto)");
@@ -12312,8 +12692,6 @@ refreshLocalizedText();
     spinningBtnPixi.eventMode = "none"; // clicking does nothing
     uiPanel.addChild(spinningBtnPixi);
 
-    // ✅ now safe (spinningBtnPixi exists)
-    uiController?.refreshSpinAffordability();
 
 
 
@@ -12448,14 +12826,90 @@ if (state.ui.settingsOpen) {
   }
 
     );
+    // ✅ overlay + "opaque disable" behavior for BUY
+const buyDisabledOverlay = installDisabledOverlayForBuy(buyBtnPixi);
 
-    // ✅ BUY "greyed but opaque" filter (used during spinning)
-const buyGreyFilter = new ColorMatrixFilter();
+// Keep a reference to the original setEnabled (from makePngButton)
+const __buySetEnabled = (buyBtnPixi as any).setEnabled?.bind(buyBtnPixi);
 
-// Desaturate fully (greyscale)
-buyGreyFilter.saturate(0, false);
-buyGreyFilter.contrast(0.75, false);
-buyGreyFilter.brightness(0.6, false);
+// Override: disable should NOT fade the button — it should show grey overlay instead
+(buyBtnPixi as any).setEnabled = (enabled: boolean) => {
+  // keep the original sprite-state reset behavior if your helper relies on it
+  __buySetEnabled?.(enabled);
+
+  // BUT force the visual rule you want:
+  buyBtnPixi.alpha = 1.0;                 // ✅ never transparent
+  buyBtnPixi.eventMode = enabled ? "static" : "none";
+  buyBtnPixi.cursor = enabled ? "pointer" : "default";
+
+  // show grey overlay when disabled
+  buyDisabledOverlay.visible = !enabled;
+buyDisabledOverlay.alpha = !enabled ? 0.7 : 0; // ✅ ensure it isn't stuck at 0
+
+  // when disabling, force the UP visual so it doesn't stick on hover/down
+  if (!enabled) (buyBtnPixi as any)?.resetVisual?.();
+};
+
+(buyBtnPixi as any)._redrawDisabledOverlay?.();
+
+// ✅ BUY overlay clipped to button shape (alpha mask)
+function installDisabledOverlayForBuy(btn: Container) {
+  // children[0] is the "up" sprite in makePngButton()
+  const upSprite = btn.children?.[0] as Sprite | undefined;
+
+  const overlay = new Graphics();
+  overlay.eventMode = "none";
+  overlay.visible = false;
+  overlay.alpha = 0.9; // 🔧 overlay opacity
+  overlay.zIndex = 9999;
+
+  // Use a sprite mask so we clip to the PNG’s alpha shape
+  const maskSprite = new Sprite(upSprite?.texture ?? Texture.WHITE);
+  maskSprite.anchor.set(0.5);
+maskSprite.visible = true;     // ✅ must be renderable for masking
+maskSprite.alpha = 0.001;      // ✅ effectively invisible (don’t use 0)
+maskSprite.eventMode = "none"; // ✅ no input
+  maskSprite.zIndex = overlay.zIndex + 1;
+
+  // ensure overlay sits above the 3 sprites
+  (btn as any).sortableChildren = true;
+
+  function redraw() {
+    // keep mask synced with the UP sprite texture + transform
+    if (upSprite) {
+      maskSprite.texture = upSprite.texture;
+      maskSprite.position.set(upSprite.x, upSprite.y);
+      maskSprite.scale.set(upSprite.scale.x, upSprite.scale.y);
+      maskSprite.rotation = upSprite.rotation;
+      maskSprite.skew.set((upSprite as any).skew?.x ?? 0, (upSprite as any).skew?.y ?? 0);
+    }
+
+    // draw a big rect; mask will clip it to the button shape
+    const b = btn.getLocalBounds();
+    overlay.clear();
+    overlay
+      .rect(b.x, b.y, Math.max(1, b.width), Math.max(1, b.height))
+      .fill({ color:0x9aa1a8, alpha: 1 });
+  }
+
+  // IMPORTANT: mask MUST be in the scene graph
+  btn.addChild(overlay);
+  btn.addChild(maskSprite);
+
+  overlay.mask = maskSprite;
+
+  redraw();
+  btn.sortChildren();
+
+  // expose helpers
+  (btn as any)._disabledOverlay = overlay;
+  (btn as any)._disabledOverlayMask = maskSprite;
+  (btn as any)._redrawDisabledOverlay = redraw;
+
+  return overlay;
+}
+
+
 
     // ✅ Bigger hit area for BUY only
 const BUY_HIT_PAD_X = IS_TOUCH ? 36 : 6;
@@ -12513,18 +12967,7 @@ buyBtnPixi.hitArea = new Rectangle(
 
     // ✅ ADD IT TO THE UI
     uiPanel.addChild(autoBtnPixi);
-// ✅ INSTALL UI INPUT CONTROLLER (ONE-TIME)
-installUiInputController({
-  state,
-  doSpin,
-  stopAutoNow,
-  refreshAutoSpinSpinButton,
-  autoBtnPixi,
-  uiController,
-  splashLayer,
-  fsDimmer,
-  audio,
-});
+
 
 function stopAutoNow(reason = "") {
   if (!state.ui.auto && (state.ui.autoRounds ?? -1) === -1 && (state.ui.autoPendingRounds ?? -1) === -1) return;
@@ -12548,43 +12991,6 @@ function stopAutoNow(reason = "") {
 }
 
 
-    // =====================
-// AUTO MENU (sub menu)
-// =====================
-autoMenuApi = createAutoMenu({
-  app,
-  root, // ✅ root is correct (menus should sit above everything)
- texAutoMenu, 
-  // If you want the menu to share your UI dimmer, pass it:
-  // uiDimmer,
-  audio,
-  initialSelectedRounds: -1,
-    t,
-  
-onPick: (rounds) => {
-  // ✅ arm the selection (do NOT start auto yet)
-  state.ui.autoPendingRounds = rounds;
-  state.ui.autoArmed = true;
-
-  // ✅ swap SPIN to "PLAY AUTO" immediately
-  refreshAutoSpinSpinButton();
-},
-
-
-onClosed: () => {
-  // ✅ If user closes the menu without confirming, revert SPIN visuals
-  if (!state.ui.auto) {
-    state.ui.autoArmed = false;
-    state.ui.autoPendingRounds = -1;
-  }
-
-  uiController.applyUiLocks();
-
-  // ✅ This will restore btn_spin_up.png (NORMAL) if not armed/running
-  refreshAutoSpinSpinButton();
-},
-
-});
 
 (autoBtnPixi as any).setTapHandler?.(() => {
   if (state.ui.spinning) return; // ✅ block during spin
@@ -12650,8 +13056,7 @@ onClosed: () => {
     if (state.bank.betIndex > 0) {
       state.bank.betIndex--;
       updateBetUI();
-      uiController.refreshSpinAffordability();
-      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
+      uiController?.refreshSpinAffordability?.();      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
     }
   }
 );
@@ -12667,8 +13072,7 @@ betUpBtnPixi = makePngButton(
     if (state.bank.betIndex < state.bank.betLevels.length - 1) {
       state.bank.betIndex++;
       updateBetUI();
-      uiController.refreshSpinAffordability();
-      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
+      uiController?.refreshSpinAffordability?.();      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
     }
   }
 );
@@ -12677,6 +13081,43 @@ betUpBtnPixi = makePngButton(
 // ✅ now buttons exist, we can parent them safely (desktop groups)
 betControlsGroup.addChild(betUpBtnPixi, betDownBtnPixi);
 
+    // =====================
+// AUTO MENU (sub menu)
+// =====================
+autoMenuApi = createAutoMenu({
+  app,
+  root, // ✅ root is correct (menus should sit above everything)
+ texAutoMenu, 
+  // If you want the menu to share your UI dimmer, pass it:
+  // uiDimmer,
+  audio,
+  initialSelectedRounds: -1,
+    t,
+  
+onPick: (rounds) => {
+  // ✅ arm the selection (do NOT start auto yet)
+  state.ui.autoPendingRounds = rounds;
+  state.ui.autoArmed = true;
+
+  // ✅ swap SPIN to "PLAY AUTO" immediately
+  refreshAutoSpinSpinButton();
+},
+
+
+onClosed: () => {
+  // ✅ If user closes the menu without confirming, revert SPIN visuals
+  if (!state.ui.auto) {
+    state.ui.autoArmed = false;
+    state.ui.autoPendingRounds = -1;
+  }
+
+  uiController.applyUiLocks();
+
+  // ✅ This will restore btn_spin_up.png (NORMAL) if not armed/running
+  refreshAutoSpinSpinButton();
+},
+
+});
 
 uiController = createUiController({
   state,
@@ -12709,7 +13150,8 @@ t,
 
 fmtMoney,
 updateBetUI,
-refreshSpinAffordability: () => uiController.refreshSpinAffordability(),
+refreshSpinAffordability: () => uiController?.refreshSpinAffordability?.(),
+
 
 
 
@@ -12750,7 +13192,18 @@ refreshSpinAffordability: () => uiController.refreshSpinAffordability(),
 
 
 
-    
+    // ✅ INSTALL UI INPUT CONTROLLER (ONE-TIME)
+installUiInputController({
+  state,
+  doSpin,
+  stopAutoNow,
+  refreshAutoSpinSpinButton,
+  autoBtnPixi,
+  uiController,
+  splashLayer,
+  fsDimmer,
+  audio,
+});
 
 
 
@@ -12817,264 +13270,55 @@ function ensureBetParentingForLayout() {
 }
 
 let uiPanelH = 0; 
-  function layoutUI() {
- const panelW = app.screen.width;
+const { layoutUI } = makeLayoutUI({
+  __layoutDeps,
+  appScreenW: () => app.screen.width,
+  appScreenH: () => app.screen.height,
 
-// ✅ base layout height (keeps button sizes the same)
-const layoutH = Math.round(app.screen.height * PANEL_HEIGHT_FRAC);
+  PANEL_HEIGHT_FRAC: () => PANEL_HEIGHT_FRAC,
 
-// ✅ background-only height (portrait can be taller)
-const PORTRAIT_PANEL_BG_FRAC = 0.1; // 🔧 tune this (0.12..0.18)
-const bgH = Math.round(
-  app.screen.height *
-    (isMobilePortraitUILayout(__layoutDeps) ? PORTRAIT_PANEL_BG_FRAC : PANEL_HEIGHT_FRAC)
-);
+  safeInsetBottomPx: () => safeInsetBottomPx(),
 
-// keep uiPanelH tracking the *background* height (used elsewhere like uiTop calc)
-uiPanelH = bgH;
+  uiBottom,
+  uiPanel,
 
+  spinBtnPixi,
+  spinningBtnPixi,
+  buyBtnPixi,
+  settingsBtnPixi,
+  autoBtnPixi,
+  turboBtnPixi,
 
- uiPanel.x = 0;
-const safeB = safeInsetBottomPx();
-uiPanel.y = 0; // ✅ uiPanel is now inside the bottom panel coordinate space
+  ensureBetParentingForLayout,
 
-  // =====================
-// UI BOTTOM module layout (tracks panel size/position)
-// =====================
-uiBottom.layout({
-  W: app.screen.width,
-  H: app.screen.height,
-  uiH: uiPanelH,
-  safeB: safeB,
-  isMobile: isMobileUILayout(__layoutDeps),
-  isPortrait: isMobilePortraitUILayout(__layoutDeps),
+  setScaleToHeight,
+  centerPivot,
+
+  winUI,
+  winTitleLabel,
+  winAmountLabel,
+
+  balanceGroup,
+  balanceTitleLabel,
+  balanceLabel,
+
+  betGroup,
+  betTitleLabel,
+  betAmountUI,
+  betUpBtnPixi,
+  betDownBtnPixi,
+
+  betDisplayGroup,
+  betControlsGroup,
+
+  setTightHitArea: (btn, padX, padY) => setTightHitArea(btn, padX, padY),
+
+  setUiPanelH: (v) => { uiPanelH = v; },
 });
 
 
-// ✅ Ensure BET parenting is correct BEFORE we position things
-ensureBetParentingForLayout();
 
-// ✅ pass layoutH so button scaling stays the same
-if (isMobilePortraitUILayout(__layoutDeps)) layoutUIMobile(panelW, layoutH);
-else if (isMobileLandscapeUILayout(__layoutDeps)) layoutUIMobileLandscape(panelW, layoutH);
-else layoutUIDesktop(panelW, layoutH);
 
-  // Keep spinning overlay aligned
-  spinningBtnPixi.x = spinBtnPixi.x;
-  spinningBtnPixi.y = spinBtnPixi.y;
-  spinningBtnPixi.scale.set(spinBtnPixi.scale.x, spinBtnPixi.scale.y);
-  spinningBtnPixi.pivot.set(spinBtnPixi.pivot.x, spinBtnPixi.pivot.y);
-}
-function alignGroupTop(
-  group: Container,
-  topY: number
-) {
-  const b = group.getLocalBounds();
-  // b.y is usually negative due to anchors
-  group.y = Math.round(topY - b.y);
-}
-
-function layoutUIDesktop(panelW: number, targetH: number) {
-
-  const ML = isMobileLandscapeUILayout(__layoutDeps);
-  const UI_SCALE = ML ? 0.85 : 1.0;
-
-
-// =====================
-// BALANCE (DESKTOP) — group title + amount
-// =====================
-// 🔑 SHARED TOP ALIGNMENT LINE (DESKTOP)
-const GROUP_TOP_Y = Math.round(targetH * 0); // tweak 0.14–0.22
-balanceGroup.visible = true;
-
-
-// how close BALANCE sits to WIN (px)
-// 🔧 LOWER = closer to WIN
-const WIN_TO_BALANCE_GAP = 310; // try 80–140
-
-// WIN is already positioned & scaled at this point
-const winBounds = winUI.getBounds();
-
-// place BALANCE to the RIGHT of WIN
-balanceGroup.x = Math.round(
-  winBounds.x + winBounds.width + WIN_TO_BALANCE_GAP
-);
-
-// align vertically with WIN
-alignGroupTop(balanceGroup, GROUP_TOP_Y);
-
-
-alignGroupTop(balanceGroup, GROUP_TOP_Y);
-
-
-
-// optional: scale the group (keep 1 if you like current size)
-balanceGroup.scale.set(1, 1);
-
-// internal layout (local to balanceGroup)
-balanceLabel.anchor.set(0.5);
-balanceTitleLabel.anchor.set(0.5);
-
-balanceLabel.position.set(0, 0);
-balanceTitleLabel.position.set(0, -35);
-
-balanceLabel.roundPixels = true;
-balanceTitleLabel.roundPixels = true;
-
-balanceGroup.scale.set(1, 1);
-const h0 = Math.max(1, balanceGroup.getLocalBounds().height);
-const targetHBal = targetH * 0.73; // tune 0.45..0.70
-const sBal = targetHBal / h0;
-balanceGroup.scale.set(sBal);
-
-   // =====================
-// WIN (DESKTOP) — group title + amount
-// =====================
-winUI.visible = true;
-
-
-// 🔧 WIN SCALE (DESKTOP) — based on real bounds
-winUI.scale.set(1, 1);
-const winH0 = Math.max(1, winUI.getLocalBounds().height);
-const targetWinH = targetH * 0.73; // try 0.58..0.70
-const sWin = targetWinH / winH0;
-winUI.scale.set(sWin);
-
-// place the GROUP on the panel
-
-const WIN_CENTER_X = panelW * 0.50; // stays visually central, but NOT auto-centered logic
-
-winUI.x = Math.round(WIN_CENTER_X);
-alignGroupTop(winUI, GROUP_TOP_Y);
-
-
-
-// internal layout (local to winUI)
-const winGap = Math.round(targetH * 0.35);
-winTitleLabel.position.set(0, -winGap);
-winAmountLabel.position.set(0, 3);
-
-
-  // ===== BUTTONS (your current desktop placement) =====
-  placeOnPanel(spinBtnPixi, 0.86, 0.1, panelW, targetH);
-setScaleToHeight(spinBtnPixi, targetH * 1.7 * UI_SCALE);
-
-  placeOnPanel(autoBtnPixi, 0.78, 0.5, panelW, targetH);
-setScaleToHeight(autoBtnPixi,   targetH * 0.78 * UI_SCALE);
-
-  placeOnPanel(turboBtnPixi, 0.935, 0.5, panelW, targetH);
- setScaleToHeight(turboBtnPixi,  targetH * 0.9  * UI_SCALE);
-
-   placeOnPanel(buyBtnPixi, 0.14, 0.23, panelW, targetH);
- setScaleToHeight(buyBtnPixi, targetH * 1.4 * UI_SCALE);
-
-  placeOnPanel(settingsBtnPixi, 0.07, 0.54, panelW, targetH);
-setScaleToHeight(settingsBtnPixi, targetH * 0.4 * UI_SCALE);
-
-
-
-// =====================
-// BET (DESKTOP) — scale display group only (NOT arrows)
-// =====================
-
-const BET_ARROW_SCALE = isMobileLandscapeUILayout(__layoutDeps) ? 0.24 : 0.30;
-
-setScaleToHeight(betUpBtnPixi,   targetH * BET_ARROW_SCALE);
-setScaleToHeight(betDownBtnPixi, targetH * BET_ARROW_SCALE);
-
-
-
-
-
-// ✅ Scale ONLY the bet amount pill (not the "BET" label)
-const BET_PILL_SCALE = 0.85; // 🔧 try 0.75–0.9
-
-betAmountUI.scale.set(BET_PILL_SCALE);
-betTitleLabel.position.set(
-  0,
-  Math.round(-betAmountUI.getLocalBounds().height * 0.85)
-);
-
-// pill width (scaled)
-const pillW = betAmountUI.getBounds().width; // ✅ true on-screen width after group scaling
-
-
-// =====================
-// BET (DESKTOP) — positioned relative to WIN
-// =====================
-
-// 🔧 how close BET sits to WIN (px)
-// LOWER = closer to WIN
-const WIN_TO_BET_GAP = 320; // try 120–260
-
-
-
-// place BET to the LEFT of WIN
-betDisplayGroup.x = Math.round(
-  winBounds.x - WIN_TO_BET_GAP - betDisplayGroup.getBounds().width / 2
-);
-
-
-
-// Prevent accidental re-centering
-betDisplayGroup.pivot.set(0, 0);
-betControlsGroup.pivot.set(0, 0);
-
-
-// internal display layout (local)
-betAmountUI.position.set(0, 0);
-betTitleLabel.anchor.set(0.5);
-betTitleLabel.position.set(0, Math.round(-betAmountUI.getLocalBounds().height * 0.85));
-
-
-
-// vertical stack inside controls group
-const gapY = Math.round(targetH * 0.18);
-betUpBtnPixi.position.set(0, -gapY);
-betDownBtnPixi.position.set(0, +gapY);
-// ✅ force bounds update (prevents stale bounds on some Pixi runs)
-
-
-
-
-// =====================
-// CONTROLS ↔ PILL GAP (MOBILE-LANDSCAPE ONLY)
-// =====================
-
-// ✅ “mobile desktop” = phone/tablet landscape using desktop layout
-
-
-// 🔧 DESKTOP ONLY: gap between BET arrows and BET pill group
-const CTRL_TO_PILL_GAP = 50; // try 20..90 (bigger = more space)
-
-
-// pill left edge (display group is centered on the pill)
-const pillLeft = betDisplayGroup.x - (pillW * 0.5);
-
-// right edge of the controls group (in local coords)
-const bb = betControlsGroup.getLocalBounds();
-const controlsRightLocal = bb.x + bb.width;
-
-// place controls so its RIGHT edge is pillLeft - gap
-
-betControlsGroup.x = Math.round(pillLeft - CTRL_TO_PILL_GAP - controlsRightLocal);
-
-
-// ✅ DESKTOP ONLY: extra gap between BUY and bet +/- controls
-// Increase this to push the +/- buttons further RIGHT (away from BUY)
-betControlsGroup.x += 30; // 🔧 try 15..60
-
-
-
-// ✅ FINAL: top-align BET display + BET arrows with the shared baseline (DESKTOP)
-alignGroupTop(betDisplayGroup, GROUP_TOP_Y);
-alignGroupTop(betControlsGroup, GROUP_TOP_Y);
-// 🔧 DESKTOP ONLY: manual vertical nudge for BET arrows
-const BET_ARROW_Y_OFFSET = 10; // px — try 6..20
-betControlsGroup.y += BET_ARROW_Y_OFFSET;
-
-
-}
 
 function layoutUIMobile(panelW: number, targetH: number) {
 
@@ -13096,9 +13340,7 @@ winAmountLabel.visible = false;
 
 
 
-  // ===== WIN UI (center, above buttons) =====
-  placeOnPanel(winUI, 0.50, 0.40, w, h);
-  setScaleToHeight(winUI, h * 0.55);
+
 
   const winGap = Math.round(h * 0.30);
   winTitleLabel.x = 0;
@@ -13258,289 +13500,6 @@ balanceGroup.position.set(
   spinBtnPixi.resetVisual?.();
   buyBtnPixi.resetVisual?.();
 }
-function layoutUIMobileLandscape(panelW: number, targetH: number) {
-
-  
-  const w = panelW;
-  const h = targetH;
-
-
-
-
-  // Make origins predictable (so x/y means "center here")
-  centerPivot(buyBtnPixi);
-  centerPivot(spinBtnPixi);
-  centerPivot(settingsBtnPixi);
-  centerPivot(autoBtnPixi);
-  centerPivot(turboBtnPixi);
-
-  centerPivot(betDisplayGroup);
-  centerPivot(betControlsGroup);
-  centerPivot(winUI);
-  centerPivot(balanceGroup);
-
-  // ---------- HEIGHTS (tune these 3 first) ----------
-const BUY_H   = h * 2.4;
-const SPIN_H  = h * 2.4;
-const MINI_H  = h * 1.5;
-const ARROW_H = h * 0.6;  // bet up/down arrows
-
-  setScaleToHeight(buyBtnPixi, BUY_H);
-  setScaleToHeight(spinBtnPixi, SPIN_H);
-  setScaleToHeight(settingsBtnPixi, MINI_H * 0.6);
-  setScaleToHeight(autoBtnPixi, MINI_H);
-  setScaleToHeight(turboBtnPixi, MINI_H);
-  setScaleToHeight(betUpBtnPixi, ARROW_H);
-  setScaleToHeight(betDownBtnPixi, ARROW_H);
-
-  // ✅ MOBILE LANDSCAPE: tighten bet +/- hitboxes so they don't overlap neighbors
-if (isMobileLandscapeUILayout(__layoutDeps)) {
-  const padX = IS_TOUCH ? 14 : 4;   // 🔧 tweak 10..18
-  const padY = IS_TOUCH ? 14 : 4;   // 🔧 tweak 10..18
-  setTightHitArea(betUpBtnPixi, padX, padY);
-  setTightHitArea(betDownBtnPixi, padX, padY);
-}
-
-
-
-  // Show the groups we want in landscape
-  winUI.visible = true;
-  winTitleLabel.visible = true;
-  winAmountLabel.visible = true;
-
-  balanceGroup.visible = true;
-
-  betDisplayGroup.visible = true;
-  betControlsGroup.visible = true;
-
-  // ---------- BASELINE (everything sits on this line) ----------
-const CY = Math.round(h * 0.72);
-
-// ✅ LANDSCAPE: shared vertical offset for BET / WIN / BALANCE
-const GROUPS_Y_OFFSET = Math.round(h * -0.2); // negative = up, positive = down
-
-
-const LAND_GROUP_BASE_H = h * 0.58;      // base size
-const LAND_GROUP_SCALE  = 1.9;          // 🔧 1.05..1.35 (bigger = larger groups)
-
-const LAND_GROUP_H = LAND_GROUP_BASE_H * LAND_GROUP_SCALE;
-
-const SETTINGS_Y_OFFSET = Math.round(h * -0.3); // negative = up, positive = down
-
-
-
-  // ---------- LEFT SIDE ----------
-  const LEFT_PAD = 18;
-
-  // Settings (far left)
-  settingsBtnPixi.x = Math.round(LEFT_PAD + settingsBtnPixi.getLocalBounds().width * 0.5);
-settingsBtnPixi.y = CY + SETTINGS_Y_OFFSET;
-
-
-  // BUY big coin button
-  const buyX = Math.round(settingsBtnPixi.x + settingsBtnPixi.width * 0.75 + buyBtnPixi.width * 0.5 + 12);
-  buyBtnPixi.x = buyX;
-  buyBtnPixi.y = CY;
-
-  // BET arrows (to the right of BUY)
-const arrowsX = Math.round(
-  buyBtnPixi.x + buyBtnPixi.width * 0.62 + betControlsGroup.getLocalBounds().width * 0.5 + 16
-);
-betControlsGroup.x = arrowsX;
-
-// ✅ IMPORTANT: move arrows group up with the other groups
-betControlsGroup.y = CY + GROUPS_Y_OFFSET;
-
-
-
-// stack arrows inside controls group (local)
-const BET_ARROW_GAP_Y = Math.round(h * 0.36);
-
-// ✅ move the whole arrows group up/down (THIS is the one you want)
-const BET_ARROWS_GROUP_Y_OFFSET = -10; // negative = up
-
-betControlsGroup.y = CY + GROUPS_Y_OFFSET + BET_ARROWS_GROUP_Y_OFFSET;
-
-// ✅ keep children centered inside the group
-betUpBtnPixi.x = 0;
-betDownBtnPixi.x = 0;
-betUpBtnPixi.y = -BET_ARROW_GAP_Y;
-betDownBtnPixi.y = +BET_ARROW_GAP_Y;
-
-
-
-
-  // BET label + amount (to the right of arrows)
-  betAmountUI.x = 0;
-  betAmountUI.y = 0;
-
-  betTitleLabel.anchor.set(0.5);
-  const BET_TEXT_GAP = Math.round(LAND_GROUP_H * 0.18);
-betTitleLabel.position.set(0, Math.round(-(betAmountUI.getLocalBounds().height * 0.5 + BET_TEXT_GAP)));
-
-
-betDisplayGroup.y = CY + GROUPS_Y_OFFSET;
-
-
-// =====================
-// LANDSCAPE: UNIFY BET SCALE WITH WIN & BALANCE
-// =====================
-betDisplayGroup.scale.set(1, 1);
-const betH0 = Math.max(1, betDisplayGroup.getLocalBounds().height);
-betDisplayGroup.scale.set(LAND_GROUP_H / betH0);
-
-const BET_GAP_PX = Math.round(h * 0.01); // 🔧 try 0.03..0.10
-betTitleLabel.y -= Math.round(BET_GAP_PX / Math.max(0.0001, betDisplayGroup.scale.y));
-
-
-
-
-// ---------- WIN (LANDSCAPE): centered + POST-SCALE GAP (screen-space) ----------
-winTitleLabel.anchor.set(0.5);
-winAmountLabel.anchor.set(0.5);
-
-// 1) layout with ZERO gap (tight)
-const tW = winTitleLabel.getLocalBounds();
-const aW = winAmountLabel.getLocalBounds();
-
-const totalH0 = tW.height + aW.height;
-
-// center around y=0
-winTitleLabel.position.set(0, Math.round(-totalH0 * 0.5 + tW.height * 0.5));
-winAmountLabel.position.set(0, Math.round(+totalH0 * 0.5 - aW.height * 0.5));
-
-centerPivot(winUI);
-
-// 2) scale the group to the locked height
-winUI.scale.set(1, 1);
-const winH0 = Math.max(1, winUI.getLocalBounds().height);
-winUI.scale.set(LAND_GROUP_H / winH0);
-
-// 3) NOW apply a real visible gap in SCREEN SPACE by nudging amount down
-const WIN_GAP_PX = Math.round(h * -0.1); // 🔧 try 0.03..0.10
-winAmountLabel.y += Math.round(WIN_GAP_PX / Math.max(0.0001, winUI.scale.y));
-
-
-// place group
-winUI.x = Math.round(w * 0.50);
-winUI.y = CY + GROUPS_Y_OFFSET;
-
-
-// ---------- BALANCE (LANDSCAPE): centered + POST-SCALE GAP ----------
-balanceTitleLabel.anchor.set(0.5);
-balanceLabel.anchor.set(0.5);
-
-// 1) tight layout (ZERO gap)
-const tB = balanceTitleLabel.getLocalBounds();
-const aB = balanceLabel.getLocalBounds();
-const totalH0B = tB.height + aB.height;
-
-balanceTitleLabel.position.set(0, Math.round(-totalH0B * 0.5 + tB.height * 0.5));
-balanceLabel.position.set(0, Math.round(+totalH0B * 0.5 - aB.height * 0.5));
-
-centerPivot(balanceGroup);
-
-// 2) scale to LAND_GROUP_H
-balanceGroup.scale.set(1, 1);
-const balH0 = Math.max(1, balanceGroup.getLocalBounds().height);
-balanceGroup.scale.set(LAND_GROUP_H / balH0);
-
-// 3) apply visible gap in SCREEN SPACE (nudge amount down)
-const BALANCE_GAP_PX = Math.round(h * -.1); // 🔧 try 0.03..0.10
-balanceLabel.y += Math.round(BALANCE_GAP_PX / Math.max(0.0001, balanceGroup.scale.y));
-
-
-// =====================
-// LANDSCAPE: EQUAL SPACING (WIN is anchor)
-// =====================
-
-// WIN anchor (your "truth")
-const WIN_ANCHOR_X = Math.round(w * 0.50);
-winUI.x = WIN_ANCHOR_X;
-
-// Gap between groups (based on panel height so it scales per device)
-const GROUP_GAP_X = Math.round(h * 2.8); // 🔧 try 0.35..0.80
-
-// Helper: scaled width (local bounds * current scale)
-const scaledW = (c: Container) => c.getLocalBounds().width * (c.scale.x || 1);
-
-// Measure widths AFTER scaling
-const betW = scaledW(betDisplayGroup);
-const winW = scaledW(winUI);
-const balW = scaledW(balanceGroup);
-
-// Place BET to the left of WIN
-betDisplayGroup.x = Math.round(
-  WIN_ANCHOR_X - (winW * 0.5) - GROUP_GAP_X - (betW * 0.5)
-);
-
-// Place BALANCE to the right of WIN
-balanceGroup.x = Math.round(
-  WIN_ANCHOR_X + (winW * 0.5) + GROUP_GAP_X + (balW * 0.5)
-);
-
-balanceGroup.y = CY + GROUPS_Y_OFFSET;
-
-// =====================
-// LANDSCAPE: keep BET arrows attached to BET display
-// =====================
-const CTRL_TO_BET_GAP = Math.round(h * 0.25); // 🔧 try 0.15..0.35
-betControlsGroup.scale.set(1, 1); // ensure bounds are accurate
-const ctrlW = betControlsGroup.getLocalBounds().width * (betControlsGroup.scale.x || 1);
-
-// Put arrows just left of the betDisplayGroup
-betControlsGroup.x = Math.round(
-  betDisplayGroup.x - (betW * 0.5) - CTRL_TO_BET_GAP - (ctrlW * 0.5)
-);
-
-
-
- // ---------- RIGHT SIDE (LANDSCAPE): AUTO+TURBO stacked LEFT of SPIN ----------
-const RIGHT_PAD = -5;
-
-// horizontal gap between the stack and spin
-const STACK_TO_SPIN_GAP = -50; // try 6..18
-
-// vertical gap between AUTO and TURBO (stack)
-const STACK_GAP_Y = Math.round(h * 0.6); // try 0.18..0.30
-
-const spinW = spinBtnPixi.getLocalBounds().width;
-
-const autoW  = autoBtnPixi.getLocalBounds().width;
-const turboW = turboBtnPixi.getLocalBounds().width;
-
-
-// LANDSCAPE: vertical offset for SPIN (negative = up, positive = down)
-const SPIN_Y_OFFSET = Math.round(h * -1); // try -0.02 .. -0.10
-
-
-// SPIN pinned near the right edge
-spinBtnPixi.x = Math.round(w - RIGHT_PAD - spinW * 0.5);
-spinBtnPixi.y = CY + SPIN_Y_OFFSET;
-
-// ✅ LANDSCAPE ONLY: align BUY horizontally with SPIN (same Y line)
-buyBtnPixi.y = spinBtnPixi.y;
-// keep spinning overlay aligned
-spinningBtnPixi.x = spinBtnPixi.x;
-spinningBtnPixi.y = spinBtnPixi.y;
-spinningBtnPixi.scale.set(spinBtnPixi.scale.x, spinBtnPixi.scale.y);
-
-// Stack X is left of spin
-const stackX = Math.round(
-  spinBtnPixi.x - (spinW * 0.5) - STACK_TO_SPIN_GAP - Math.max(autoW, turboW) * 0.5
-);
-
-const STACK_CENTER_Y = CY + SPIN_Y_OFFSET;
-
-// AUTO above
-autoBtnPixi.x = stackX;
-autoBtnPixi.y  = STACK_CENTER_Y - STACK_GAP_Y;
-
-// TURBO below
-turboBtnPixi.x = stackX;
-turboBtnPixi.y = STACK_CENTER_Y + STACK_GAP_Y;
-;
-}
 
 
 
@@ -13567,9 +13526,11 @@ turboBtnPixi.y = STACK_CENTER_Y + STACK_GAP_Y;
 
     // --- Reel house + mask ---
     const reelHouse = new Sprite(texReelhouse("reel_house.png"));
+    
     reelHouse.anchor.set(0.5);
     reelHouseLayer.addChild(reelHouse);
-
+// ✅ FS counter can now safely anchor to the reel house (TDZ-safe)
+getFsReelAnchor = () => getReelAnchor(reelHouse);
     // =====================
     // TUMBLE WIN BANNER (Gates-like)
     // =====================
@@ -13642,101 +13603,124 @@ const TUMBLE_PORTRAIT_SCALE = 0.47;   // tweak this
     let tumbleBannerToken = 0;
 
 function tumbleBaseScale() {
+  // ✅ responsive multiplier based on reel sizing (cellSize)
+  // 130 is your “full size” cap from computeCellSize()
+  const DESIGN_CELL = 130;
+
+  // guard against early boot
+  const cs = Math.max(1, cellSize || 1);
+
+  // 1.0 when cellSize is 130, smaller below, larger above (rare)
+  let responsive = cs / DESIGN_CELL;
+
+  // clamp for safety
+  responsive = Math.max(0.70, Math.min(1.25, responsive));
+
   // base (desktop / normal)
-  let s = TUMBLE_BANNER_SCALE;
+  let s = TUMBLE_BANNER_SCALE * responsive;
 
-  // portrait override
-  if (isMobilePortraitUILayout(__layoutDeps)) s = TUMBLE_PORTRAIT_SCALE;
+  // portrait override (still responsive)
+  if (isMobilePortraitUILayout(__layoutDeps)) {
+    s = TUMBLE_PORTRAIT_SCALE * responsive;
+  }
 
-  // ✅ mobile landscape only override
-  if (isMobileLandscapeUILayout(__layoutDeps)) s *= MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL;
+  // mobile landscape tweak stays applied on top
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    s *= MOBILE_LANDSCAPE_TUMBLE_BANNER_MUL;
+  }
 
   return s;
 }
 
 
+let tumbleBannerShown = false;
+
+function isTumbleBannerBlocked(): boolean {
+ return (
+    state.overlay.splash ||
+    state.overlay.startup ||
+    state.overlay.fsIntro ||
+    state.overlay.fsOutro ||
+    state.overlay.fsOutroPending ||
+    state.overlay.bigWin ||
+    state.ui.settingsOpen ||
+    state.ui.buyMenuOpen
+  );
+}
+
+
     // Call this any time layout changes (resize / reel scaling)
-  function layoutTumbleBanner() {
-  const W = app.screen.width;
-  const H = app.screen.height;
-
-  // ✅ Safe-area aware vertical center (good on notched phones)
+function layoutTumbleBanner() {
+  
+    // ✅ Don’t show tumble banner during overlays/menus that block the reels
+  if (isTumbleBannerBlocked()) {
+    tumbleBanner.visible = false;
+    tumbleBanner.alpha = 0;
+    return;
+  }
   const safeT = safeInsetTopPx?.() ?? 0;
-  const safeB = safeInsetBottomPx?.() ?? 0;
-  const usableH = Math.max(1, H - safeT - safeB);
 
-// ✅ Anchor ABOVE the reel house (still safe-area aware)
-const b = reelHouse.getBounds();
+ 
 
-// horizontal: center on the reel house (or keep screen center if you prefer)
-tumbleBanner.x = Math.round(b.x + b.width * 0.5);
+  const A = getReelAnchor(reelHouse);
 
-// vertical: place above the reel house top edge
-const ABOVE_REEL_GAP_PX = -20; // ✅ positive = above reel (try 12..36)
+// -------------------------
+// TUNING
+// -------------------------
 
-// ✅ portrait-only extra lift (negative = move UP)
-const PORTRAIT_TUMBLE_BANNER_Y_NUDGE = -22; // 🔧 try -10 .. -40
+// ✅ “a few px above the reel house”, but scales with reel size
+// (so it stays visually consistent as the reel shrinks/grows)
+const ABOVE_REEL_GAP_PX = Math.round(cellSize * -0.4); // 🔧 try 0.05..0.12
 
-// ✅ desktop-only nudge (positive = move DOWN)
-const DESKTOP_TUMBLE_BANNER_Y_NUDGE = 0; // 🔧 try 10 .. 60
-
-const isDesktop =
-  !isMobilePortraitUILayout(__layoutDeps) &&
-  !isMobileLandscapeUILayout(__layoutDeps);
-
-let y = Math.round(b.y - ABOVE_REEL_GAP_PX);
-
-// apply portrait-only nudge
-if (isMobilePortraitUILayout(__layoutDeps)) {
-  y += PORTRAIT_TUMBLE_BANNER_Y_NUDGE;
-}
-
-// apply desktop-only nudge
-if (isDesktop) {
-  y += DESKTOP_TUMBLE_BANNER_Y_NUDGE;
-}
-
-// ✅ keep it out of the notch/safe-top
-y = Math.max(y, safeT + 8);
-
-tumbleBanner.y = y;
+// optional: keep if you still need to compensate for art / inset
+const REEL_TOP_VISUAL_OFFSET_PX = 70; // 🔧 try 0..120
 
 
-  // scale (your existing rules)
+  const PORTRAIT_TUMBLE_BANNER_Y_NUDGE = 0;
+  const DESKTOP_TUMBLE_BANNER_Y_NUDGE = 0;
+
+  const isDesktop =
+    !isMobilePortraitUILayout(__layoutDeps) &&
+    !isMobileLandscapeUILayout(__layoutDeps);
+
+  // -------------------------
+  // SCALE FIRST (so bannerH is correct)
+  // -------------------------
   tumbleBanner.scale.set(tumbleBaseScale());
 
-  // ---- Layout label + value as one centered group ----
+  // -------------------------
+  // X: center above reel house
+  // -------------------------
+  tumbleBanner.x = Math.round(A.cx);
+
+  // -------------------------
+  // Layout label + value in content group
+  // -------------------------
   const GAP = 6;
 
-  // anchors for seam layout
   tumbleBannerLabel.anchor.set(1, 0.5);
   tumbleBannerValue.anchor.set(0, 0.5);
 
-  // if you still want the content nudged right, keep this:
-  const CONTENT_OFFSET_X = 85; // tweak or set to 0 if you want true center
+  const CONTENT_OFFSET_X = 0;
   tumbleBannerLabel.x = -GAP / 2 + CONTENT_OFFSET_X;
   tumbleBannerValue.x = +GAP / 2 + CONTENT_OFFSET_X;
 
-  // vertical center in local coords using bounds (handles stroke/shadow)
   const lb = tumbleBannerLabel.getLocalBounds();
   const vb = tumbleBannerValue.getLocalBounds();
   tumbleBannerLabel.y = -(lb.y + lb.height * 0.5);
   tumbleBannerValue.y = -(vb.y + vb.height * 0.5);
 
-  // ✅ NOW center the *content group* so its bounds center is at (0,0)
   const cb = tumbleBannerContent.getLocalBounds();
   tumbleBannerContent.pivot.set(cb.x + cb.width * 0.5, cb.y + cb.height * 0.5);
   tumbleBannerContent.position.set(0, 0);
 
-  // ---- Draw BG around the content group (in the same local space) ----
-  const totalW = cb.width;
-  const totalH = cb.height;
-
-  const w = Math.round(totalW + TUMBLE_BANNER_PAD_X * 2);
-  const h = Math.round(totalH + TUMBLE_BANNER_PAD_Y * 2);
+  // -------------------------
+  // Draw BG around content (local space)
+  // -------------------------
+  const w = Math.round(cb.width + TUMBLE_BANNER_PAD_X * 2);
+  const h = Math.round(cb.height + TUMBLE_BANNER_PAD_Y * 2);
 
   tumbleBannerBg.clear();
-  
 
   if (TUMBLE_BANNER_RADIUS > 0) {
     tumbleBannerBg
@@ -13749,23 +13733,54 @@ tumbleBanner.y = y;
       .fill({ color: 0x000000, alpha: TUMBLE_BANNER_BG_ALPHA })
       .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
   }
-  // ✅ ensure banner is fully above reelhouse (uses actual bg height)
-const bannerH = tumbleBannerBg.getBounds().height;
-const minTop = b.y - ABOVE_REEL_GAP_PX - bannerH * 0.5;
 
-// ✅ Only clamp on mobile (prevents notch / overlap issues)
-// Desktop: allow manual nudges to move it down
-if (!isDesktop) {
-  tumbleBanner.y = Math.min(tumbleBanner.y, Math.round(minTop));
+  // -------------------------
+  // Compute banner height AFTER BG + scale
+  // -------------------------
+  const bgLocalH = tumbleBannerBg.getLocalBounds().height;
+  const bannerH = bgLocalH * tumbleBanner.scale.y;
+
+  // -------------------------
+  // Y: bottom of banner sits just above the reel house (with visual offset)
+  // -------------------------
+  const reelTopVisual = A.top + REEL_TOP_VISUAL_OFFSET_PX;
+
+  let y = Math.round(reelTopVisual - bannerH * 0.5 - ABOVE_REEL_GAP_PX);
+
+  if (isMobilePortraitUILayout(__layoutDeps)) y += PORTRAIT_TUMBLE_BANNER_Y_NUDGE;
+  if (isDesktop) y += DESKTOP_TUMBLE_BANNER_Y_NUDGE;
+
+ // keep out of notch/safe-top (top edge must be below safeT)
+const minY = Math.round(safeT + bannerH * 0.5 + 2);
+y = Math.max(y, minY);
+
+// ✅ HARD RULE: banner must be ABOVE the reel house (no overlap ever)
+// use the reel house TRUE top (not the visual offset)
+const reelTopTrue = A.top;
+
+// banner bottom edge = y + bannerH/2
+// require: banner bottom <= reelTopTrue - gap
+const maxY = Math.round(reelTopTrue - ABOVE_REEL_GAP_PX - bannerH * 0.5);
+y = Math.min(y, maxY);
+
+
+  tumbleBanner.y = y;
+    tumbleBanner.visible = tumbleBannerShown && !isTumbleBannerBlocked();
+
 }
 
 
-}
 
 
 
 
-    window.addEventListener("resize", layoutTumbleBanner);
+   window.addEventListener("resize", () => {
+  // keep it responsive while visible
+  if (tumbleBannerShown) {
+    tumbleBanner.scale.set(tumbleBaseScale() * 1.05);
+  }
+  layoutTumbleBanner();
+});
 
     function setTumbleBannerText(totalSoFar: number) {
       tumbleBannerLabel.text = t("ui.tumbleWin");
@@ -13777,25 +13792,39 @@ if (!isDesktop) {
     // =====================
     // Sticky banner controls
     // =====================
-    let tumbleBannerShown = false;
-
-    // Show once (with IN anim) then keep visible; subsequent calls just update text
-    async function showOrUpdateTumbleWinBanner(totalSoFar: number) {
-      tumbleBannerToken++;
-      const token = tumbleBannerToken;
-
-      setTumbleBannerText(totalSoFar);
-      layoutTumbleBanner();
 
 
-      // If already up, just update text + keep it visible
-   if (tumbleBannerShown && tumbleBanner.visible) {
+
+
+async function showOrUpdateTumbleWinBanner(totalSoFar: number) {
+   // ✅ If an overlay/menu is up, hard-hide and do nothing.
+  // Prevents any 1-frame “pop back” if something calls this during overlays.
+  if (isTumbleBannerBlocked()) {
+    hideTumbleWinBannerNow();
+    tumbleBannerShown = false;
+    return;
+  }
+
+  tumbleBannerToken++;
+  const token = tumbleBannerToken;
+
+  setTumbleBannerText(totalSoFar);
+  layoutTumbleBanner();
+
+
+
+ if (tumbleBannerShown && tumbleBanner.visible) {
   const base = tumbleBaseScale();
   tumbleBanner.visible = true;
   tumbleBanner.alpha = 1;
   tumbleBanner.scale.set(base * 1.05);
+
+  // ✅ NEW: after changing scale, recompute bg + y-position cleanly
+  layoutTumbleBanner();
+
   return;
 }
+
 
 
       tumbleBannerShown = true;
@@ -13846,6 +13875,9 @@ tumbleBanner.scale.set(base * 1.05);
       tumbleBanner.visible = false;
       tumbleBanner.alpha = 0;
       tumbleBanner.scale.set(tumbleBaseScale());
+      // compute banner height AFTER scale
+
+
 
       tumbleBannerShown = false;
     }
@@ -14323,27 +14355,40 @@ root.sortChildren();
 
 
 function redrawReelDimmer() {
-  // ✅ NO reel dimmer on mobile devices
-  if (isMobileUILayout(__layoutDeps)) {
-    reelDimmer.clear();
-    reelDimmer.visible = false;
-    reelDimmer.alpha = 0;
-    return;
-  }
+// ✅ Allow reel dimmer on MOBILE PORTRAIT, but keep it off on MOBILE LANDSCAPE (optional)
+if (isMobileLandscapeUILayout(__layoutDeps)) {
+  reelDimmer.clear();
+  reelDimmer.visible = false;
+  reelDimmer.alpha = 0;
+  return;
+}
 
   reelDimmer.clear();
 
-  const b = reelHouse.getBounds(); // world coords
+  // ✅ Prefer the reel WINDOW bounds
+  let b = gridMask.getBounds();
+
+  // ✅ Fallback: if mask bounds aren't ready yet, use reelHouse bounds
+  if (!Number.isFinite(b.x) || !Number.isFinite(b.y) || b.width <= 1 || b.height <= 1) {
+    b = reelHouse.getBounds();
+  }
+
+// ✅ padding scales with reel size
+const PAD_X = Math.round(cellSize * -0.31); // try 0.05 .. 0.12
+const PAD_Y = Math.round(cellSize * -.8); // try 0.06 .. 0.16
 
   reelDimmer
     .rect(
-      b.x - REEL_DIM_PAD_X,
-      b.y - REEL_DIM_PAD_Y,
-      b.width  + REEL_DIM_PAD_X * 2,
-      b.height + REEL_DIM_PAD_Y * 2
+      Math.round(b.x - PAD_X),
+      Math.round(b.y - PAD_Y),
+      Math.round(b.width + PAD_X * 2),
+      Math.round(b.height + PAD_Y * 2)
     )
     .fill(0x000000);
 }
+
+
+
 
 function pickAftershockHopPath(finalIdx: number, hops = 5) {
   // pick unique hop cells (excluding final), then end at final
@@ -14486,13 +14531,14 @@ async function playAftershockSequence(step: SpinStep) {
 
     // Fade helper
   async function setReelDimmer(on: boolean) {
-  // ✅ Hard disable on mobile
-  if (isMobileUILayout(__layoutDeps)) {
-    reelDimmer.clear();
-    reelDimmer.visible = false;
-    reelDimmer.alpha = 0;
-    return;
-  }
+// ✅ Allow on mobile portrait, optionally disable only on mobile landscape
+if (isMobileLandscapeUILayout(__layoutDeps)) {
+  reelDimmer.clear();
+  reelDimmer.visible = false;
+  reelDimmer.alpha = 0;
+  return;
+}
+
 
   if (on) {
     redrawReelDimmer();
@@ -14541,6 +14587,19 @@ refreshLocalizedText();
         const sy = inner / s.texture.height;
         const sc = Math.min(sx, sy);
         s.scale.set(sc);
+        function rescaleWinFramesToCell() {
+  if (!winFrameViews.length) return;
+
+  const inner = Math.max(1, cellSize - WIN_FRAME_PAD * 2);
+
+  for (const v of winFrameViews) {
+    const s = v.s;
+    const tw = s.texture.width || 1;
+    const th = s.texture.height || 1;
+    const sc = Math.min(inner / tw, inner / th);
+    s.scale.set(sc);
+  }
+}
 
         // Keep frames above symbols
         s.zIndex = 9999;
@@ -14549,6 +14608,19 @@ refreshLocalizedText();
         winFrameViews.push({ s });
       }
     }
+function rescaleWinFramesToCell() {
+  if (!winFrameViews.length) return;
+
+  const inner = Math.max(1, cellSize - WIN_FRAME_PAD * 2);
+
+  for (const v of winFrameViews) {
+    const s = v.s;
+    const tw = s.texture.width || 1;
+    const th = s.texture.height || 1;
+    const sc = Math.min(inner / tw, inner / th);
+    s.scale.set(sc);
+  }
+}
 
     // Hide all frames
     function clearWinFrames() {
@@ -15052,8 +15124,7 @@ tween(
       };
     }
 
-    const uiTop = app.screen.height - uiPanelH;
-      reelHouse.y = Math.min(reelHouse.y, uiTop / 2);
+   
 
   bgBase = new Sprite(Texture.from(BG_BASE_URL));
 bgBase.anchor.set(0.5);
@@ -15068,13 +15139,41 @@ backgroundLayer.addChild(bgFree);
 
 
 
+// =====================
+// BACKGROUND LAYOUT API (moved to src/layout/layoutBackground.ts)
+// =====================
+const bgApi = makeLayoutBackground({
+  app,
+  state,
+  __layoutDeps,
+  backgroundLayer,
+  getBgBase: () => bgBase,
+  getBgFree: () => bgFree,
+});
 
 
+
+// expose these names to match your old calls
+const {
+  layoutBackgroundPivotToScreenCenter,
+  resizeBackground,
+  zoomBackgroundTo,
+  setSplashBackgroundFraming,
+  snapBackgroundToTop,
+  lockBackgroundForSplash,
+  getBgHomes, // ✅ ADD THIS
+} = bgApi;
+
+
+layoutBackgroundPivotToScreenCenter();
+
+window.addEventListener("resize", () => {
+  layoutBackgroundPivotToScreenCenter();
+});
     // =====================
     // MOUSE Y PARALLAX (backgrounds)
     // =====================
-    let bgBaseHomeY = 0;
-    let bgFreeHomeY = 0;
+
 
     let mouseNY = 0;            // -1..+1
     let parallaxNY = 0;         // smoothed
@@ -15098,21 +15197,23 @@ addSystem(() => {
   if (state.overlay.startup) return;
   if (state.overlay.splash) return;
 
-  // ✅ NO PARALLAX ON MOBILE (portrait + landscape)
+  const homes = getBgHomes();
+
   if (isMobileUILayout(__layoutDeps)) {
     parallaxNY = 0;
     if (!bgBase || !bgFree) return;
-    bgBase.y = bgBaseHomeY;
-    bgFree.y = bgFreeHomeY;
+    bgBase.y = homes.baseHomeY;
+    bgFree.y = homes.freeHomeY;
     return;
   }
 
-  // desktop parallax
   parallaxNY += (mouseNY - parallaxNY) * BG_PARALLAX_SMOOTH;
-if (!bgBase || !bgFree) return;
-  bgBase.y = bgBaseHomeY + parallaxNY * BG_PARALLAX_BASE_PX;
-  bgFree.y = bgFreeHomeY + parallaxNY * BG_PARALLAX_FREE_PX;
+  if (!bgBase || !bgFree) return;
+  bgBase.y = homes.baseHomeY + parallaxNY * BG_PARALLAX_BASE_PX;
+  bgFree.y = homes.freeHomeY + parallaxNY * BG_PARALLAX_FREE_PX;
 });
+
+
 
 
 
@@ -15134,214 +15235,79 @@ if (!bgBase || !bgFree) return;
       Math.sin(t * Math.PI * 2 * (TITLE_FLOAT_SPD * 0.7)) * TITLE_FLOAT_ROT * titleFloatBlend;
   });
 
-  function layoutAll() {
-
-  // =====================
-  // PORTRAIT-ONLY LOCK (MOBILE)
-  // =====================
-
-  const W = app.screen.width;
-  const H = app.screen.height;
-
-  const IS_MOBILE =
-    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-    window.matchMedia?.("(pointer: coarse)")?.matches;
-
-  const isLandscape = app.screen.width > app.screen.height;
-
-
+// =====================
+// LAYOUT ALL (moved out of main.ts)
+// =====================
+const { layoutAll } = makeLayoutAll({
   
-// =====================
-// PORTRAIT-ONLY LOCK (MOBILE + DOM BLOCKER)
-// =====================
-const domBlocker = document.getElementById("rotate-blocker-dom");
+  app,
+  state,
+  __layoutDeps,
 
-if (IS_MOBILE && isLandscape) {
-  // Pixi blocker (covers canvas area)
-  rotateBlocker.visible = true;
-  layoutRotateBlocker();
+  rotateBlocker,
+  root,
+  backgroundLayer,
+  gameCore,
+  uiLayer,
 
-  const domText = document.getElementById("rotate-blocker-text");
-if (domText) domText.textContent = t("ui.rotateBackPortrait");
+  getDomRotateBlockerEl: () => document.getElementById("rotate-blocker-dom"),
+  setRotateBlockerText: (s: string) => {
+    const domText = document.getElementById("rotate-blocker-text");
+    if (domText) domText.textContent = s || (typeof t === "function" ? t("ui.rotateBackPortrait") : "");
+  },
 
-  // DOM blocker (covers entire browser viewport incl letterbox)
-  if (domBlocker) domBlocker.style.display = "flex";
+  reelHouse,
+  gridMask,
+  REEL_WINDOW_INSET,
+  INSET_L, INSET_T, INSET_R, INSET_B,
 
-  // Hide everything underneath (no peeking, no interaction)
-  backgroundLayer.visible = false;
-  gameCore.visible = false;
-  uiLayer.visible = false;
+  COLS,
+  ROWS,
+  FRAME_GAP,
+  SYMBOL_GAP,
 
-  root.sortChildren();
+  computeCellSize,
+  getCellSize: () => cellSize,
+  setCellSize: (v) => { cellSize = v; },
+
+  MOBILE_LANDSCAPE_REELHOUSE_MUL,
+
+  setBoardMetrics: ({ ox, oy, w, h }) => {
+    boardOx = ox;
+    boardOy = oy;
+    boardTotalW = w;
+    boardTotalH = h;
+  },
+
+  resizeBackground,
+  layoutFsDimmer,
+  layoutFsContinueX,
+  layoutGameCorePivot,
+  layoutFsOutro,
+  layoutFsIntroAward,
+
+  layoutUI,
+  layoutFsCounter,
+  layoutTumbleBanner,
+  layoutMultiplierPlaque,
+  layoutReelFlash,
+
+  autoMenuLayout: () => autoMenuApi?.layout?.(),
+  settingsLayout: () => settingsApi?.layout?.(),
+  buyMenuLayout: () => buyMenuApi?.layoutBuy?.(),
+
+  rescaleLiveCars: () => rescaleLiveCars?.(),
+  rescaleWinFrames: () => rescaleWinFramesToCell(),
   
-  return; // 🔒 STOP layout here
-}
-
-// =====================
-// LEAVING LANDSCAPE
-// =====================
-rotateBlocker.visible = false;
-if (domBlocker) domBlocker.style.display = "none";
-
-backgroundLayer.visible = true;
-gameCore.visible = true;
-uiLayer.visible = true;
-
-// safety relayout next frame (iOS viewport settles late)
-requestAnimationFrame(() => {
-  layoutUI();
-  autoMenuApi?.layout?.();
-  settingsApi?.layout?.();
-  buyMenuApi?.layoutBuy?.();
 });
-
-
-
-
-
-gameCore.visible = true;
-uiLayer.visible = true;
-
-
-// restore game/ui if we were blocking
-gameCore.alpha = 1;
-(gameCore as any).eventMode = "auto";
-uiLayer.alpha = 1;
-uiLayer.eventMode = "auto";
-
-
-  // --- background + overlays ---
-  resizeBackground();
-  layoutFsDimmer();
-  layoutFsContinueX();
-  layoutGameCorePivot();
-  layoutFsOutro();
-  layoutFsIntroAward();
-
-
-
-  // Center the reel house on screen
-const screenCx = W / 2;
-const screenCy = H / 2;
-
-const isPortrait = isMobilePortraitUILayout(__layoutDeps);
-
-// 🔧 TUNING: move the whole board up in portrait
-const PORTRAIT_BOARD_Y_LIFT_PX = Math.round(H * 0.055); // try 0.08..0.18
-
-reelHouse.x = screenCx;
-reelHouse.y = isPortrait
-  ? Math.round(screenCy - PORTRAIT_BOARD_Y_LIFT_PX)
-  : screenCy;
-
-
-  const isMob = isMobileUILayout(__layoutDeps);
-
-  // ----------------------------------------
-  // DESKTOP: keep your existing behavior
-  // ----------------------------------------
-  if (!isMob) {
-    cellSize = computeCellSize();
-
-    const gridW = COLS * cellSize + (COLS - 1) * FRAME_GAP;
-    const gridH = ROWS * cellSize + (ROWS - 1) * FRAME_GAP;
-
-    const padX = 60;
-    const padY = 60;
-
-    const targetW = gridW + padX;
-    const targetH = gridH + padY;
-
-    const texW = reelHouse.texture.width || 1;
-    const texH = reelHouse.texture.height || 1;
-
-    const s = Math.max(targetW / texW, targetH / texH);
-    reelHouse.scale.set(s);
-  }
-
-  // ----------------------------------------
-  // MOBILE: make reel house match device width
-  // ----------------------------------------
-  if (isMob) {
-  const MARGIN_X = 14; // screen side padding
-  const targetOuterW = Math.max(1, W - MARGIN_X * 2);
-
-  const texW = reelHouse.texture.width || 1;
-  const baseScale = targetOuterW / texW;
-
-  const portraitMul = isMobilePortraitUILayout(__layoutDeps) ? 1.08 : 1.0;
-  const landscapeMul = isMobileLandscapeUILayout(__layoutDeps) ? MOBILE_LANDSCAPE_REELHOUSE_MUL : 1.0;
-
-  reelHouse.scale.set(baseScale * portraitMul * landscapeMul);
-}
-
-
-
-  // Convert inset pixels (texture space) -> world space using reelHouse scale
-  const sx = reelHouse.scale.x;
-  const sy = reelHouse.scale.y;
-
-  const left   = reelHouse.x - reelHouse.width / 2 + REEL_WINDOW_INSET.left * sx;
-  const top    = reelHouse.y - reelHouse.height / 2 + REEL_WINDOW_INSET.top * sy;
-  const right  = reelHouse.x + reelHouse.width / 2 - REEL_WINDOW_INSET.right * sx;
-  const bottom = reelHouse.y + reelHouse.height / 2 - REEL_WINDOW_INSET.bottom * sy;
-
-  boardOx = Math.round(left);
-  boardOy = Math.round(top);
-  boardTotalW = Math.round(right - left);
-  boardTotalH = Math.round(bottom - top);
-
-  // ✅ MOBILE: now compute symbols/cell size from the *actual* reel window
-if (isMob) {
-  // ✅ MOBILE: compute cellSize EXACTLY from the reel window (no clamps/pads)
-if (isMob) {
-  const cellFromW = (boardTotalW - (COLS - 1) * SYMBOL_GAP) / COLS;
-  const cellFromH = (boardTotalH - (ROWS - 1) * SYMBOL_GAP) / ROWS;
-
-  cellSize = Math.floor(Math.min(cellFromW, cellFromH));
-}
-}
-
-
-  // Update grid mask
-  gridMask.clear();
-  gridMask
-    .rect(
-      boardOx + INSET_L,
-      boardOy + INSET_T,
-      boardTotalW - INSET_L - INSET_R,
-      boardTotalH - INSET_T - INSET_B
-    )
-    .fill(0xffffff);
-
-  // Reel dimmer follows reelHouse bounds -> redraw after scaling
-  redrawReelDimmer();
-
-  layoutTumbleBanner();
-  layoutMultiplierPlaque();
-   layoutUI();
-  autoMenuApi?.layout?.();
-
-  // ✅ IMPORTANT: force re-layout of menus after any resize/orientation change
-  settingsApi?.layout?.();
-  buyMenuApi?.layoutBuy?.();
-
-  // optional but often helpful if those UIs depend on stage/screen sizes
-  layoutFsCounter();
-  layoutTumbleBanner();
-  layoutMultiplierPlaque();
-  layoutReelFlash();
-
-  // if you have “live car rescale” logic, do it here too
-  rescaleLiveCars?.();
-
-  
-  layoutReelFlash();
-}
 
 
 __layoutReady = true;
     layoutAll();
+layoutStudioTag();
+    titleDropActive = false;
+applyGameTitleScaleFromBase();
+
     root.sortChildren();
     refreshLocalizedText();
     requestAnimationFrame(() => {
@@ -15372,49 +15338,9 @@ await runFinalBootPipelineOnce();
 
 
 
-    function resizeBackground() {
-      if (!bgBase || !bgFree) return;
-        // ✅ HARD LOCK background sizing/centering during splash (Solution B)
-      if (state.overlay.splash) return;
-      const cx = app.screen.width / 2;
-      const cy = app.screen.height / 2;
+   
 
-      const sprites = [bgBase, bgFree];
-
-      for (const bg of sprites) {
-        bg.x = cx;
-        bg.y = cy;
-
-        bgBaseHomeY = bgBase.y;
-    bgFreeHomeY = bgFree.y;
-
-        // scale-to-cover
-        const texW = bg.texture.width;
-        const texH = bg.texture.height;
-        const s = Math.max(app.screen.width / texW, app.screen.height / texH);
-        bg.scale.set(s);
-      }
-    }
-
-    function lockBackgroundForSplash() {
-      // Freeze any motion systems
-      bgZoomToken++;          // cancels any in-flight zoom tween
-      parallaxNY = 0;         // prevents “stored drift” from resuming weirdly
-
-      // Pin to chosen framing (you already call setSplashBackgroundFraming)
-      // If you want TOP during splash, use 0. If bottom, use 1.
-      setSplashBackgroundFraming(1, 0);
-if (!bgBase || !bgFree) return;
-      // Ensure only BASE background is showing for splash
-      bgBase.visible = true;
-      bgFree.visible = false;
-      bgBase.alpha = 0.9;
-      bgFree.alpha = 0;
-
-      currentBgMode = "BASE";
-      bgBaseHomeY = bgBase.y;
-      bgFreeHomeY = bgFree.y;
-    }
+  
 
 
     // =====================
@@ -15423,40 +15349,12 @@ if (!bgBase || !bgFree) return;
     // 0 = top of PNG aligned to top of screen
     // 1 = bottom of PNG aligned to bottom of screen
     // 0.5 = centered (normal)
-    function setSplashBackgroundFraming(t01: number, nudgePx = 0) {
-      const H = app.screen.height;
-
-      // helper: compute y so that a chosen "crop position" is shown
-      // with anchor=0.5:
-      // top aligned    -> y = bg.height/2
-      // bottom aligned -> y = H - bg.height/2
-      function yFor(bg: Sprite) {
-        const topY = bg.height * 0.5;
-        const botY = H - bg.height * 0.5;
-        return Math.round(topY + (botY - topY) * t01 + nudgePx);
-      }
-if (!bgBase || !bgFree) return;
-      bgBase.y = yFor(bgBase);
-      bgFree.y = yFor(bgFree);
-
-      // IMPORTANT: update homes so parallax doesn't fight splash framing
-      bgBaseHomeY = bgBase.y;
-      bgFreeHomeY = bgFree.y;
-    }
+   
 
 
     resizeBackground();
 
-    function snapBackgroundToTop() {
-      if (!bgBase || !bgFree) return;
-      // anchor = 0.5 → top edge = y - height/2
-      bgBase.y = Math.round(bgBase.height * 0.5);
-      bgFree.y = Math.round(bgFree.height * 0.5);
-
-      // IMPORTANT: update "home" positions so parallax doesn't fight this
-      bgBaseHomeY = bgBase.y;
-      bgFreeHomeY = bgFree.y;
-    }
+    
 
 
 
@@ -15472,91 +15370,47 @@ if (!bgBase || !bgFree) return;
     const STARTUP_PAN_MS = 2000;      // tweak
     const STARTUP_REVEAL_DELAY = 10; // tweak
 
-    function playStartupIntro() {
-      state.overlay.startup = true;
+    const startupApi = makeStartupIntro({
+  app,
+  state,
+  gameCore,
 
-      // --- SMOKE: keep OFF during startup pan ---
-    smokeFxEnabled = false;
-    clearSmokeNow();     // removes any already-spawned puffs
-    smokeSpawnAcc = 0;   // resets spawn accumulator (optional but nice)
+  getBgBase: () => bgBase,
+  getBgFree: () => bgFree,
+  getBgHomes: () => bgApi.getBgHomes(),
 
+  resizeBackground,
+  fadeUiLayerTo,
+  showGameCoreDelayed,
 
-      // Hide/lock everything except the background
-      gameCore.alpha = 0;
-      gameCore.scale.set(1);
-      (gameCore as any).eventMode = "none";
+  playMusicWhenUnlocked,
 
-      // If you want the UI hidden too during the intro
-      fadeUiLayerTo(0, 0); // immediate
+  onStartupFinished: () => {
+    state.overlay.boot = false;
+    layoutMultiplierPlaque();
 
-      // Make sure backgrounds are in their correct "home" layout first
-      resizeBackground();
+    // ✅ BASE GAME START: spawn the base car immediately
+    if (!carsDisabled(__layoutDeps)) {
+      bgCarCooldown = 999;
+      spawnBgCar(true);
+    }
+  },
 
-    /// Start with the BOTTOM of the texture exactly at the bottom of the screen.
-    // With anchor 0.5, bottom edge is (y + height/2),
-    // so y = screenH - height/2
-    const screenH = app.screen.height;
-if (!bgBase || !bgFree) return;
-    const baseStartY = Math.round(screenH - bgBase.height * 0.5);
-    const freeStartY = Math.round(screenH - bgFree.height * 0.5);
+  setSmokeEnabled: (on) => { smokeFxEnabled = on; },
+  clearSmokeNow,
+  resetSmokeAcc: () => { smokeSpawnAcc = 0; },
 
-    // optional extra "peek" below the screen
-    const BOTTOM_PAD = 0; // try 40–120 for stronger upward motion
-if (!bgBase || !bgFree) return;
-    bgBase.y = baseStartY + BOTTOM_PAD;
-    bgFree.y = freeStartY + BOTTOM_PAD;
+  STARTUP_PAN_MS,
+  STARTUP_REVEAL_DELAY,
+});
 
-
-    const STARTUP_HOLD_MS = 40;
-
-    setTimeout(() => {
-      tween(
-        
-      STARTUP_PAN_MS,
-      (k) => {
-        // smooth cinematic ease-out
-        const e = k * k * (3 - 2 * k); // smoothstep
-        if (!bgBase || !bgFree) return;
-        bgBase.y = baseStartY + (bgBaseHomeY - baseStartY) * e;
-        bgFree.y = freeStartY + (bgFreeHomeY - freeStartY) * e;
-      },
-      () => {
-
-          // Reveal the game
-          state.overlay.startup = false;
-
-          showGameCoreDelayed(STARTUP_REVEAL_DELAY, 420, 0.92);
-          fadeUiLayerTo(1, 320);
-          audio?.playMusic?.("music_base", 600);
-          state.overlay.boot = false;  
-layoutMultiplierPlaque();  
-
-
-          // ✅ BASE GAME START: spawn the base car immediately
- if (!carsDisabled(__layoutDeps)) {
-  bgCarCooldown = 999;
-  spawnBgCar(true);
+function playStartupIntro() {
+  state.overlay.startup = true; // ✅ set immediately
+  layoutStudioTag();           // ✅ enforce hide right now
+  startupApi.playStartupIntro();
 }
 
 
-          // --- SMOKE: start only after intro pan is finished ---
-    setTimeout(() => {
-      smokeFxEnabled = true;
-    }, 150); // tiny delay so it never overlaps the last frames of the pan
-
-
-          // Optional: drop the title AFTER the game is visible
-          setTimeout(() => {
-          
-          }, STARTUP_REVEAL_DELAY + 0);
-
-          
-        }
-      );
-      }, STARTUP_HOLD_MS);
-    }
-
-    window.addEventListener("resize", resizeBackground);
 
 
 
@@ -16047,9 +15901,8 @@ function kickFreeSpinsAuto(delayMs = 250) {
 }
 
 
-    async function doSpin() {
-     
-      function computeTotalWinXFromSteps(res: SpinResult): number {
+async function doSpin() {
+  function computeTotalWinXFromSteps(res: SpinResult): number {
   // Prefer explicit total if provider gives it
   const direct = (res as any).totalWinX;
   if (Number.isFinite(direct)) return direct;
@@ -16065,61 +15918,34 @@ function kickFreeSpinsAuto(delayMs = 250) {
   }
   return sum;
 }
-      if (state.overlay.splash) return;
-
-    // 🔒 Startup intro: absolutely no spinning / input should work
-    if (state.overlay.startup) return;
-
-      
-        // 🔒 During FS intro/outro: absolutely no spinning / input should work
-      if (state.overlay.fsIntro || state.overlay.fsOutro) return;
-      // ✅ RGS: block spins until authenticated
-if (isRgs && !rgsReady) {
-  console.warn("[RGS] doSpin blocked — not authenticated yet");
-  return;
-}
 
 
-      // Optional extra safety: block spins while menus are open
-// ✅ BUT allow FREE SPINS to continue even if SETTINGS is open
-if (
-  state.ui.buyMenuOpen ||
-  (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen())
-) {
-  return;
-}
+  if (state.overlay.boot) return;
+  if (loadingLayer?.visible) return;
+  if (state.overlay.splash) return;
+  if (state.overlay.startup) return;
+  if (state.overlay.fsIntro || state.overlay.fsOutro) return;
 
+  if (isRgs && !rgsReady) {
+    console.warn("[RGS] doSpin blocked — not authenticated yet");
+    return;
+  }
 
-        // ✅ Don't allow spinning while FS intro overlay is up
-        if (state.overlay.fsIntro || state.overlay.fsOutro) return;
-        // ✅ Settings blocks manual/base spins, but NOT FREE SPINS auto-chaining
-if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
+  if (isRgs && isDemo) {
+    // no-op; demo uses local provider path
+  }
 
-      if (state.ui.spinning) return;
+  if (state.ui.buyMenuOpen || (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen())) return;
+  if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
+  if (state.ui.spinning) return;
 
-// =====================
-// Decide spin mode ONCE
-// =====================
-const mode: Mode =
-  (state.game.mode === "FREE_SPINS" || state.fs.remaining > 0)
-    ? "FREE_SPINS"
-    : "BASE";
-// =====================
-// RGS helpers (in-scope for doSpin)
-// =====================
+  const mode: Mode = (state.game.mode === "FREE_SPINS" || state.fs.remaining > 0) ? "FREE_SPINS" : "BASE";
 
+  let rgsRoundStarted = false;
 
-// per-spin RGS state
-let rgsRoundStarted = false;
-let rgsWinToReport = 0;
-
-state.ui.spinning = true;
-if (isRgs && mode === "BASE") {
-  rgsRoundStarted = true;
-}
-uiController.applyUiLocks();
-
-audio?.playSfx?.("spin_start", 1.0);
+  state.ui.spinning = true;
+  uiController.applyUiLocks();
+  audio?.playSfx?.("spin_start", 1.0);
 
 
      uiController.applyUiLocks();
@@ -16156,6 +15982,7 @@ buyBtnPixi.cursor = "default";
 autoBtnPixi?.setEnabled?.(false);
 
     const bet = state.bank.betLevels[state.bank.betIndex];
+const betMicro = dollarsToMicro(bet);
 
 
 
@@ -16165,11 +15992,7 @@ autoBtnPixi?.setEnabled?.(false);
 
 const spinCost = (mode === "BASE") ? bet : 0;
 
-// ✅ affordability check FIRST
-if (spinCost > 0 && state.bank.balance < spinCost) {
-  // ... your existing insufficient funds early return ...
-  return;
-}
+
 
 // ✅ THEN call Stake play (only if we're really spinning)
 // (removed) — play is handled in the unified provider section below
@@ -16253,14 +16076,69 @@ const provider = getResultProvider();
 let res: SpinResult;
 let charged = 0;
 
-if (isRgs) {
-  const playRes = await rgsClient.play(bet, mode);
+// ✅ Demo sessions can return round.active=false and empty state.
+// In demo: run local sim and DO NOT touch endRound.
+const useRgsPlay = isRgs && !isDemo;
 
-  // Accept either shape:
-  // 1) playRes is SpinResult
-  // 2) playRes.result is SpinResult
-  res = ((playRes as any).result ?? playRes) as SpinResult;
+if (useRgsPlay && rgsRoundLock) {
+  console.warn("[RGS] blocked: round lock still active");
+
+  // ✅ CLEANUP (same as your finally)
+  state.ui.spinning = false;
+  spinningBtnPixi.visible = false;
+  spinBtnPixi.visible = true;
+  betDownBtnPixi.setEnabled(true);
+  betUpBtnPixi.setEnabled(true);
+
+  const uiFree =
+    !state.ui.settingsOpen &&
+    !state.ui.buyMenuOpen &&
+    !(autoMenuApi?.isOpen?.() ?? false);
+
+  buyBtnPixi?.setEnabled?.(uiFree);
+  autoBtnPixi?.setEnabled?.(uiFree);
+
+  uiController.applyUiLocks();
+  return;
+}
+
+
+if (useRgsPlay) {
+  rgsRoundLock = true;
+
+  try {
+    const playRes: any = await rgsClient.play(betMicro, "base");
+
+    // Your backend may return either {result: ...} or the result directly
+    res = ((playRes as any).result ?? playRes) as SpinResult;
+
+    // ✅ Only mark round started if server says it's active
+    // (endRound is only valid when active === true)
+    if (mode === "BASE" && (playRes as any)?.round?.active === true) {
+      rgsRoundStarted = true;
+    } else {
+      rgsRoundStarted = false;
+    }
+
+  } catch (e: any) {
+    // unlock on any play error
+    rgsRoundLock = false;
+
+    const msg = String(e?.message ?? e).toLowerCase();
+
+    if (msg.includes("active bet")) {
+      stopAutoNow("RGS active bet");
+      refreshAutoSpinSpinButton();
+      buyMenuApi?.showToast?.("Stake says an active bet is still open. Please refresh the game session.");
+      return;
+    }
+
+    buyMenuApi?.showToast?.("RGS play failed. Check console for request payload.");
+    throw e;
+  }
+
 } else {
+  // ✅ Local sim path (also used for RGS demo=true)
   const outcome = await provider({
     cfg: simCfg,
     mode,
@@ -16274,22 +16152,12 @@ if (isRgs) {
   charged = (mode === "BASE") ? ((outcome as any).betAmount ?? spinCost) : 0;
 }
 
-
-
-// ✅ Only do local debits when NOT under RGS
-if (!isRgs && charged > 0) {
+// ✅ Only do local debits when NOT under live RGS play
+if (!useRgsPlay && charged > 0) {
   state.bank.balance = Math.max(0, state.bank.balance - charged);
   balanceLabel.text = fmtMoney(state.bank.balance);
   uiController.applyUiLocks();
 }
-
-
-
-
-
-
-
-
 
 
 
@@ -16330,7 +16198,7 @@ audio?.setBaseMusicIntensity?.(0.15, 300);
 const winX = computeTotalWinXFromSteps(res);
 const winAmount = winX * bet;
 
-rgsWinToReport = winAmount;
+// RGS endRound does not take win; server settles based on the play result.
 // (Optional) store it back so other code sees it
 (res as any).totalWinX = winX;
 
@@ -16369,60 +16237,71 @@ if (!isRgs && winAmount > 0) {
   }
 
       } finally {
-  // ✅ RGS: always try to close the round if we started one
-  if (isRgs && mode === "BASE" && rgsRoundStarted) {
+  const useRgsPlay = isRgs && !isDemo;
+
+  // ✅ RGS: only close the round if:
+  // - we used live RGS play (not demo)
+  // - it's BASE
+  // - server said round.active === true (we latched via rgsRoundStarted)
+  if (useRgsPlay && mode === "BASE" && rgsRoundStarted) {
     try {
-      const res = await rgsClient.endRound(rgsWinToReport);
-      console.log("[RGS] endRound response:", res);
+      const endRes = await rgsClient.endRound();
+      console.log("[RGS] endRound response:", endRes);
 
-      if (res) {
+      // endRound() returns null when round wasn't active (client skipped) or already closed
+      if (endRes) {
         const balObj =
-  (res as any)?.balance ??
-  (res as any)?.wallet?.balance ??
-  (res as any)?.player?.balance ??
-  (res as any)?.data?.balance ??
-  null;
+          (endRes as any)?.balance ??
+          (endRes as any)?.wallet?.balance ??
+          (endRes as any)?.player?.balance ??
+          (endRes as any)?.data?.balance ??
+          null;
 
-const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+        const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
 
-if (typeof amt === "number" && Number.isFinite(amt)) {
-  state.bank.balance = amt / 1_000_000;
-  balanceLabel.text = fmtMoney(state.bank.balance);
- uiController.applyUiLocks();
-
-} else {
-  console.warn("[RGS] endRound: no numeric balance.amount found in response");
-}
+        if (typeof amt === "number" && Number.isFinite(amt)) {
+          state.bank.balance = amt / 1_000_000;
+          balanceLabel.text = fmtMoney(state.bank.balance);
+          uiController.applyUiLocks();
+        } else {
+          console.warn("[RGS] endRound: no numeric balance.amount found in response");
+        }
       }
-    } catch (e) {
-      console.warn("[RGS] endRound failed (non-fatal)", e);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+
+      if (msg.includes("player does not have active bet")) {
+        console.warn("[RGS] endRound not needed (already closed):", msg);
+      } else {
+        console.warn("[RGS] endRound failed (fatal in RGS)", e);
+
+        state.ui.auto = false;
+        state.ui.autoArmed = false;
+        state.ui.autoPendingRounds = -1;
+        refreshAutoSpinSpinButton();
+        buyMenuApi?.showToast?.("Connection issue. Please refresh.");
+      }
     }
   }
 
+  // ✅ Always release the lock when we're done with this spin attempt
+  rgsRoundLock = false;
   rgsRoundStarted = false;
-  rgsWinToReport = 0;
 
   state.ui.spinning = false;
+
   spinningBtnPixi.visible = false;
   spinBtnPixi.visible = true;
 
+  uiController.applyUiLocks();
+  (buyBtnPixi as any)?.resetVisual?.();
 
-    // ✅ swap back (but if settings is open, keep spin hidden/disabled)
-    spinningBtnPixi.visible = false;
-    spinBtnPixi.visible = true;
+  // ✅ If we opened the FS intro, don't auto-spin yet
+  if (openedFsIntro) return;
 
-   
-
-
-uiController.applyUiLocks();
-// optional: if your button helper supports it, snap visuals back to UP
-(buyBtnPixi as any)?.resetVisual?.();
+  // ... keep the rest of your existing "FS ended → outro" and auto-chaining logic below ...
 
 
-
-
-        // ✅ If we opened the FS intro, don't auto-spin yet
-    if (openedFsIntro) return;
 
 
     // ✅ FREE SPINS JUST ENDED → show TOTAL WIN outro
@@ -17300,7 +17179,7 @@ drawGrid(step.grid);
 
     }
 
-    const dimmerInP = isMobileUILayout(__layoutDeps) ? Promise.resolve() : setReelDimmer(true); // starts after the delay
+  const dimmerInP = setReelDimmer(true);
     const glowP = pulseReelHouseGlowOnce();  // glow starts same moment as dimmer
     liftWinningSprites(hiArr);
 
@@ -17358,7 +17237,7 @@ await Promise.all([
     const framesOutP = fadeOutWinFrames(durT(80));
 
     // ✅ turn OFF the black tint as the explosion starts
-  const dimmerOutP = isMobileUILayout(__layoutDeps) ? Promise.resolve() : setReelDimmer(false);
+ const dimmerOutP = setReelDimmer(false);
 
   // ✅ If sim forgot to populate explodePositions, derive it from clusters
   const explodePositions =

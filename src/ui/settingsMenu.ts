@@ -212,7 +212,7 @@ icon.scale.set(s);
     bg.clear();
     bg
       .roundRect(0, boxY, w, boxH, 10)
-      .fill({ color: 0x000000, alpha: 0.25 })
+      .fill({ color: 0x000000, alpha: 0.001 })
       .stroke({ width: 2, color: 0xffffff, alpha: 0.55 });
 
     return { w, h: boxY + boxH };
@@ -512,6 +512,8 @@ if (portrait) {
   // =====================
   // SETTINGS SUBMENU (overlay)
   // =====================
+  // ✅ baseline used so settings scales immediately from the size you opened it at
+
   const settingsMenuLayer = new Container();
 settingsMenuLayer.zIndex = 9000;
 root.addChild(settingsMenuLayer);
@@ -792,13 +794,15 @@ function refreshInfoTextForLanguage() {
 function layoutInfo() {
   const W = app.screen.width;
   const H = app.screen.height;
+    const LAND = isMobileLandscapeSettingsLayout();
 
   // backdrop
   infoBackdrop.clear();
   infoBackdrop.rect(0, 0, W, H).fill({ color: 0x000000, alpha: 0.7 });
 
-  const panelW = Math.min(900, Math.round(W * 0.9));
-  const panelH = Math.min(700, Math.round(H * 0.85));
+// ✅ Larger INFO modal (independent of Settings size)
+const panelW = Math.min(900, Math.round(W * 0.9));
+const panelH = Math.min(700, Math.round(H * 0.85));
   const x = (W - panelW) / 2;
   const y = (H - panelH) / 2;
 
@@ -897,6 +901,9 @@ const paySize = (paytableSection as any).__layout?.(infoViewportW, PORTRAIT_INFO
   // main panel (rounded rect)
   const settingsPanel = new Graphics();
   settingsMenuLayer.addChild(settingsPanel);
+  // ✅ All UI elements that must visually scale live in here (sliders can’t “undo” parent scaling)
+const settingsContent = new Container();
+settingsMenuLayer.addChild(settingsContent);
 
   // swallow clicks inside panel
   settingsPanel.eventMode = "static";
@@ -906,7 +913,7 @@ const paySize = (paytableSection as any).__layout?.(infoViewportW, PORTRAIT_INFO
 
   // INFO row
   const infoRow = new Container();
-  settingsMenuLayer.addChild(infoRow);
+settingsContent.addChild(infoRow);
 
   const infoBtnBg = new Graphics();
   infoRow.addChild(infoBtnBg);
@@ -941,36 +948,37 @@ const infoTitle = new Text({
   infoRow.on("pointerover", () => { infoBtnBg.alpha = 0.35; });
   infoRow.on("pointerout",  () => { infoBtnBg.alpha = 0; });
 
-  function layoutInfoRow(cx: number, y: number, panelW: number) {
-    const BTN_W = Math.round(panelW * 0.86);
-    const BTN_H = isMobileLandscapeSettingsLayout() ? 56 : 70;
+ function layoutInfoRow(cx: number, y: number, panelW: number, uiScale: number) {
+  const BTN_W = Math.round(panelW * 0.86);
+  const BTN_H = Math.round((isMobileLandscapeSettingsLayout() ? 56 : 70) * uiScale);
 
-    const R = 18;
+  const R = 18;
 
-    const ICON_X = -BTN_W / 2 + 48;
-    const TEXT_X = ICON_X + 34;
+  const ICON_X = -BTN_W / 2 + Math.round(48 * uiScale);
+  const TEXT_X = ICON_X + Math.round(34 * uiScale);
 
-    infoRow.x = cx - 12;
-    infoRow.y = y;
+  infoRow.x = cx - Math.round(12 * uiScale);
+  infoRow.y = y;
 
-    infoBtnBg.clear();
-    infoBtnBg.roundRect(-BTN_W / 2, -BTN_H / 2, BTN_W, BTN_H, R).fill(0x000000);
+  infoBtnBg.clear();
+  infoBtnBg.roundRect(-BTN_W / 2, -BTN_H / 2, BTN_W, BTN_H, R).fill(0x000000);
 
-    infoRow.hitArea = new Rectangle(-BTN_W / 2, -BTN_H / 2, BTN_W, BTN_H);
+  infoRow.hitArea = new Rectangle(-BTN_W / 2, -BTN_H / 2, BTN_W, BTN_H);
 
-    infoIcon.x = ICON_X;
-    infoIcon.y = 0;
+  infoIcon.x = ICON_X;
+  infoIcon.y = 0;
 
-    infoTitle.x = TEXT_X;
-    infoTitle.y = 0;
-  }
+  infoTitle.x = TEXT_X;
+  infoTitle.y = 0;
+}
+
 
   // close button
   const closeSettingsBtn = makePngButton(
     CLOSE_UP, CLOSE_HOVER, CLOSE_DOWN,
     () => closeFromOutside()
   );
-  settingsMenuLayer.addChild(closeSettingsBtn);
+  settingsContent.addChild(closeSettingsBtn);
 
   const SETTINGS_CLOSE_HIT = 200;
   closeSettingsBtn.hitArea = new Rectangle(
@@ -1050,7 +1058,7 @@ const infoTitle = new Text({
   sfxRow.addChild(sfxSlider);
   musicRow.addChild(musicSlider);
 
-  settingsMenuLayer.addChild(sfxRow, musicRow);
+settingsContent.addChild(sfxRow, musicRow);
 
   function layoutSettingsMenu() {
       const LAND = isMobileLandscapeSettingsLayout();
@@ -1058,7 +1066,7 @@ const infoTitle = new Text({
     settingsBlocker.clear();
     settingsBlocker
       .rect(0, 0, app.screen.width, app.screen.height)
-      .fill({ color: 0x000000, alpha: 0.001 });
+      .fill({ color: 0x000000, alpha: 0.35 });
 
     settingsBlocker.eventMode = "static";
     settingsBlocker.cursor = "default";
@@ -1076,18 +1084,10 @@ const H = app.screen.height;
 // ✅ portrait mobile detection (settings)
 const PORTRAIT_MOBILE = (W < 820 || (W / H) < 0.90) && H >= W;
 
-const panelW = LAND
-  ? Math.min(980, Math.round(W * 0.88))
-  : (PORTRAIT_MOBILE
-      ? Math.min(900, Math.round(W * 0.72))   // ✅ wider on mobile portrait (try 0.90..0.96)
-      : Math.min(520, Math.round(W * 0.55))); // desktop-ish
+const panelW = 420;   
 
 
-const panelH = LAND
-  ? Math.min(280, Math.round(H * 0.60))
-  : (PORTRAIT_MOBILE
-      ? Math.min(520, Math.round(H * 0.52))  // ✅ taller on mobile portrait
-      : Math.min(420, Math.round(H * 0.35))); // desktop-ish portrait
+const panelH = LAND ? 260 : 320
 
 
 
@@ -1099,7 +1099,7 @@ const panelH = LAND
     settingsPanel.clear();
     settingsPanel
       .roundRect(cx - panelW / 2, cy - panelH / 2, panelW, panelH, radius)
-      .fill({ color: 0x0b0b0b, alpha: 0.75 })
+ .fill({ color: 0x0b0b0b, alpha: 0.9 })
       .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
 
     settingsPanelRect.x = cx - panelW / 2;
@@ -1109,51 +1109,32 @@ const panelH = LAND
 
    
 
-// rows: INFO, SFX, MUSIC
-let rowInfoY: number;
-let rowSfxY: number;
-let rowMusY: number;
+// ✅ NO SCALING: fixed-size menu, just repositions as window changes
+settingsContent.scale.set(1);
+settingsContent.x = 0;
+settingsContent.y = 0;
 
-if (LAND) {
-  const topPad = 56;  // 🔧
-  const rowGap = 66;  // 🔧
-  rowInfoY = Math.round(cy - panelH / 2 + topPad);
-  rowSfxY  = Math.round(rowInfoY + rowGap);
-  rowMusY  = Math.round(rowSfxY + rowGap);
-} else {
-  // ✅ portrait spacing
-  const topPad    = PORTRAIT_MOBILE ? 90 : 110;
-  const bottomPad = PORTRAIT_MOBILE ? 60 : 80;
-
-  const topY = cy - panelH / 2 + topPad;
-  const bottomY = cy + panelH / 2 - bottomPad;
-
-  // spread 3 rows across the available span
-  const rowGap = (bottomY - topY) / 2;
-
-  rowInfoY = Math.round(topY + rowGap * 0);
-  rowSfxY  = Math.round(topY + rowGap * 1);
-  rowMusY  = Math.round(topY + rowGap * 2);
-}
-
-
-layoutInfoRow(cx, rowInfoY, panelW);
-sfxRow.x = cx;   sfxRow.y = rowSfxY;
-musicRow.x = cx; musicRow.y = rowMusY;
-
-
-sfxRow.x = cx;   sfxRow.y = rowSfxY;
-musicRow.x = cx; musicRow.y = rowMusY;
-
-
-   const BTN_W = Math.round(panelW * 0.86);
+const BTN_W = Math.round(panelW * 0.86);
 const BTN_H = LAND ? 56 : 70;
 
+const topPad = LAND ? 56 : (PORTRAIT_MOBILE ? 70 : 90);
+const rowGap = LAND ? 16 : 18;
+
+// screen-space row Y (never inverts)
+const rowInfoY = Math.round(cy - panelH / 2 + topPad);
+const rowSfxY  = Math.round(rowInfoY + BTN_H + rowGap);
+const rowMusY  = Math.round(rowSfxY  + BTN_H + rowGap);
+
+// Place rows in SCREEN coords
+layoutInfoRow(cx, rowInfoY, panelW, 1);
+sfxRow.x = cx;   sfxRow.y = rowSfxY;
+musicRow.x = cx; musicRow.y = rowMusY;
+
+// Slider row backgrounds + slider layout (SCREEN units)
 const leftPad  = LAND ? 74 : 40;
 const rightPad = LAND ? 34 : 40;
-
-// your slider uses TRACK_X = 60 internally
-const trackW = BTN_W - leftPad - rightPad - 60;
+const TRACK_X = 60;
+const trackW = BTN_W - leftPad - rightPad - TRACK_X;
 
 function drawRowBg(row: any) {
   const bg: Graphics = row._bg;
@@ -1169,24 +1150,29 @@ sfxSlider.layout(sliderX, 0, trackW);
 musicSlider.layout(sliderX, 0, trackW);
 
 
-
     // close button
-    closeSettingsBtn.x = cx + panelW / 2 - 36;
-    closeSettingsBtn.y = cy - panelH / 2 + 36;
+closeSettingsBtn.x = cx + panelW / 2 - 36;
+closeSettingsBtn.y = cy - panelH / 2 + 36;
     setScaleToHeight(closeSettingsBtn, panelH * 0.07);
   }
 
-  function open() {
-    infoTitle.text = uiLabel("ui.info", "INFO");
-infoModalTitle.text = uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO");
+ function open() {
+  infoTitle.text = uiLabel("ui.info", "INFO");
+  infoModalTitle.text = uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO");
 
-    settingsMenuLayer.visible = true;
-    layoutSettingsMenu();
-  }
+  // ✅ hide bottom UI / black bar
+  uiDimmer.visible = false;
 
-  function close() {
-    settingsMenuLayer.visible = false;
-  }
+  settingsMenuLayer.visible = true;
+  layoutSettingsMenu();
+}
+
+function close() {
+  settingsMenuLayer.visible = false;
+
+  // ✅ restore bottom UI / black bar
+  uiDimmer.visible = true;
+}
 
   function closeFromOutside() {
     hideInfo();

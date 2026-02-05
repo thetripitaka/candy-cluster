@@ -10,7 +10,7 @@ export function applyClickToContinueStyle(t: Text) {
     // base font (will be overridden by localizeStyle per language)
     fontFamily: "pixeldown",
     fill: 0xffffff,
-    fontSize: 35,
+    fontSize: 30,
     fontWeight: "200",
     letterSpacing: 1,
     align: "center",
@@ -34,4 +34,6 @@ export function applyClickToContinueStyle(t: Text) {
 
   // generous, consistent click area
   t.hitArea = new Rectangle(-360, -60, 720, 120);
+  
 }
+
