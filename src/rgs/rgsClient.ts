@@ -1,4 +1,5 @@
 // src/rgs/rgsClient.ts
+import { setSessionCurrency } from "../ui/money";
 
 export type RgsConfig = {
   rgsUrl: string;      // e.g. "https://rgs.stake-engine.com"
@@ -12,7 +13,7 @@ export type RgsConfig = {
 
 export type Balance = {
   amount: number;   // micro-units (6dp)
-  currency: string;
+  currency: string; // e.g. "USD"
 };
 
 export type AuthenticateResponse = {
@@ -77,6 +78,11 @@ function normalizeRgsBase(raw: string): string {
   return withProto.replace(/\/+$/, "");
 }
 
+function safeCurrencyFromBalance(b: Balance | null | undefined): string | null {
+  const c = String(b?.currency ?? "").trim().toUpperCase();
+  return c ? c : null;
+}
+
 export class RgsClient {
   // Your published math currently supports exactly one mode.
   public readonly MODE_BASE = "base" as const;
@@ -93,38 +99,48 @@ export class RgsClient {
   /* ------------------------- INIT ------------------------- */
 
   initFromUrl(): boolean {
-    // The iframe URL you showed uses: sessionID, rgs_url, lang, currency, device, social, demo
+    // The iframe URL uses: sessionID, rgs_url, lang, currency, device, social, demo
     const sessionID = qsGet("sessionID", "sessionId", "session");
     const rgsUrlRaw = qsGet("rgs_url", "rgsUrl", "rgs");
-    const lang = qsGet("lang", "language") ?? "en";
+    const lang = (qsGet("lang", "language") ?? "en").toLowerCase();
 
     const currency = qsGet("currency") ?? undefined;
     const device = qsGet("device", "deviceType") ?? undefined;
     const social = qsBool("social", false);
     const demo = qsBool("demo", false);
 
-    if (!sessionID || !rgsUrlRaw) {
-      console.warn("[RGS] Missing URL params (sessionID / rgs_url)");
-      return false;
-    }
+ if (!sessionID) {
+  console.warn("[RGS] Missing sessionID");
+  return false;
+}
 
-    this.cfg = {
-      sessionID,
-      rgsUrl: normalizeRgsBase(rgsUrlRaw),
-      lang,
-      currency,
-      device,
-      social,
-      demo,
-    };
+// If Stake no longer provides rgs_url,
+// default to same-origin (modern Stake launcher)
+const finalRgsUrl = rgsUrlRaw
+  ? normalizeRgsBase(rgsUrlRaw)
+  : window.location.origin;
 
-    console.log("[RGS] Detected environment", this.cfg);
-    return true;
+this.cfg = {
+  sessionID,
+  rgsUrl: finalRgsUrl,
+  lang,
+  currency: currency?.toUpperCase(),
+  device,
+  social,
+  demo,
+};
+
+// ✅ Pre-seed currency from URL so UI can show correct sign immediately.
+if (this.cfg.currency) setSessionCurrency(this.cfg.currency);
+
+console.log("[RGS] Detected environment", this.cfg);
+console.log("[RGS] Using rgsUrl:", this.cfg.rgsUrl);
+return true;
   }
 
-  isReady(): boolean {
-    return !!this.cfg;
-  }
+isReady(): boolean {
+  return !!this.cfg;
+}
 
   isDemo(): boolean {
     return !!this.cfg?.demo;
@@ -165,11 +181,26 @@ export class RgsClient {
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      console.error(`[RGS HTTP ERROR] ${path} ${res.status}`, text);
-      throw new Error(text || `HTTP ${res.status}`);
-    }
+   if (!res.ok) {
+  const text = await res.text();
+  console.error(`[RGS HTTP ERROR] ${path} ${res.status}`, text);
+
+  // Try to surface structured Stake errors (ERR_VAL, ERR_IS, etc.)
+  let j: any = null;
+  try { j = text ? JSON.parse(text) : null; } catch {}
+
+  const code = (j && typeof j === "object" && j.error) ? String(j.error) : "";
+  const msg  = (j && typeof j === "object" && j.message) ? String(j.message) : "";
+
+  // Make sure downstream code can match reliably
+  const combined =
+    (code || msg)
+      ? `${code}${code && msg ? " " : ""}${msg}`.trim()
+      : (text || `HTTP ${res.status}`);
+
+  throw new Error(combined);
+}
+
 
     return (await res.json()) as T;
   }
@@ -214,11 +245,25 @@ export class RgsClient {
     this.lastAuth = res;
     this.lastBalance = res.balance ?? null;
 
+    // ✅ currency is display-only, but must be applied by the frontend
+    const cur = safeCurrencyFromBalance(res.balance);
+    if (cur) setSessionCurrency(cur);
+
     // round info (often null on load)
     const r = res.round;
     this.lastRoundActive = !!r?.active;
     const id = r?.betID ?? r?.id ?? null;
     this.lastBetId = id != null ? String(id) : null;
+    // ✅ If Stake says there is an active round on load, DO NOT auto-close.
+// The game should be able to resume/restart this round after refresh.
+// We only record the state here.
+if (r?.active) {
+  console.warn("[RGS] Active round found on authenticate — leaving it open for resume", {
+    betID: r?.betID ?? r?.id,
+    active: r?.active,
+  });
+}
+
 
     console.log("[RGS] authenticated", {
       balance: res.balance,
@@ -237,6 +282,10 @@ export class RgsClient {
   async balance(): Promise<BalanceResponse> {
     const res = await this.post<BalanceResponse>("/wallet/balance", {});
     this.lastBalance = res.balance ?? this.lastBalance;
+
+    const cur = safeCurrencyFromBalance(res.balance);
+    if (cur) setSessionCurrency(cur);
+
     return res;
   }
 
@@ -259,12 +308,15 @@ export class RgsClient {
 
     this.lastBalance = res.balance ?? this.lastBalance;
 
+    const cur = safeCurrencyFromBalance(res.balance);
+    if (cur) setSessionCurrency(cur);
+
     return res;
   }
 
   /**
    * Only call endRound if the server says round.active === true.
-   * In demo sessions you’ve observed active=false, and end-round returns ERR_VAL.
+   * In demo sessions you may see active=false; end-round will error if called.
    */
   async endRound(): Promise<EndRoundResponse | null> {
     if (!this.lastRoundActive) {
@@ -274,9 +326,14 @@ export class RgsClient {
 
     try {
       const res = await this.post<EndRoundResponse>("/wallet/end-round", {});
+
       this.lastRoundActive = false;
       this.lastBetId = null;
       this.lastBalance = res.balance ?? this.lastBalance;
+
+      const cur = safeCurrencyFromBalance(res.balance);
+      if (cur) setSessionCurrency(cur);
+
       return res;
     } catch (e: any) {
       const msg = String(e?.message ?? e);

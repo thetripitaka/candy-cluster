@@ -1,7 +1,13 @@
 // src/ui/textStyles.ts
 import { Text, TextStyle, Rectangle } from "pixi.js";
 import { localizeStyle } from "../i18n/uiTextStyle";
-
+function isMobileLandscape() {
+  return (
+    typeof window !== "undefined" &&
+    window.innerWidth > window.innerHeight &&
+    ("ontouchstart" in window || navigator.maxTouchPoints > 0)
+  );
+}
 // =====================
 // SHARED "CLICK TO CONTINUE" STYLE (localized font)
 // =====================
@@ -28,12 +34,21 @@ export function applyClickToContinueStyle(t: Text) {
 
   t.style = new TextStyle(styleObj as any);
 
-  t.anchor.set(0.5);
-  t.eventMode = "static";
-  t.cursor = "pointer";
+t.anchor.set(0.5);
+t.eventMode = "static";
+t.cursor = "pointer";
 
-  // generous, consistent click area
-  t.hitArea = new Rectangle(-360, -60, 720, 120);
+// generous, consistent click area
+t.hitArea = new Rectangle(-360, -60, 720, 120);
+
+// ✅ MOBILE LANDSCAPE ONLY: make globally smaller
+if (isMobileLandscape()) {
+  const LAND_SCALE = 0.78; // 🔧 tweak: 0.72–0.85
+  t.scale.set(LAND_SCALE);
+} else {
+  t.scale.set(1);
+}
+
   
 }
 

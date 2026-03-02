@@ -3,6 +3,7 @@
 import { Application, Container, Graphics, Text, TextStyle, Rectangle, Sprite, Texture } from "pixi.js";
 import { getLang } from "../i18n/i18n";
 import { applyUiTextCase, localizeStyle, micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
+import { isTabletLandscape } from "../ui/layoutFlags";
 
 
 export type AutoMenuApi = {
@@ -53,11 +54,34 @@ export function createAutoMenu(opts: AutoMenuOpts): AutoMenuApi {
  const { app, root, onPick, audio, t } = opts;
 
 const tt = (key: string, fallback: string) => t?.(key) ?? fallback;
-  // Layer that holds everything (dimmer + panel)
-  const layer = new Container();
-  layer.visible = false;
-  layer.eventMode = "none";
-  root.addChild(layer);
+
+// Two-layer approach (correct):
+// - dimmerLayer sits BETWEEN gameCore and uiLayer (so it darkens reels)
+// - layer sits ABOVE uiLayer (so the menu panel/chips stay on top)
+const dimmerLayer = new Container();
+dimmerLayer.visible = false;
+dimmerLayer.eventMode = "none"; // ✅ never blocks clicks
+root.addChild(dimmerLayer);
+
+const layer = new Container(); // panel layer
+layer.visible = false;
+layer.eventMode = "none";
+root.addChild(layer);
+
+// ✅ zIndex targets (your main.ts: gameCore ~1500, uiLayer = 8000)
+const AUTO_MENU_DIMMER_Z = 7900; // above gameCore, below uiLayer (spin stays bright)
+const AUTO_MENU_PANEL_Z  = 9000; // above uiLayer
+
+dimmerLayer.zIndex = AUTO_MENU_DIMMER_Z;
+layer.zIndex = AUTO_MENU_PANEL_Z;
+
+// ensure root respects zIndex
+(root as any).sortableChildren = true;
+root.sortChildren?.();
+
+
+
+
 
   const uiLabel = (key: string, fallback: string) => applyUiTextCase(tt(key, fallback));
 // ✅ Auto-menu-only: force Micro5 for Latin-safe languages (no global impact)
@@ -68,37 +92,78 @@ const localizeAutoStyle = <T extends Record<string, any>>(baseStyle: T): T => {
 };
 
 
-  // ✅ ensure it renders ABOVE reelhouse/symbols/UI
-layer.zIndex = 7500;   // ✅ above reels/symbols (gameCore), below uiLayer (8000)
-root.sortChildren?.();
 
 
-  // Dimmer
-  const dimmer =
-    opts.uiDimmer ??
-    (() => {
-      const g = new Graphics();
-      g.eventMode = "static";
-      g.cursor = "pointer";
-      layer.addChild(g);
-      return g;
-    })();
 
-  // If they passed a shared dimmer, ensure it’s inside this layer
-  if (opts.uiDimmer) {
-    // assume caller already added it to the display list elsewhere;
-    // but for safety, if it isn't parented, add it.
-    if (!dimmer.parent) layer.addChild(dimmer);
-    dimmer.eventMode = "static";
-    dimmer.cursor = "pointer";
-  }
+
+
+
+const dimmer =
+  opts.uiDimmer ??
+  (() => {
+    const g = new Graphics();
+    g.eventMode = "none";     // ✅ visual only
+    g.cursor = "default";
+    dimmerLayer.addChild(g);  // ✅ goes under UI
+    return g;
+  })();
+
+
+// If they passed a shared dimmer, force it into the dimmerLayer (visual only)
+if (opts.uiDimmer) {
+  if (dimmer.parent !== dimmerLayer) dimmerLayer.addChild(dimmer);
+  dimmer.eventMode = "none";   // ✅ visual only
+  dimmer.cursor = "default";
+}
+
 
   // Panel
   const panel = new Container();
   layer.addChild(panel);
 
-  // ✅ scale the entire menu panel (50% smaller)
+function isTinyAutoView() {
+  const r = (app.view as any)?.getBoundingClientRect?.();
+  const cssW = r?.width ?? (app.view as any)?.clientWidth ?? window.innerWidth;
+  const cssH = r?.height ?? (app.view as any)?.clientHeight ?? window.innerHeight;
+
+  const longSide = Math.max(cssW, cssH);
+  const shortSide = Math.min(cssW, cssH);
+  return longSide <= 400 && shortSide <= 225;
+}
+
+
+
+function isMobileLandscapeAuto() {
+  const w = app.renderer.width;
+  const h = app.renderer.height;
+  const isPortrait = h >= w;
+
+
+
+  // ✅ tablet landscape should NOT be treated as "mobile landscape auto"
+  if (isTabletLandscape()) return false;
+
+  const isTouch =
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    window.matchMedia?.("(pointer: coarse)")?.matches;
+
+  return !isPortrait && (isTouch || w < 820);
+}
+
+// default scale (desktop / portrait uses your current look)
 panel.scale.set(0.42);
+
+// ✅ PHONE landscape only: make it smaller so it fits
+if (isMobileLandscapeAuto()) {
+  panel.scale.set(0.32); // 🔧 try 0.28..0.36
+}
+
+// ✅ TABLET LANDSCAPE ONLY: scale it UP (iPad landscape)
+if (isTabletLandscape()) {
+  panel.scale.set(0.50); // 🔧 try 0.46..0.62
+}
+
+
 
   const panelBg = new Graphics();
   panel.addChild(panelBg);
@@ -289,29 +354,78 @@ for (const v of chipValues) {
   chipsWrap.addChild(chip.wrap);
 }
 
-  // Close by tapping dimmer/outside
-dimmer.on("pointertap", () => close());
+
 
   // Prevent clicks through the panel
   panel.eventMode = "static";
   panel.on("pointertap", (e) => e.stopPropagation());
+// =====================
+// CLOSE ON OUTSIDE TAP (WITHOUT BLOCKING SPIN CLICK)
+// =====================
+let __autoStageCloseBound = false;
 
- function open() {
+function panelWorldContainsPoint(gx: number, gy: number): boolean {
+  // Panel is a Container at panel.x/y and scaled; bounds are world-space.
+  const b = panel.getBounds();
+  return gx >= b.x && gx <= (b.x + b.width) && gy >= b.y && gy <= (b.y + b.height);
+}
+
+function onAutoStagePointerTap(e: any) {
+  if (!layer.visible) return;
+
+  const gx = e?.global?.x ?? 0;
+  const gy = e?.global?.y ?? 0;
+
+  // If tap is inside the panel, do nothing (chips handle their own taps)
+  if (panelWorldContainsPoint(gx, gy)) return;
+
+  // Otherwise, close the menu.
+  close();
+}
+
+function open() {
+  dimmerLayer.visible = true;
+layer.visible = true;
+layer.eventMode = "static";
   title.text = uiLabel("ui.autoPlayTitle", "AUTO PLAY");
-subtitle.text = uiLabel("ui.autoPlaySubtitle", "NUMBER OF ROUNDS");
+  subtitle.text = uiLabel("ui.autoPlaySubtitle", "NUMBER OF ROUNDS");
+
+
 
   layer.visible = true;
+    // ✅ Dimmer should NOT intercept clicks (so SPIN can be clicked underneath)
+  dimmer.eventMode = "none";
+  dimmer.cursor = "default";
+
+  // ✅ Close by clicking/tapping anywhere outside panel (non-blocking)
+  if (!__autoStageCloseBound) {
+    __autoStageCloseBound = true;
+    app.stage.on("pointertap", onAutoStagePointerTap);
+  }
+
   layer.eventMode = "static";
-  root.sortChildren?.(); // ✅ bring zIndex ordering up-to-date
+
   layout();
 }
 
-
 function close() {
+  dimmerLayer.visible = false;
+dimmerLayer.eventMode = "none";
+
+layer.visible = false;
+layer.eventMode = "none";
+
+    // ✅ Remove stage outside-tap handler
+  if (__autoStageCloseBound) {
+    __autoStageCloseBound = false;
+    app.stage.off("pointertap", onAutoStagePointerTap);
+  }
   audio?.playSfx("ui_toggle", 0.9);
 
   layer.visible = false;
   layer.eventMode = "none";
+
+
   opts.onClosed?.();
 }
 
@@ -319,6 +433,13 @@ function close() {
   function isOpen() {
     return layer.visible;
   }
+const AUTO_PANEL_SCALE_DEFAULT = 0.42;
+const AUTO_PANEL_SCALE_MOBILE_LAND = 0.32;
+const AUTO_PANEL_SCALE_TABLET_LAND = 0.50;
+
+// Tiny view: optional hard cap + extra shrink
+const TINY_ABS_MAX = 0.28;   // try 0.22..0.30
+const TINY_SHRINK = 0.85;    // try 0.80..0.92
 
   function layout() {
   const w = app.renderer.width;
@@ -338,6 +459,54 @@ function close() {
   const panelW = 640;
   const panelH = isPortrait ? 1100 : 980;
 
+  // ✅ SCALE (deterministic; prevents cumulative shrink)
+let baseScale = AUTO_PANEL_SCALE_DEFAULT;
+
+if (isMobileLandscapeAuto()) baseScale = AUTO_PANEL_SCALE_MOBILE_LAND;
+if (isTabletLandscape()) baseScale = AUTO_PANEL_SCALE_TABLET_LAND;
+
+// ✅ MOBILE PORTRAIT ONLY (phone-sized)
+if (isPortrait && w <= 460 && h <= 900) {
+  baseScale *= 0.85;   // 🔧 10% smaller (try 0.85 for more)
+}
+
+// apply base immediately so layout is predictable
+panel.scale.set(baseScale);
+
+// ✅ TINY VIEW ONLY: fit to viewport without ever using current panel.scale as the base
+if (isTinyAutoView()) {
+  const PAD = 8;
+
+  const maxScaleW = (w - PAD * 2) / panelW;
+  const maxScaleH = (h - PAD * 2) / panelH;
+
+  // hard cap tiny scale + fit-to-screen + extra shrink
+  const tinyScale = Math.min(baseScale, maxScaleW, maxScaleH, TINY_ABS_MAX) * TINY_SHRINK;
+
+  panel.scale.set(tinyScale);
+  baseScale = tinyScale; // keep variable in sync if you use it below
+}
+
+
+
+  // ✅ TINY VIEW ONLY: override scale so the panel fits (leave other modes untouched)
+if (isTinyAutoView()) {
+  const base = panel.scale.x;
+
+  const PAD = 8;
+  const maxScaleW = (w - PAD * 2) / panelW;
+  const maxScaleH = (h - PAD * 2) / panelH;
+
+  // 🔽 extra tiny-only shrink
+  const TINY_SHRINK = 0.85; // try 0.80–0.90
+
+  const tinyScale = Math.min(base, maxScaleW, maxScaleH) * TINY_SHRINK;
+
+  panel.scale.set(tinyScale);
+}
+
+
+
 const scale = panel.scale.x;
 
 // Use viewport size for portrait (more accurate on phones)
@@ -347,6 +516,19 @@ const vh = isPortrait ? window.innerHeight : h;
 // Center within the chosen frame
 panel.x = Math.round((vw - panelW * scale) * 0.5);
 panel.y = Math.round((vh - panelH * scale) * 0.5);
+// ✅ MOBILE LANDSCAPE ONLY: keep panel fully on-screen and above bottom UI
+if (!isPortrait && isMobileLandscapeAuto()) {
+  const TOP_PAD = 18;      // keep off the top edge
+  const BOTTOM_UI_PAD = 140; // reserve space for your bottom UI (tweak 120..180)
+
+  const scaledH = panelH * scale;
+
+  const minY = TOP_PAD;
+  const maxY = Math.max(TOP_PAD, vh - BOTTOM_UI_PAD - scaledH);
+
+  panel.y = Math.round(Math.max(minY, Math.min(panel.y, maxY)));
+}
+
 
 
 // ✅ move UP on portrait devices

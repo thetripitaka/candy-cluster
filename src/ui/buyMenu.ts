@@ -1,4 +1,4 @@
-// src/ui/buyMenu.ts
+ // src/ui/buyMenu.ts
 import { Application, Container, Graphics, Rectangle, Sprite, Text, TextStyle, Texture } from "pixi.js";
 import { applyUiTextCase, localizeStyle, micro5ForLatinUiFontFamily } from "../i18n/uiTextStyle";
 import { getLang } from "../i18n/i18n";
@@ -172,6 +172,31 @@ function applyLatinMicro5ToBuyMenuText() {
   const IS_TOUCH =
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   window.matchMedia?.("(pointer: coarse)")?.matches;
+// Tighten hit areas on touch devices (mobile + tablets)
+const IS_TOUCH_UI = IS_TOUCH; // one knob if you ever want to override
+
+function setTightHitArea(btn: Container, w: number, h: number, padX: number, padY: number) {
+  // hit rect in the button's LOCAL space
+  btn.hitArea = new Rectangle(
+    -padX,
+    -padY,
+    w + padX * 2,
+    h + padY * 2
+  );
+}
+function isTinyViewBuyLayout() {
+  const flag = !!(deps as any).__layoutDeps?.IS_TINY_VIEW;
+
+  const w = app.screen.width;
+  const h = app.screen.height;
+
+  // tiny = 400x225 and lower (either orientation)
+  const longSide = Math.max(w, h);
+  const shortSide = Math.min(w, h);
+  const sizeTiny = longSide <= 400 && shortSide <= 225;
+
+  return flag || sizeTiny;
+}
 
 
   function isMobilePortraitBuyLayout() {
@@ -247,9 +272,13 @@ style: localizeStyle({
   buyCloseBtn.cursor = "pointer";
   buyMenuLayer.addChild(buyCloseBtn);
 
-  // generous hit area
-  const BUY_CLOSE_HIT = 72;
-  buyCloseBtn.hitArea = new Rectangle(-BUY_CLOSE_HIT / 2, -BUY_CLOSE_HIT / 2, BUY_CLOSE_HIT, BUY_CLOSE_HIT);
+// close button hit area (tighter on touch)
+const BUY_CLOSE_HIT_DESKTOP = 72;
+const BUY_CLOSE_HIT_TOUCH   = 40; // 🔧 try 40..52
+
+const closeHit = IS_TOUCH_UI ? BUY_CLOSE_HIT_TOUCH : BUY_CLOSE_HIT_DESKTOP;
+buyCloseBtn.hitArea = new Rectangle(-closeHit / 2, -closeHit / 2, closeHit, closeHit);
+
 
   // cards container
 // -----------------------------
@@ -261,7 +290,17 @@ buyCardsViewport.cursor = "default";
 buyMenuLayer.addChild(buyCardsViewport);
 
 const buyCardsMask = new Graphics();
+// ✅ Mask should NEVER block input, but MUST stay renderable for Pixi masking
+buyCardsMask.eventMode = "none";
+buyCardsMask.cursor = "default";
+
+// IMPORTANT: keep it "renderable" (alpha tiny) so masking works,
+// but visually invisible.
+buyCardsMask.visible = true;
+buyCardsMask.alpha = 0.001;
+
 buyCardsViewport.addChild(buyCardsMask);
+
 
 const buyCardsRow = new Container(); // content
 buyCardsViewport.addChild(buyCardsRow);
@@ -299,13 +338,30 @@ const buyToast = new Text({
 
   let buyToastTimer: any = null;
 
-  function layoutBuyToast() {
-    const W = app.screen.width;
-    const H = app.screen.height;
-    buyToast.x = Math.round(W / 2);
-    buyToast.y = Math.round(H - 120);
-    
-  }
+function layoutBuyToast() {
+  const W = app.screen.width;
+  const H = app.screen.height;
+
+  // ✅ tiny view only (pop-out S)
+  const IS_TINY = isTinyViewBuyLayout();
+
+  
+
+  // ✅ HARD SAFETY: if confirm popup isn't open, it must not block clicks (prevents residual dimmer)
+if (!buyConfirmLayer.visible) {
+  buyConfirmLayer.visible = false;
+  buyConfirmLayer.eventMode = "none";
+  buyConfirmDimmer.eventMode = "none";
+  buyConfirmDimmer.cursor = "default";
+}
+
+
+  // scale down toast ONLY in tiny view
+  buyToast.scale.set(IS_TINY ? 0.5 : 1); // 🔧 try 0.70..0.85
+
+  buyToast.x = Math.round(W / 2);
+  buyToast.y = Math.round(H - 120);
+}
 
   function showToast(msg: string) {
     layoutBuyToast();
@@ -457,6 +513,17 @@ const buyBetUpBtn = makePngButton(BET_UP_UP, BET_UP_HOVER, BET_UP_DOWN, () => {
 });
 
   buyFooter.addChild(buyBetDownBtn, buyBetUpBtn);
+  // =====================
+// ✅ Tiny HUD groups (so we can scale down but keep left/right clamped)
+// =====================
+const tinyBalGroup = new Container();
+const tinyBetGroup = new Container();
+buyFooter.addChild(tinyBalGroup, tinyBetGroup);
+
+// Move items into the groups (they were already added to buyFooter above)
+tinyBalGroup.addChild(buyFooterBalanceTitle, buyFooterBalanceValue);
+tinyBetGroup.addChild(buyFooterBetTitle, buyFooterBetValue, buyBetUpBtn, buyBetDownBtn);
+
 
   function refreshBuyMenuFooter() {
     buyFooterBalanceValue.text = fmtMoney(state.bank.balance);
@@ -570,7 +637,17 @@ const txt = new Text({
     (txt.style as any).fill = 0xffffff;
   }
 
+
+
   drawGreen();
+
+// ✅ Explicit hit area (prevents oversized bounds on touch/tablets)
+const BTN_W = 220;
+const BTN_H = 56;
+const padX = IS_TOUCH_UI ? 2 : 10;
+const padY = IS_TOUCH_UI ? 2 : 8;
+setTightHitArea(btn, BTN_W, BTN_H, padX, padY);
+
 
   btn.eventMode = "static";
   btn.cursor = "pointer";
@@ -654,6 +731,15 @@ const txt = new Text({
 
     buyConfirmDimmer.clear().rect(0, 0, W, H).fill({ color: 0x000000, alpha: 0.72 });
 
+    // ✅ make the dimmer reliably clickable everywhere (closes on outside tap)
+buyConfirmDimmer.eventMode = "static";
+buyConfirmDimmer.cursor = "default";
+buyConfirmDimmer.hitArea = new Rectangle(0, 0, W, H);
+
+// ✅ ensure the confirm layer is interactive when visible
+buyConfirmLayer.eventMode = "static";
+
+
     const pw = Math.min(460, W * 0.72);
     const ph = 210;
 
@@ -664,6 +750,12 @@ const txt = new Text({
       .rect(px, py, pw, ph)
       .fill(0x2b2b2b)
       .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
+// ✅ clicks on the panel itself should NOT close the popup
+buyConfirmPanel.eventMode = "static";
+buyConfirmPanel.cursor = "default";
+buyConfirmPanel.hitArea = new Rectangle(px, py, pw, ph);
+buyConfirmPanel.removeAllListeners?.("pointertap");
+buyConfirmPanel.on("pointertap", (e: any) => e?.stopPropagation?.());
 
     const cx = Math.round(W / 2);
     const TITLE_PRICE_GAP = 50;
@@ -789,19 +881,9 @@ const txt = new Text({
 
 const buyCardSpecs: BuyCardSpec[] = [
   {
-    title: tt("ui.buyCard.pickMixTitle", "PICK & MIX"),
-    body:  tt("ui.buyCard.pickMixBody",  "ENTRY BONUS\nSTARTS AT 1× MULTIPLIER"),
-    priceMult: 67, startMult: 1, fsCount: 10, artFrame: "buy_art_pick.png"
-  },
-  {
-    title: tt("ui.buyCard.gigaTitle", "GIGA"),
-    body:  tt("ui.buyCard.gigaBody",  "HIGHER VOLATILITY\nSTARTS AT 2× MULTIPLIER"),
-    priceMult: 78, startMult: 2, fsCount: 10, artFrame: "buy_art_giga.png"
-  },
-  {
     title: tt("ui.buyCard.superTitle", "SUPER"),
     body:  tt("ui.buyCard.superBody",  "STRONG FEATURE\nSTARTS AT 3× MULTIPLIER"),
-    priceMult: 90, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png"
+    priceMult: 89, startMult: 3, fsCount: 10, artFrame: "buy_art_super.png"
   },
   {
     title: tt("ui.buyCard.ultraTitle", "ULTRA"),
@@ -809,6 +891,7 @@ const buyCardSpecs: BuyCardSpec[] = [
     priceMult: 100, startMult: 5, fsCount: 10, artFrame: "buy_art_ultra.png"
   },
 ];
+
 
 
 
@@ -895,24 +978,45 @@ const body = new Text({
       const cost = getCurrentBet() * spec.priceMult;
 
     if (state.bank.balance < cost) {
-  // ✅ show toast + shake
-  showInsufficientToast();
-  shakeBuyToast(); // add this helper below
+      // ✅ show toast + shake
+      showInsufficientToast();
+      shakeBuyToast(); // add this helper below
+      return;
+    }
+    openBuyConfirm(spec.title, cost, () => {
+      // ✅ Any Stake wallet session (including demo) is server-debited on /wallet/play
+      const hasRgsSession = !!(window as any).rgsClient?.getConfig?.()?.sessionID;
 
-
-  return;
-}
-
-      openBuyConfirm(spec.title, cost, () => {
+      if (!hasRgsSession) {
         state.bank.balance -= cost;
-        deps.onBalanceUpdated?.();
-        refreshSpinAffordability();
-        refreshBuyMenuFooter();
-        onBalanceUpdated?.();
+      }
 
+      deps.onBalanceUpdated?.();
+      refreshSpinAffordability();
+      refreshBuyMenuFooter();
+      onBalanceUpdated?.();
+
+      if (!hasRgsSession) {
         closeBuyMenu();
+        // ✅ DEV / OFFLINE: immediately enter free spins
         enterFreeSpins(spec.fsCount, spec.startMult);
+        return;
+      }
+
+      // ✅ RGS (including demo): set buy choice BEFORE closing the menu
+      // (prevents any UI/state cleanup from clearing it before doSpin reads it)
+      state.ui.buyChoice = (spec.priceMult === 89) ? "SUPER" : "ULTRA";
+      console.log("[BUY] set state.ui.buyChoice", state.ui.buyChoice, "priceMult", spec.priceMult);
+
+      closeBuyMenu();
+
+      // ✅ Auto-spin once
+      requestAnimationFrame(() => {
+        deps.spinBtnPixi?.emit?.("pointertap", { stopPropagation() {} });
       });
+    });
+
+
     });
     card.addChild(buyBtn);
 buyBtn.on("pointerdown", (e: any) => e.stopPropagation?.());
@@ -1114,8 +1218,60 @@ buyCardsViewport.on("pointermove", (e: any) => {
   // LAYOUT
   // -----------------------------
   function layoutBuyMenu() {
-    const W = app.screen.width;
-    const H = app.screen.height;
+
+  const W = app.screen.width;
+  const H = app.screen.height;
+  const IS_TINY = isTinyViewBuyLayout();
+
+  // ✅ Buy menu: remove the footer HUD background pill in ALL views
+buyFooterBg.clear();
+buyFooterBg.visible = false;
+
+// (safety) if you ever draw this one too, keep it off
+buyFooterBetBg.clear();
+buyFooterBetBg.visible = false;
+
+  // ✅ HARD RESET (prevents drift when switching layouts/sizes)
+// NOTE: reset pivots/positions, but DO NOT force scale=1 on containers
+buyFooter.scale.set(1);
+buyFooter.pivot.set(0, 0);
+buyFooter.position.set(0, 0);
+
+buyCardsRow.pivot.set(0, 0);
+buyCardsRow.position.set(0, 0);
+
+buyCardsViewport.pivot.set(0, 0);
+buyCardsViewport.position.set(0, 0);
+
+tinyBalGroup.scale.set(1);
+tinyBalGroup.pivot.set(0, 0);
+tinyBalGroup.position.set(0, 0);
+
+tinyBetGroup.scale.set(1);
+tinyBetGroup.pivot.set(0, 0);
+tinyBetGroup.position.set(0, 0);
+
+// ✅ reset cards themselves (safe)
+for (const c of buyCards) {
+  c.scale.set(1);
+  c.pivot.set(0, 0);
+  c.skew?.set?.(0, 0);
+  c.rotation = 0;
+  (c as any)._baseY = 0;
+}
+
+  // ✅ Tiny view: remove title + divider
+  buyHeader.visible = !IS_TINY;
+  buyHeaderDivider.visible = !IS_TINY;
+const TINY_HUD_SCALE = 1;              // ✅ keep footer unscaled so it can hit screen edges
+const TINY_FONT_MUL  = IS_TINY ? 0.72 : 1;
+
+// ✅ Tiny: shrink bet/balance text itself (independent of container scale)
+(buyFooterBalanceTitle.style as any).fontSize = Math.round(24 * TINY_FONT_MUL);
+(buyFooterBetTitle.style as any).fontSize     = Math.round(24 * TINY_FONT_MUL);
+
+(buyFooterBalanceValue.style as any).fontSize = Math.round(40 * TINY_FONT_MUL);
+(buyFooterBetValue.style as any).fontSize     = Math.round(40 * TINY_FONT_MUL);
 
 
     // dimmer
@@ -1140,7 +1296,8 @@ buyHeader.y = Math.round(H * headerYFrac);
       // divider (draw AFTER we potentially move the header)
     const drawBuyHeaderDivider = () => {
       const DIVIDER_W = Math.min(340, W * 0.55);
-      const DIVIDER_Y = Math.round(buyHeader.y + (isMobileLandscapeBuyLayout() ? 26 : 34));
+      const DIVIDER_Y = Math.round(buyHeader.y + (isMobileLandscapeBuyLayout() ? 22 : 34));
+
 
       const half = (DIVIDER_W * buyHeaderDividerProgress) * 0.5;
 
@@ -1181,6 +1338,7 @@ buyCardsViewport.eventMode = "passive"; // ✅ allows children (buttons) to work
 
   // ✅ reset any portrait scroll offset so row isn't sitting offscreen
   cardsScrollY = 0;
+  buyCardsRow.y = 0; // ✅ add this
 
 
   buyCardsRow.visible = true;
@@ -1189,33 +1347,56 @@ buyCardsViewport.eventMode = "passive"; // ✅ allows children (buttons) to work
 const DESKTOP_CARD_W = 320; // revert (tweak 280..360)
 const DESKTOP_CARD_H = 420; // revert (tweak 360..460)
 const DESKTOP_GAP = 22;
+const totalW = buyCards.length * DESKTOP_CARD_W + (buyCards.length - 1) * DESKTOP_GAP;
+const baseScale = Math.min(1, (W * 0.92) / totalW);
 
-const totalW = 4 * DESKTOP_CARD_W + 3 * DESKTOP_GAP;
-const rowScale = Math.min(1, (W * 0.92) / totalW);
+// ✅ caps per layout
+const LAND_CAP = 0.49; // 🔧 try 0.62..0.80
+const TINY_CAP = 0.4; // 🔧 try 0.45..0.62
 
-buyCardsRow.scale.set(rowScale);
+const rowScale =
+  IS_TINY ? Math.min(baseScale, TINY_CAP) :
+  isMobileLandscapeBuyLayout() ? Math.min(baseScale, LAND_CAP) :
+  baseScale;
+
+
+
 
 const BUY_CARDS_LANDSCAPE_Y_OFFSET = -30; // 🔧 negative = move up
+
 
 buyCardsRow.scale.set(rowScale);
 buyCardsRow.x = Math.round(W / 2);
 buyCardsRow.y = Math.round(H * 0.55) + (isMobileLandscapeBuyLayout() ? BUY_CARDS_LANDSCAPE_Y_OFFSET : 0);
-// ✅ Anchor header ABOVE the cards (desktop + landscape)
-{
+
+// ✅ MOBILE LANDSCAPE ONLY: anchor title above cards (does not affect desktop)
+if (isMobileLandscapeBuyLayout()) {
   const cardsTopY = buyCardsRow.y - (DESKTOP_CARD_H * rowScale) * 0.5;
 
-  // gap between divider/header and the cards
-  const HEADER_TO_CARDS_GAP = isMobileLandscapeBuyLayout() ? 22 : 28;
+  const LAND_HEADER_TO_CARDS_GAP = 18; // 🔧 try 14..26 (smaller = closer to cards)
+  const targetHeaderY = cardsTopY - LAND_HEADER_TO_CARDS_GAP - (buyHeader.height * 0.5);
 
-  // header is anchor 0.5, so subtract half its height
-  const targetHeaderY = cardsTopY - HEADER_TO_CARDS_GAP - (buyHeader.height * 0.5);
-
-  // keep it from going too high on tiny heights
-  buyHeader.y = Math.round(Math.max(52, targetHeaderY));
+  const MIN_Y = 44; // safety clamp
+  buyHeader.y = Math.round(Math.max(MIN_Y, targetHeaderY));
 }
 
+// ✅ DESKTOP ONLY (no touch devices): keep title + divider always above cards
+if (!isMobileLandscapeBuyLayout() && !IS_TOUCH_UI) {
+  const cardsTopY = buyCardsRow.y - (DESKTOP_CARD_H * rowScale) * 0.5;
+
+  const DESKTOP_HEADER_TO_CARDS_GAP = 40; // 🔧 try 18..40
+  const targetHeaderY =
+    cardsTopY - DESKTOP_HEADER_TO_CARDS_GAP - (buyHeader.height * 0.5);
+
+  // keep a reasonable top clamp so it never goes into the close button area
+  const MIN_Y = 64;
+  buyHeader.y = Math.round(Math.max(MIN_Y, targetHeaderY));
+}
+
+
 // draw divider after header settles
-drawBuyHeaderDivider();
+if (!IS_TINY) drawBuyHeaderDivider();
+else buyHeaderDivider.clear();
 
 
 
@@ -1267,7 +1448,20 @@ for (let i = 0; i < buyCards.length; i++) {
     // -----------------------------
 // CARDS LAYOUT (portrait = vertical stack)
 // -----------------------------
-if (isMobilePortraitBuyLayout()) {
+if (!IS_TINY && isMobilePortraitBuyLayout()) {
+    // ✅ PORTRAIT HARD RESET: cards must NOT inherit scale from desktop/landscape/tiny
+  for (const c of buyCards) {
+    c.scale.set(1);
+
+    const art = (c as any)._art as Sprite | undefined;
+    if (art) art.scale.set(1); // important: desktop branch scales art explicitly
+
+    const bg = (c as any)._bg as Graphics | undefined;
+    if (bg) bg.scale.set(1);
+  }
+  // ✅ PORTRAIT: row must be unscaled (desktop/landscape may leave a rowScale behind)
+  buyCardsRow.scale.set(1);
+  buyCardsRow.pivot.set(0, 0);
   buyFooter.visible = true;
   // portrait uses the scroll viewport + mask
 buyCardsViewport.visible = true;
@@ -1282,6 +1476,7 @@ buyFooterBalanceTitle.anchor.set(0.5);
 buyFooterBalanceValue.anchor.set(0.5);
 buyFooterBetTitle.anchor.set(0.5);
 buyFooterBetValue.anchor.set(0.5);
+
 
 // scale the arrows a bit for mobile
 setScaleToHeight(buyBetUpBtn, 30);
@@ -1435,19 +1630,32 @@ const viewH = Math.round((H - cardsBottomPad) - cardsTop);
   // y is controlled by cardsScrollY (scroll offset)
   // buyCardsRow.y will be set below after we compute bounds
 
-  // ✅ Fixed taller card size (this is what you want)
-const cardW = Math.min(520, Math.max(320, Math.floor(viewW))); // wider max
-const cardH = 440; // taller
+// ✅ PORTRAIT ONLY: ONE KNOB (scales the whole card, including internal Y positions)
+const PORTRAIT_CARD_SCALE = 0.8; // try 0.82..0.95
 
-  // lay cards vertically (centered in viewport)
-  let y = Math.round(cardH / 2);
-  for (let i = 0; i < buyCards.length; i++) {
-    const c = buyCards[i];
-    c.x = 0;
-    c.y = y;
-    (c as any)._baseY = c.y;
+// "Design" size (keep your nice layout numbers based on these)
+const cardW = Math.min(520, Math.max(320, Math.floor(viewW)));
+const cardH = 440;
 
-    y += cardH + GAP_Y;
+// convenience
+const scaledCardH = cardH * PORTRAIT_CARD_SCALE;
+
+
+
+let y = Math.round(scaledCardH / 2);
+for (let i = 0; i < buyCards.length; i++) {
+  const c = buyCards[i];
+
+  // ✅ apply the knob (everything inside scales automatically)
+  c.scale.set(PORTRAIT_CARD_SCALE);
+
+  c.x = 0;
+  c.y = y;
+  (c as any)._baseY = c.y;
+
+  // ✅ step by scaled height so spacing stays correct
+  y += scaledCardH + GAP_Y;
+
 
     // draw card bg
     const bg = (c as any)._bg as Graphics;
@@ -1475,7 +1683,8 @@ art.y  = Math.round(-cardH * 0.5 + 135 + ART_PUSH_DOWN);
 body.y = Math.round(-cardH * 0.5 + 205 + BODY_PUSH_DOWN);
 
 
-  const ART_TARGET_W = Math.round(cardW * 0.42); // bigger art
+  const ART_TARGET_W = Math.round(cardW * 0.38); // ✅ portrait smaller art
+
     const tw = Math.max(1, art.texture.width);
     art.scale.set(ART_TARGET_W / tw);
 
@@ -1491,7 +1700,8 @@ body.y = Math.round(-cardH * 0.5 + 205 + BODY_PUSH_DOWN);
   }
 
   // total content height
-  const contentH = (buyCards.length * cardH) + ((buyCards.length - 1) * GAP_Y);
+const contentH = (buyCards.length * scaledCardH) + ((buyCards.length - 1) * GAP_Y);
+
 
   // compute max scroll (content taller than viewport)
   cardsScrollMax = Math.max(0, contentH - viewH);
@@ -1501,7 +1711,8 @@ body.y = Math.round(-cardH * 0.5 + 205 + BODY_PUSH_DOWN);
   buyCardsRow.y = Math.round(cardsScrollY);
 
   // divider for portrait too (header already positioned by frac logic)
-  drawBuyHeaderDivider();
+if (!IS_TINY) drawBuyHeaderDivider();
+else buyHeaderDivider.clear();
 
   layoutBuyToast();
   if (buyConfirmLayer.visible) layoutBuyConfirm();
@@ -1516,6 +1727,41 @@ const GAP_DESKTOP = 32;      // tweak
 const GAP_LANDSCAPE = 26;    // 🔧 tighter in landscape
 
 const gap = isMobileLandscapeBuyLayout() ? GAP_LANDSCAPE : GAP_DESKTOP;
+// =====================
+// ✅ GROUP ANCHORING (non-portrait): BALANCE left, BET right
+// =====================
+const SIDE_PAD = IS_TINY ? 10 : 22; // tiny needs tighter padding
+
+// Make sure titles/values measure from their left edge (easier to anchor)
+buyFooterBalanceTitle.anchor.set(0, 0.5);
+buyFooterBalanceValue.anchor.set(0, 0.5);
+buyFooterBetTitle.anchor.set(0, 0.5);
+buyFooterBetValue.anchor.set(0, 0.5);
+
+// Measure group widths (local space)
+const balW = Math.max(
+  buyFooterBalanceTitle.width,
+  buyFooterBalanceValue.width
+);
+
+const betW = Math.max(
+  buyFooterBetTitle.width,
+  buyFooterBetValue.width
+);
+
+// Arrow sizing/spacing (you already do this below, but we need widths now too)
+(buyBetUpBtn as any).resetVisual?.();
+(buyBetDownBtn as any).resetVisual?.();
+
+const upW2 = (buyBetUpBtn as any).btnWidth?.() ?? buyBetUpBtn.getLocalBounds().width;
+const dnW2 = (buyBetDownBtn as any).btnWidth?.() ?? buyBetDownBtn.getLocalBounds().width;
+const arrowW = Math.max(upW2, dnW2);
+
+const ARROW_X_GAP = IS_TINY ? 6 : 10; // gap between bet value and arrows
+
+// Bet group width includes arrows to the right
+const betGroupW = betW + ARROW_X_GAP + arrowW;
+
 
 // This is the vertical “center line” for the pair
 const BASELINE_Y = 2; // tweak up/down a touch if needed
@@ -1530,55 +1776,95 @@ buyFooterBetValue.y = Math.round(BASELINE_Y + gap * 0.5);
 
 
     // footer
-    const FOOTER_W = Math.min(520, Math.round(W * 0.55));
-    const FOOTER_Y = Math.round(H * 0.90);
-
-    buyFooter.x = Math.round(W / 2);
-    buyFooter.y = FOOTER_Y;
-
-    // left column
-    buyFooterBalanceTitle.anchor.set(0, 0.5);
-    buyFooterBalanceValue.anchor.set(0, 0.5);
-
-    buyFooterBalanceTitle.x = -FOOTER_W / 2 + 26;
+const FOOTER_W =
+  IS_TINY
+    ? Math.round(W * 0.96)                 // ✅ tiny: almost full width
+    : isMobileLandscapeBuyLayout()
+      ? Math.round(W * 0.88)               // ✅ mobile landscape: wide
+      : Math.round(Math.min(1100, W * 0.92)); // ✅ desktop: wide (cap optional)
 
 
-    buyFooterBalanceValue.x = -FOOTER_W / 2 + 26;
+const FOOTER_Y = Math.round(H * 0.90);
 
 
-    // right column
-   // BET (desktop) — hard centered
-buyFooterBetTitle.anchor.set(0.5, 0.5);
-buyFooterBetValue.anchor.set(0.5, 0.5);
 
-buyFooterBetTitle.x = 0;
+  buyFooter.x = Math.round(W / 2);
 
 
-buyFooterBetValue.x = 0;
+
+
+const FOOTER_LIFT_Y = IS_TINY ? Math.round(H * 0.01) : 0;
+
+buyFooter.x = Math.round(W * 0.5);
+buyFooter.y = Math.round(FOOTER_Y - FOOTER_LIFT_Y);
+
+ // -----------------------------
+// ✅ Anchor balance LEFT, bet+arrows RIGHT (non-portrait)
 // -----------------------------
-// BET label ↔ value gap (landscape-only tighter)
-// -----------------------------
-const BET_GAP_DESKTOP = 32;     // your normal spacing
-const BET_GAP_LAND    = 26;     // 🔧 landscape tighter (try 14–22)
 
-const betGap = isMobileLandscapeBuyLayout() ? BET_GAP_LAND : BET_GAP_DESKTOP;
+// Left edge in buyFooter local space
+const leftX = -FOOTER_W / 2 + SIDE_PAD;
 
-// choose the vertical "center" of the BET stack
-const BET_BASE_Y = 2; // tweak -2..+6 to taste
+// Right edge in buyFooter local space
+const rightX = FOOTER_W / 2 - SIDE_PAD;
+const TINY_GROUP_SCALE = IS_TINY ? 0.72 : 1; // 🔧 make smaller/bigger
 
-buyFooterBetTitle.y = Math.round(BET_BASE_Y - betGap * 0.5);
-buyFooterBetValue.y = Math.round(BET_BASE_Y + betGap * 0.5);
+if (IS_TINY) {
+  // ✅ scale groups, not the whole footer
+  tinyBalGroup.scale.set(TINY_GROUP_SCALE);
+  tinyBetGroup.scale.set(TINY_GROUP_SCALE);
+
+  // anchors inside groups (so left edge stays left, right edge stays right)
+  buyFooterBalanceTitle.anchor.set(0, 0.5);
+  buyFooterBalanceValue.anchor.set(0, 0.5);
+  buyFooterBetTitle.anchor.set(0, 0.5);
+  buyFooterBetValue.anchor.set(0, 0.5);
+  // ✅ TINY: hard-author the arrow X so they never inherit stale positions
+  // (prevents the "down arrow drifts left" bug on startup/switch)
+  buyFooterBetTitle.x = 0;
+  buyFooterBetValue.x = 0;
+
+  // arrows sit to the RIGHT of the bet value
+  const arrowsXLocal = betW + ARROW_X_GAP + (arrowW * 0.5);
+  buyBetUpBtn.x = arrowsXLocal;
+  buyBetDownBtn.x = arrowsXLocal;
+
+  // --- BAL group pivot at its LEFT edge ---
+  const bL = tinyBalGroup.getLocalBounds();
+  tinyBalGroup.pivot.set(bL.x, 0);
+  tinyBalGroup.position.set(leftX, 0);
+
+  // --- BET group pivot at its RIGHT edge ---
+  const bR = tinyBetGroup.getLocalBounds();
+  tinyBetGroup.pivot.set(bR.x + bR.width, 0);
+  tinyBetGroup.position.set(rightX, 0);
+
+} else {
+  // ✅ non-tiny: keep your existing direct positioning (no groups)
+  tinyBalGroup.scale.set(1);
+  tinyBetGroup.scale.set(1);
+
+ if (!IS_TINY) {
+  // BALANCE group anchored to left
+  buyFooterBalanceTitle.x = leftX;
+  buyFooterBalanceValue.x = leftX;
+
+  // BET group anchored to right:
+  const betTextLeftX = rightX - betGroupW;
+
+  buyFooterBetTitle.x = betTextLeftX;
+  buyFooterBetValue.x = betTextLeftX;
+
+  const arrowsX = betTextLeftX + betW + ARROW_X_GAP + (arrowW * 0.5);
+  buyBetUpBtn.x = arrowsX;
+  buyBetDownBtn.x = arrowsX;
+}
+
+}
 
 
 
 
-
-// arrows (desktop / landscape)
-const ARROW_Y_OFFSET = -2;
-const ARROW_X_FROM_CENTER = 90; // tweak 60–90
-
-buyBetDownBtn.x = ARROW_X_FROM_CENTER;
-buyBetUpBtn.x   = ARROW_X_FROM_CENTER;
 
 // ✅ LANDSCAPE-ONLY tuning
 const LAND_ARROW_Y_LIFT = -10;     // negative = move UP (try -6 .. -18)
@@ -1595,7 +1881,8 @@ const arrowGapY = isMobileLandscapeBuyLayout()
 const arrowCenterLift = isMobileLandscapeBuyLayout()
   ? LAND_ARROW_Y_LIFT
   : 0;
-
+// arrows vertical center offset (tweak)
+const ARROW_Y_OFFSET = -2;
 const ARROW_CENTER_Y =
   buyFooterBetValue.y + ARROW_Y_OFFSET + arrowCenterLift;
 
@@ -1603,27 +1890,42 @@ buyBetUpBtn.y   = Math.round(ARROW_CENTER_Y - arrowGapY);
 buyBetDownBtn.y = Math.round(ARROW_CENTER_Y + arrowGapY);
 
 // scale arrows (use your existing size, then apply a landscape-only multiplier)
-setScaleToHeight(buyBetDownBtn, 24);
-setScaleToHeight(buyBetUpBtn, 24);
+const ARROW_H = IS_TINY ? 18 : 24;
+setScaleToHeight(buyBetDownBtn, ARROW_H);
+setScaleToHeight(buyBetUpBtn, ARROW_H);
+
 
 if (isMobileLandscapeBuyLayout()) {
   buyBetDownBtn.scale.set(buyBetDownBtn.scale.x * LAND_ARROW_SCALE, buyBetDownBtn.scale.y * LAND_ARROW_SCALE);
   buyBetUpBtn.scale.set(buyBetUpBtn.scale.x * LAND_ARROW_SCALE, buyBetUpBtn.scale.y * LAND_ARROW_SCALE);
 }
 
+// ✅ PASTE THIS RIGHT HERE
+if (IS_TINY) {
+  (buyBetUpBtn as any).resetVisual?.();
+  (buyBetDownBtn as any).resetVisual?.();
+
+  const bu = buyBetUpBtn.getLocalBounds();
+  buyBetUpBtn.pivot.set(bu.x + bu.width * 0.5, bu.y + bu.height * 0.5);
+
+  const bd = buyBetDownBtn.getLocalBounds();
+  buyBetDownBtn.pivot.set(bd.x + bd.width * 0.5, bd.y + bd.height * 0.5);
+}
+
+
 // DESKTOP: bigger hitboxes for bet arrows
 // =====================
 if (!isMobilePortraitBuyLayout()) {
-  const HIT_PAD_X = 26; // tweak 16..40
-  const HIT_PAD_Y = 22; // tweak 14..34
+  const padX = IS_TOUCH_UI ? 2 : 26;
+  const padY = IS_TOUCH_UI ? 2 : 22;
 
   const padHit = (btn: Container) => {
     const b = btn.getLocalBounds();
     btn.hitArea = new Rectangle(
-      b.x - HIT_PAD_X,
-      b.y - HIT_PAD_Y,
-      b.width + HIT_PAD_X * 2,
-      b.height + HIT_PAD_Y * 2
+      b.x - padX,
+      b.y - padY,
+      b.width + padX * 2,
+      b.height + padY * 2
     );
   };
 
@@ -1634,32 +1936,13 @@ if (!isMobilePortraitBuyLayout()) {
 
     refreshBuyMenuFooter();
 
-  // -----------------------------
-// BET PILL (fixed size on desktop, adaptive on mobile)
 // -----------------------------
+// ✅ BET PILL: disabled (desktop + mobile landscape + tiny)
 // -----------------------------
-// BET PILL (desktop: fixed + centered to bet value)
-// -----------------------------
-if (!isMobilePortraitBuyLayout()) {
-  const DESKTOP_BET_PILL_W = 130; // your shortened width
-  const DESKTOP_BET_PILL_H = 72;
+buyFooterBetBg.visible = false;
+buyFooterBetBg.clear();
 
-  buyFooterBetBg.clear()
-    .roundRect(
-      -DESKTOP_BET_PILL_W / 2,
-      -DESKTOP_BET_PILL_H / 2,
-      DESKTOP_BET_PILL_W,
-      DESKTOP_BET_PILL_H,
-      0
-    )
-    .fill({ color: 0x6e6e6e, alpha: 0.80 });
 
- const BET_PILL_Y_OFFSET = -6; // 🔼 negative = move up (try -4 .. -10)
-
-buyFooterBetBg.x = Math.round(buyFooterBetValue.x);
-buyFooterBetBg.y = Math.round(buyFooterBetValue.y + BET_PILL_Y_OFFSET);
-
-}
 
 
 
@@ -1671,14 +1954,7 @@ buyFooterBetBg.y = Math.round(buyFooterBetValue.y + BET_PILL_Y_OFFSET);
     buyBetUpBtn.zIndex = 1;
     buyBetDownBtn.zIndex = 1;
 
-// =====================
-// DESKTOP HUD: center footer visually on screen
-// =====================
-if (!isMobilePortraitBuyLayout()) {
-  const b = buyFooter.getLocalBounds();
-  buyFooter.x = Math.round(W * 0.5 - (b.x + b.width * 0.5));
-  buyFooter.y = FOOTER_Y;
-}
+
 
 
 
@@ -1804,4 +2080,3 @@ portraitHudPivotSet = false;
     showInsufficientToast,
   };
 }
-

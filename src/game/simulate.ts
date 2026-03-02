@@ -60,6 +60,7 @@ export type SpinResult = {
 // ----------------------------
 export let RTP_SCALE_BASE = 1.0;
 export let RTP_SCALE_FS = 1.0;
+const DEBUG_SIM = false;
 
 export function setRtpScale(base: number, fs: number = base) {
   RTP_SCALE_BASE = base;
@@ -89,6 +90,9 @@ export type SimConfig = {
     H: number[]; // H1..H5
   }>;
 
+
+    PAY_SCALE?: number; 
+    
   // tumble / sim limits
   MAX_TUMBLES?: number;      // default 25
   TOTAL_WINX_CAP?: number;   // default 10000
@@ -333,14 +337,15 @@ export function simulateSpin(
     // ----------------------------
   // Aftershock Wild (end-of-tumble spice)
   // ----------------------------
-const AFTERSHOCK_WILD_ON = true;
+const AFTERSHOCK_CHANCE_FS = 0.15; // 15% of winning FS spins get the aftershock attempt
+const AFTERSHOCK_WILD_ON =
+  mode === "BASE" ? true : (rng() < AFTERSHOCK_CHANCE_FS);
 
 const AFTERSHOCK_WILD_MAX = 1; // max wilds per spin
 let aftershockWildsUsed = 0;
 
 
-// ✅ SIM VERSION STAMP (prints once, ESM-safe)
-if (!(globalThis as any).__SIM_VER__) {
+if (DEBUG_SIM && !(globalThis as any).__SIM_VER__) {
   (globalThis as any).__SIM_VER__ = true;
   console.log("[SIM] simulateSpin running ✅");
 }
@@ -364,7 +369,7 @@ if (!(globalThis as any).__SIM_VER__) {
 
   // A) Enchanted Wild: if a paying cluster contains >=2 wilds, boost its payout
   const ENCHANTED_WILD_MIN = 2;     // 2 wilds to trigger
-  const ENCHANTED_WILD_MULT = 1.6;  // 1.3..2.0 (start 1.5–1.7)
+  const ENCHANTED_WILD_MULT = 1.35; // 1.3..2.0 (start 1.5–1.7)
 
   // B) Scatter Infusion: if current grid has exactly 2 scatters,
   // temporarily treat ladderIndex as +1 for this win step (once per spin)
@@ -387,13 +392,21 @@ const weights: Record<SymbolId, number> = { ...weightsRaw };
 // BASE only: nudge scatter frequency
 if (mode === "BASE" && cfg.SCATTER_WEIGHT_MUL_BASE) {
   weights.S1 = weights.S1 * cfg.SCATTER_WEIGHT_MUL_BASE;
+
+  // ✅ debug once: confirm effective scatter weight (helps tune "1 in 120")
+  if (!(globalThis as any).__SCATTER_EFF_ONCE__) {
+    (globalThis as any).__SCATTER_EFF_ONCE__ = true;
+    
+  }
 }
+
 
 
   let grid = makeGrid(weights, COLS, ROWS, rng);
   const initialGrid = grid.map(c => ({ id: c.id }));
-// DEBUG: confirm scatter multiplier is applied (prints once)
-if (mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
+
+
+if (DEBUG_SIM && mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
   (globalThis as any).__SC_MUL_ONCE__ = true;
   console.log(
     "[SIM] BASE scatter mul =",
@@ -402,6 +415,7 @@ if (mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
     weights.S1
   );
 }
+
 
   // Scatter awards:
   // - award if initial grid has 3+
@@ -415,6 +429,9 @@ if (mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
     fsAwarded += (mode === "BASE" ? FS_AWARD_BASE : FS_AWARD_FS);
   }
 
+
+
+
   const steps: SpinStep[] = [];
 
   // ladder index used this spin
@@ -423,6 +440,11 @@ if (mode === "BASE" && !(globalThis as any).__SC_MUL_ONCE__) {
   let hadAnyClusterWinThisSpin = false;
 
   let scatterInfusionUsed = false; // ✅ once per spin
+
+  // ✅ Option 1: cap how many ladder steps can be gained per SPIN (keeps cascade-ramping feel)
+let ladderStepsThisSpin = 0;
+const LADDER_STEP_CAP_PER_SPIN = 1; // try 1 first; 2 if you want more ramp
+
 
   for (let t = 0; t < MAX_TUMBLES; t++) {
        const clusters = findClusters(grid, COLS, ROWS, cfg.PAY_BANDS);
@@ -521,19 +543,26 @@ for (const c of clusters) {
   }
 }
 
-  // RTP CALIBRATION (global knob; set by rtp.ts)
 const rtpScale = (mode === "FREE_SPINS") ? RTP_SCALE_FS : RTP_SCALE_BASE;
+
 if (!(globalThis as any).__RTP_SCALE_ONCE__) {
   (globalThis as any).__RTP_SCALE_ONCE__ = true;
-
+  
 }
+
 for (const c of clusters) c.payoutX *= rtpScale;
+
 
     // =====================
     // B) SCATTER INFUSION (2 scatters => temporary +1 ladder step, once per spin)
     // =====================
 let ladderIdxForThisStep = ladderIndex;
 let scatterInfusionUsedThisStep = false;
+
+// ✅ BASE game should not ramp ladder multipliers (keep base at 1x)
+if (mode === "BASE") {
+  ladderIdxForThisStep = 0;
+}
 
 const scattersNow = countScatters(grid);
 
@@ -569,11 +598,17 @@ if (SCATTER_INFUSION_ON && !scatterInfusionUsed) {
     const nextGrid = applyTumble(grid, explodeSet, weights, COLS, ROWS, rng);
 
     // Scatter crossing check (after tumble)
-    const scattersAfter = countScatters(nextGrid);
-    if (scattersAfter >= SCATTER_THRESHOLD && prevScatterCount < SCATTER_THRESHOLD) {
-      fsAwarded += (mode === "BASE" ? FS_AWARD_BASE : FS_AWARD_FS);
-    }
-    prevScatterCount = scattersAfter;
+ const scattersAfter = countScatters(nextGrid);
+
+// ✅ In BASE, FS should only be triggered by the initial reveal grid
+if (mode === "FREE_SPINS") {
+  if (scattersAfter >= SCATTER_THRESHOLD && prevScatterCount < SCATTER_THRESHOLD) {
+    fsAwarded += FS_AWARD_FS;
+  }
+}
+
+prevScatterCount = scattersAfter;
+
 
 steps.push({
   grid,
@@ -593,9 +628,14 @@ steps.push({
 
 
 
-    totalWinX += stepWinX;
-    grid = nextGrid;
-    ladderIndex++;
+totalWinX += stepWinX;
+grid = nextGrid;
+
+// ✅ advance ladder during cascades, but only up to N steps per spin
+if (mode === "FREE_SPINS" && ladderStepsThisSpin < LADDER_STEP_CAP_PER_SPIN) {
+  ladderIndex = Math.min(ladderIndex + 1, LADDER.length - 1);
+  ladderStepsThisSpin++;
+}
   }
 
   // apply cap

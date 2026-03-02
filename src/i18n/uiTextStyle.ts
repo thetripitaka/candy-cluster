@@ -3,28 +3,41 @@
 import { TextStyle } from "pixi.js";
 import { getLang, t } from "./i18n";
 import type { Lang } from "./i18n";
-import { uiFontFamilyFor } from "./fonts";
+import { uiFontFamilyFor, PIXELDOWN_STACK } from "./fonts";
 
-function isLatinUiLang(lang: string) {
-  const base = (lang || "en").toLowerCase();
-  
-  const latin = [
-    "en", "es", "fr", "de", "it", "pt",
-    "nl", "sv", "da", "no", "fi","id", "tl",
-    "pl", "cs", "sk", "hu", "ro", 
-  ];
-  return latin.some((k) => base === k || base.startsWith(k + "-"));
-}
+import { MICRO5_STACK } from "./fonts";
 
 export function micro5ForLatinUiFontFamily(lang: string) {
-  if (isLatinUiLang(lang)) return '"Micro5"';
+  if (isLatinUiLang(lang)) return MICRO5_STACK;  // ✅ was '"Micro5"'
   return uiFontFamilyFor(lang as any);
 }
 
 export function splashSubtitleFontFamilyFor(lang: string) {
-  if (isLatinUiLang(lang)) return '"Micro5"';
+  if (isLatinUiLang(lang)) return MICRO5_STACK;  // ✅ was '"Micro5"'
   return uiFontFamilyFor(lang as any);
 }
+function isLatinUiLang(lang: string) {
+  const base = (lang || "en").toLowerCase();
+
+  const latin = [
+    "en", "es", "fr", "de", "it", "pt",
+    "nl", "sv", "da", "no", "fi", "id", "tl",
+    "pl", "cs", "sk", "hu", "ro",
+  ];
+  return latin.some((k) => base === k || base.startsWith(k + "-"));
+}
+
+/**
+ * Font family for BIG / OVERLAY text (Big Win, Total Win, etc)
+ * - Latin: Pixeldown → BigShoulders → system
+ * - Non-latin: language font → system
+ */
+export function overlayBrandFontFamilyFor(lang: string) {
+  if (isLatinUiLang(lang)) return PIXELDOWN_STACK;
+  return uiFontFamilyFor(lang as any);
+}
+
+
 
 
 
@@ -34,17 +47,17 @@ export function splashSubtitleFontFamilyFor(lang: string) {
 function uiTextTuningFor(lang: Lang) {
   switch (lang) {
     case "ar":
-      return { fontSizeMul: .8, letterSpacing: 0, lineHeightMul: 1.15, uppercase: false };
+      return { fontSizeMul: .6, letterSpacing: 0, lineHeightMul: 1.15, uppercase: false };
 
     case "hi":
       return { fontSizeMul: 0.6, letterSpacing: 0, lineHeightMul: 1.2, uppercase: false };
 
     case "zh":
-        return { fontSizeMul: 0.8, letterSpacing: 0, lineHeightMul: 1.2, uppercase: false };
+        return { fontSizeMul: 0.6, letterSpacing: 0, lineHeightMul: 1.2, uppercase: false };
     case "ja":
       return { fontSizeMul: .7, letterSpacing: -1, lineHeightMul: 1.1, uppercase: false };
     case "ko":
-      return { fontSizeMul: .8, letterSpacing: 0, lineHeightMul: 1.1, uppercase: false };
+      return { fontSizeMul: .7, letterSpacing: 0, lineHeightMul: 1.1, uppercase: false };
 
       case "tr":
       return { fontSizeMul: 1.1, letterSpacing: 0, lineHeightMul: 1.1, uppercase: false };

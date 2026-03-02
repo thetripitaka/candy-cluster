@@ -1,36 +1,42 @@
 // src/i18n/fonts.ts
 import type { Lang } from "./i18n";
 
+export const PIXELDOWN_STACK =
+  `"pixeldown","BigShoulders60pt-Black", system-ui, Arial, sans-serif`;
+
+export const MICRO5_STACK =
+  `"Micro5","Tiny5-Regular", system-ui, Arial, sans-serif`;
+
+function withSystemFallback(primary: string) {
+  if (primary.includes("system-ui")) return primary;
+  return `${primary}, system-ui, Arial, sans-serif`;
+}
+
 export function uiFontFamilyFor(lang: Lang): string {
   switch (lang) {
     case "ar":
-      return `"Marhey", system-ui, sans-serif`;
+      return withSystemFallback(`"Marhey"`);
 
     case "hi":
-      return `"PlaypenSansDeva", system-ui, sans-serif`;
+      return withSystemFallback(`"PlaypenSansDeva"`);
 
     case "zh":
-      return `"ZCOOLKuaiLe", system-ui, sans-serif`;
+      return withSystemFallback(`"ZCOOLKuaiLe"`);
 
     case "ja":
-      return `"PottaOne", system-ui, sans-serif`;
+      return withSystemFallback(`"PottaOne"`);
 
     case "ko":
-      return `"DoHyeon", system-ui, sans-serif`;
+      return withSystemFallback(`"DoHyeon"`);
 
     case "vi":
-      return `"Neucha", system-ui, sans-serif`; 
-
     case "ru":
-      return `"Neucha", system-ui, sans-serif`;
+      return withSystemFallback(`"Neucha"`);
 
-      case "tr":
-      return `"Bahiana", system-ui, sans-serif`;
+    case "tr":
+      return withSystemFallback(`"Bahiana"`);
 
     default:
-      return `"pixeldown","Micro5", system-ui, sans-serif`;
+      return PIXELDOWN_STACK;
   }
 }
-
-
-

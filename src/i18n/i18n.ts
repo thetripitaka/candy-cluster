@@ -363,12 +363,12 @@ fi: {
 "splash.card3.body": "WILDIT TOISELLA\nMAHDOLLISUUDELLA",
 
   "ui.tumbleWin": "KETJUVOITTO",
-"ui.freeSpins": "ILMAISET KIERROKSET",
+"ui.freeSpins": "FREE SPINS",
 "ui.spinsLeft": "KIERROKSIA\nJÄLJELLÄ",
 
   "ui.info": "INFO",
 "ui.gameInfoTitle": "BLOCKY FARM – PELIN TIEDOT",
-  "ui.clickToContinue": "FREE SPINS",
+  "ui.clickToContinue": "Klikkaa jatkaaksesi",
   "ui.totalWin": "KOKONAIS\nVOITTO",
   "ui.balance": "SALDO",
   "ui.bet": "PANOS",

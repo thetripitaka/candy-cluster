@@ -7,6 +7,8 @@ import {
   isMobileUILayout,
   isMobilePortraitUILayout,
   isMobileLandscapeUILayout,
+  isTabletLike, 
+    isTabletLandscape, 
 } from "../ui/layoutFlags";
 
 type LayoutUIArgs = {
@@ -21,17 +23,19 @@ type LayoutUIArgs = {
   // ui bottom module
  uiBottom: {
      layer: Container;
-  layout: (p: {
-    W: number;
-    H: number;
-    uiH: number;
-    safeB: number;
+ layout: (p: {
+  W: number;
+  H: number;
+  uiH: number;
+  safeB: number;
 
-    uiScale: number; // ✅ NEW
+  uiScale: number;
 
-    isMobile: boolean;
-    isPortrait: boolean;
-  }) => void;
+  isMobile: boolean;
+  isPortrait: boolean;
+  isLandscape: boolean; // ✅ NEW
+}) => void;
+
 };
 
 
@@ -87,6 +91,29 @@ function alignGroupTop(group: Container, topY: number) {
   const b = group.getLocalBounds();
   group.y = Math.round(topY - b.y * (group.scale.y || 1));
 }
+
+function aabbInParent(c: any) {
+  // Axis-aligned bounds in PARENT space (no rotations assumed, which matches your UI)
+  const b = c.getLocalBounds?.() ?? { x: 0, y: 0, width: 0, height: 0 };
+  const sx = c.scale?.x ?? 1;
+  const sy = c.scale?.y ?? 1;
+  const px = c.pivot?.x ?? 0;
+  const py = c.pivot?.y ?? 0;
+
+  const left = c.x + (b.x - px) * sx;
+  const top = c.y + (b.y - py) * sy;
+  const right = left + b.width * sx;
+  const bottom = top + b.height * sy;
+
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function applyUniformScale(c: any, mul: number) {
+  const sx = c.scale?.x ?? 1;
+  const sy = c.scale?.y ?? 1;
+  c.scale.set(sx * mul, sy * mul);
+}
+
 
 export function makeLayoutUI(args: LayoutUIArgs) {
   const {
@@ -164,6 +191,8 @@ function layoutStatGroupTopAligned(opts: {
   const h0 = Math.max(1, group.getLocalBounds().height);
   const targetGroupH = targetH * scaleFrac;
   const s = targetGroupH / h0;
+  // ✅ hard reset so scale never accumulates between layout modes
+group.scale.set(1, 1);
   group.scale.set(s);
 
 // snap TOP edge to baseline (correct even with scale + pivot)
@@ -177,6 +206,7 @@ group.y = Math.round(topY - (b.y - py) * sy);
 }
 
 function layoutUIDesktop(panelW: number, targetH: number, anchorX: number) {
+  
       // ✅ keep “8px” in SCREEN pixels even though the panel layer is scaled
 const PANEL_TOP_PAD_PX = 2;
 const sPanel = Math.max(0.01, uiBottom.layer.scale.y || 1);
@@ -191,6 +221,16 @@ winUI.visible = true;
 winTitleLabel.visible = true;
 winAmountLabel.visible = true;
 
+
+
+// =====================
+// LANDSCAPE STAT ROW — MATCH BALANCE EXACTLY
+// WIN + BET clone BALANCE sizing + baseline
+// =====================
+const STAT_TITLE_OFFSET_Y = -35;
+const STAT_SCALE_FRAC = 1;
+
+
 layoutStatGroupTopAligned({
   group: winUI,
   title: winTitleLabel,
@@ -202,7 +242,8 @@ topY: PANEL_TOP_PAD_LOCAL, // ✅ 8px below the top of the UI panel background
   scaleFrac: 0.73,                      // ✅ same sizing as balance
 });
 
-winUI.x = Math.round(anchorX);
+winUI.x = Math.round(panelW * 0.5);
+
 
 
   // BALANCE (base stat widget)
@@ -234,27 +275,40 @@ balanceGroup.x = Math.round(winUI.x + winW * 0.5 + WIN_TO_BALANCE_GAP + balW * 0
 
 
 
-    // BUTTONS (keep your existing desktop placement)
+ // =====================
+// DESKTOP BUTTONS (RESTORED)
+// =====================
+
+// SPIN
 placeOnPanel(spinBtnPixi, 0.86, 0.1, panelW, targetH);
 setScaleToHeight(spinBtnPixi, targetH * 1.7);
 
-// ✅ lock spin X to the reel anchor (keep your Y logic unchanged)
-const SPIN_FROM_ANCHOR_FRAC = 0.36; // ✅ positive moves right, negative moves left
+// lock spin X to reel anchor (desktop rule)
+const SPIN_FROM_ANCHOR_FRAC = 0.36;
 spinBtnPixi.x = Math.round(anchorX + panelW * SPIN_FROM_ANCHOR_FRAC);
 
+// AUTO
+placeOnPanel(autoBtnPixi, 0.78, 0.5, panelW, targetH);
+setScaleToHeight(autoBtnPixi, targetH * 0.78);
 
-    placeOnPanel(autoBtnPixi, 0.78, 0.5, panelW, targetH);
-    setScaleToHeight(autoBtnPixi, targetH * 0.78);
+// TURBO
+placeOnPanel(turboBtnPixi, 0.935, 0.5, panelW, targetH);
+setScaleToHeight(turboBtnPixi, targetH * 0.9);
 
-    placeOnPanel(turboBtnPixi, 0.935, 0.5, panelW, targetH);
-    setScaleToHeight(turboBtnPixi, targetH * 0.9);
 
-    const BUY_Y_NUDGE = -0.2; // negative = move up
+
+// BUY
+const BUY_Y_NUDGE = -0.2;
 placeOnPanel(buyBtnPixi, 0.14, 0.23 + BUY_Y_NUDGE, panelW, targetH);
-    setScaleToHeight(buyBtnPixi, targetH * 1.7);
+setScaleToHeight(buyBtnPixi, targetH * 1.7);
 
-    placeOnPanel(settingsBtnPixi, 0.07, 0.54, panelW, targetH);
-    setScaleToHeight(settingsBtnPixi, targetH * 0.4);
+// SETTINGS
+placeOnPanel(settingsBtnPixi, 0.07, 0.54, panelW, targetH);
+setScaleToHeight(settingsBtnPixi, targetH * 0.4);
+
+
+
+
 
     // BET (desktop grouping)
     betDisplayGroup.visible = true;
@@ -441,6 +495,295 @@ betControlsGroup.y = Math.round(betDisplayGroup.y);
 
   }
 
+function tabletPortraitClampStatsToButtons() {
+ const PAD_BTN_MIN = 14;        // minimum safety gap (never overlap)
+const PAD_BTN_MAX = 48;        // target max “air” if we can afford it
+  const GAP_MIN = 14;     // minimum gap between BET–WIN and WIN–BAL
+  const BET_CTRL_GAP = 10;
+
+  const buyBox = aabbInParent(buyBtnPixi);
+  const spinBox = aabbInParent(spinBtnPixi);
+  const autoBox = aabbInParent(autoBtnPixi);
+  const turboBox = aabbInParent(turboBtnPixi);
+
+// We'll choose the biggest padding we can afford, up to PAD_BTN_MAX.
+const leftBtnEdge = buyBox.right;
+const rightBtnEdge = Math.min(spinBox.left, autoBox.left, turboBox.left);
+
+// First measure with MIN pad (guaranteed safe)
+let leftLimit  = Math.round(leftBtnEdge + PAD_BTN_MIN);
+let rightLimit = Math.round(rightBtnEdge - PAD_BTN_MIN);
+let avail = Math.max(1, rightLimit - leftLimit);
+
+// We'll later increase padding if there is spare room.
+
+
+  const unionBox = (a: any, b: any) => {
+    const left = Math.min(a.left, b.left);
+    const right = Math.max(a.right, b.right);
+    const top = Math.min(a.top, b.top);
+    const bottom = Math.max(a.bottom, b.bottom);
+    return { left, right, top, bottom, width: right - left, height: bottom - top };
+  };
+
+  // Measure BET as DISPLAY + CONTROLS together (composite footprint)
+  const measure = () => {
+    const winBox = aabbInParent(winUI);
+    const balBox = aabbInParent(balanceGroup);
+
+    const betDispBox = aabbInParent(betDisplayGroup);
+    const betCtrlBox = aabbInParent(betControlsGroup);
+    const betBox = unionBox(betDispBox, betCtrlBox);
+
+    return {
+      winW: winBox.width,
+      balW: balBox.width,
+      betBox,
+      betDispBox,
+      betCtrlBox,
+      need: betBox.width + winBox.width + balBox.width + GAP_MIN + GAP_MIN,
+    };
+  };
+
+  // If we don’t fit, shrink stats (including bet arrows) with a floor
+  let guard = 0;
+  const FLOOR = 0.62;
+  const STEP = 0.94;
+
+  while (guard++ < 12) {
+    const m = measure();
+    if (m.need <= avail) break;
+
+    if ((winUI.scale?.x ?? 1) <= FLOOR) break;
+
+    applyUniformScale(winUI, STEP);
+    applyUniformScale(balanceGroup, STEP);
+    applyUniformScale(betDisplayGroup, STEP);
+    applyUniformScale(betControlsGroup, STEP);
+
+    centerPivot(winUI);
+    centerPivot(balanceGroup);
+    centerPivot(betDisplayGroup);
+    centerPivot(betControlsGroup);
+  }
+
+  // ---- Place BET–WIN–BAL inside lane (BET = composite) ----
+  const m0 = measure();
+
+
+  // ✅ Visual tuning: use a TARGET button gap (not the maximum possible),
+// so the stat row sits closer to buttons and doesn't leave dead space.
+const PAD_BTN_TARGET = 18; // 🔧 try 14..28 (smaller = closer to buttons)
+
+const PAD_BTN = Math.max(PAD_BTN_MIN, Math.min(PAD_BTN_MAX, PAD_BTN_TARGET));
+
+// Rebuild lane using TARGET pad
+leftLimit  = Math.round(leftBtnEdge + PAD_BTN);
+rightLimit = Math.round(rightBtnEdge - PAD_BTN);
+avail = Math.max(1, rightLimit - leftLimit);
+
+
+const widthsOnly = (m0.betBox.width + m0.winW + m0.balW);
+const extra = Math.max(0, avail - widthsOnly);
+
+// ✅ Use ALL extra space by expanding the internal gaps evenly.
+// This pushes BET left and BAL right (reduces "dead space" near buttons).
+const gapEach = Math.floor(extra / 2);
+
+const gapL = Math.max(GAP_MIN, gapEach);
+const gapR = Math.max(GAP_MIN, extra - gapL); // consume remainder
+
+
+
+  // We need to know how far the composite BET extends left of betDisplayGroup's center.
+  // We attach controls left of display, then compute the union and clamp.
+  // Start by placing WIN in a conservative clamped range using composite width.
+
+  const minWinX = leftLimit + (m0.betBox.width * 0.5) + gapL + (m0.winW * 0.5);
+  const maxWinX = rightLimit - (m0.balW * 0.5 + gapR + m0.winW * 0.5);
+  winUI.x = Math.round(Math.max(minWinX, Math.min(maxWinX, winUI.x)));
+
+  // Place BAL relative to WIN
+  balanceGroup.x = Math.round(winUI.x + m0.winW * 0.5 + gapR + m0.balW * 0.5);
+
+  // Place BET DISPLAY relative to WIN (controls attached after)
+  betDisplayGroup.x = Math.round(winUI.x - m0.winW * 0.5 - gapL - (aabbInParent(betDisplayGroup).width * 0.5));
+  betDisplayGroup.y = Math.round(winUI.y);
+
+  // Attach bet controls to the left of bet display
+  betControlsGroup.y = Math.round(betDisplayGroup.y);
+
+  const betDispNow = aabbInParent(betDisplayGroup);
+  const betCtrlNow = aabbInParent(betControlsGroup);
+  betControlsGroup.x = Math.round(
+    betDisplayGroup.x - betDispNow.width * 0.5 - BET_CTRL_GAP - betCtrlNow.width * 0.5
+  );
+
+  // ---- Final composite clamp (prevents arrows underlapping BUY) ----
+  const betUnion = unionBox(aabbInParent(betDisplayGroup), aabbInParent(betControlsGroup));
+
+  // If composite BET leaks left into BUY zone, shift the whole stat row RIGHT
+  let dx = 0;
+  if (betUnion.left < leftLimit) {
+    dx = Math.round(leftLimit - betUnion.left);
+  }
+
+  // If after shifting right we’d exceed rightLimit, clamp back left instead
+  if (dx !== 0) {
+    // apply dx
+    winUI.x += dx;
+    balanceGroup.x += dx;
+    betDisplayGroup.x += dx;
+    betControlsGroup.x += dx;
+
+    // if we pushed into right buttons, pull left by overflow
+    const balNow = aabbInParent(balanceGroup);
+    const overflow = Math.round(balNow.right - rightLimit);
+    if (overflow > 0) {
+      winUI.x -= overflow;
+      balanceGroup.x -= overflow;
+      betDisplayGroup.x -= overflow;
+      betControlsGroup.x -= overflow;
+    }
+  }
+
+  // Also ensure BALANCE never sits under turbo/auto (extra safety)
+  const balFinal = aabbInParent(balanceGroup);
+  const rightHazard = Math.round(rightBtnEdge - PAD_BTN);
+  if (balFinal.right > rightHazard) {
+    const pull = Math.round(balFinal.right - rightHazard);
+    winUI.x -= pull;
+    balanceGroup.x -= pull;
+    betDisplayGroup.x -= pull;
+    betControlsGroup.x -= pull;
+  }
+}
+
+
+function layoutUITablet(panelW: number, targetH: number, anchorX: number) {
+  // Start from desktop layout so WIN/BAL/BET remain identical
+  layoutUIDesktop(panelW, targetH, anchorX);
+
+  // Tablet portrait vs landscape
+  const isPortrait = appScreenH() >= appScreenW();
+
+  // Stable pivots for all button math
+  centerPivot(buyBtnPixi);
+  centerPivot(spinBtnPixi);
+  centerPivot(autoBtnPixi);
+  centerPivot(turboBtnPixi);
+
+// --- Pin BUY to left edge (tablet) ---
+{
+  const isPortrait = appScreenH() >= appScreenW();
+
+  // 🔧 tighter padding in TABLET PORTRAIT ONLY
+  const BUY_LEFT_PAD = isPortrait ? -8 : 18; // try 6–12 for portrait
+
+  const buyLB = buyBtnPixi.getLocalBounds();
+  const buyW = (buyLB.width || 0) * (buyBtnPixi.scale?.x || 1);
+
+  buyBtnPixi.x = Math.round(BUY_LEFT_PAD + buyW * 0.5);
+}
+
+
+  // -------------------------------------------------
+  // ✅ TABLET PORTRAIT ONLY: make buttons smaller
+  // -------------------------------------------------
+  if (isPortrait) {
+  // 🔧 Tablet portrait size tuning (ONLY)
+  const SPIN_MUL = 0.7;        // already working
+  const BUY_MUL  = 0.7;       // 🔧 try 0.55..0.75
+  const MINI_MUL = 0.75;
+
+  // Spin
+  setScaleToHeight(spinBtnPixi, targetH * 1.7 * SPIN_MUL);
+
+  // Buy (desktop base is also 1.7)
+  setScaleToHeight(buyBtnPixi, targetH * 1.7 * BUY_MUL);
+
+  // Mini buttons
+  setScaleToHeight(autoBtnPixi, targetH * 0.78 * MINI_MUL);
+  setScaleToHeight(turboBtnPixi, targetH * 0.9 * MINI_MUL);
+
+  // Re-center pivots after rescale
+  centerPivot(spinBtnPixi);
+  centerPivot(buyBtnPixi);
+  centerPivot(autoBtnPixi);
+  centerPivot(turboBtnPixi);
+
+
+
+
+}
+// -------------------------------------------------
+// ✅ TABLET LANDSCAPE ONLY: shrink SETTINGS button
+// -------------------------------------------------
+if (!isPortrait && isTabletLandscape(__layoutDeps)) {
+  // desktop base is targetH * 0.4
+  setScaleToHeight(settingsBtnPixi, targetH * 0.1); // 🔧 try 0.24–0.32
+  centerPivot(settingsBtnPixi);
+}
+
+  // --- Pin SPIN to right edge (AFTER any portrait scaling) ---
+  {
+    const SPIN_RIGHT_PAD = 18;
+    const spinLB = spinBtnPixi.getLocalBounds();
+    const spinW = (spinLB.width || 0) * (spinBtnPixi.scale?.x || 1);
+    spinBtnPixi.x = Math.round(panelW - SPIN_RIGHT_PAD - spinW * 0.5);
+  }
+
+  // Measure sizes AFTER final scaling (used by both branches)
+  const spinLB = spinBtnPixi.getLocalBounds();
+  const spinW = (spinLB.width || 0) * (spinBtnPixi.scale?.x || 1);
+  const spinH = (spinLB.height || 0) * (spinBtnPixi.scale?.y || 1);
+
+  const autoLB = autoBtnPixi.getLocalBounds();
+  const turboLB = turboBtnPixi.getLocalBounds();
+
+  const autoW = (autoLB.width || 0) * (autoBtnPixi.scale?.x || 1);
+  const autoH = (autoLB.height || 0) * (autoBtnPixi.scale?.y || 1);
+
+  const turboW = (turboLB.width || 0) * (turboBtnPixi.scale?.x || 1);
+  const turboH = (turboLB.height || 0) * (turboBtnPixi.scale?.y || 1);
+
+  if (isPortrait) {
+    // ✅ TABLET PORTRAIT: mini buttons to the LEFT of SPIN (side stack)
+    const GAP_X = Math.round(targetH * 0.1); // 🔧 try 0.35..0.65
+    const GAP_Y = Math.round(targetH * 0.35); // 🔧 try 0.25..0.55
+
+    const miniColW = Math.max(autoW, turboW);
+
+    const spinLeft = Math.round(spinBtnPixi.x - spinW * 0.5);
+    const miniX = Math.round(spinLeft - GAP_X - miniColW * 0.5);
+
+    autoBtnPixi.x = miniX;
+    turboBtnPixi.x = miniX;
+
+    // center around SPIN Y
+    autoBtnPixi.y = Math.round(spinBtnPixi.y - GAP_Y);
+    turboBtnPixi.y = Math.round(spinBtnPixi.y + GAP_Y);
+  } else {
+    // ✅ TABLET LANDSCAPE: keep vertical stack ABOVE SPIN (your existing behavior)
+    autoBtnPixi.x = spinBtnPixi.x;
+    turboBtnPixi.x = spinBtnPixi.x;
+
+    const spinTop = Math.round(spinBtnPixi.y - spinH * 0.5);
+    const PAD = Math.round(targetH * 0.14); // 🔧 try 0.10..0.22
+
+    autoBtnPixi.y = Math.round(spinTop - PAD - autoH * 0.5);
+    const autoTop = Math.round(autoBtnPixi.y - autoH * 0.5);
+    turboBtnPixi.y = Math.round(autoTop - PAD - turboH * 0.5);
+  }
+  // ✅ FINAL PASS (tablet portrait only): keep stats clear of final button positions
+if (isPortrait) {
+  tabletPortraitClampStatsToButtons();
+}
+
+}
+
+
+
 function layoutUIMobilePortrait(panelW: number, targetH: number, anchorX: number) {
     const w = panelW;
     const h = targetH;
@@ -486,11 +829,12 @@ const spinX = Math.round(anchorX);
     centerPivot(settingsBtnPixi);
 
     // BET group
+    betGroup.scale.set(1, 1); // ✅ reset so scale doesn't accumulate between layouts
     setScaleToHeight(betAmountUI, h * 0.36);
     centerPivot(betAmountUI);
 
     const BET_ARROW_TO_PILL_MUL = 0.78;
-    const BET_ARROWS_X_OFFSET_PX = 18;
+    const BET_ARROWS_X_OFFSET_PX = 5;
     const BET_BTN_X   = -betAmountUI.width * BET_ARROW_TO_PILL_MUL - BET_ARROWS_X_OFFSET_PX;
     const BET_BTN_GAP = 25;
     const BET_BTN_Y_BIAS = -betAmountUI.height * 0.24;
@@ -510,6 +854,9 @@ const spinX = Math.round(anchorX);
     betDownBtnPixi.position.set(Math.round(BET_BTN_X), Math.round(+BET_BTN_GAP + BET_BTN_Y_BIAS));
 
     centerPivot(betGroup);
+
+balanceGroup.scale.set(1, 1);
+balanceGroup.pivot.set(0, 0);
 
     // BALANCE group (right pinned)
     balanceLabel.anchor.set(1, 0.5);
@@ -534,7 +881,25 @@ const spinX = Math.round(anchorX);
       Math.round(HUD_Y + SETTINGS_PAD_Y)
     );
 
-    betGroup.position.set(Math.round(w * 0.42), HUD_Y);
+// ✅ BET pinned to the RIGHT of SETTINGS (true pixel gap)
+{
+  const BET_TO_SETTINGS_GAP = 20; // 🔧 try 0..20
+
+  // Ensure pivots are stable BEFORE measuring
+  centerPivot(settingsBtnPixi);
+  centerPivot(betGroup);
+
+  // Measure in the SAME parent space (panel layer)
+  const setBox = aabbInParent(settingsBtnPixi);
+  const betBox = aabbInParent(betGroup);
+
+  // Move betGroup so its LEFT edge is setBox.right + gap
+  const wantLeft = setBox.right + BET_TO_SETTINGS_GAP;
+  const dx = wantLeft - betBox.left;
+
+  betGroup.x = Math.round(betGroup.x + dx);
+  betGroup.y = HUD_Y;
+}
 
     const BAL_RIGHT_PAD = 5;
     balanceGroup.position.set(Math.round(w - BAL_RIGHT_PAD), Math.round(HUD_Y - (h * 0.09)));
@@ -556,6 +921,19 @@ if (!didWarmRelayout) {
 
   }
 
+  // =====================
+// SETTINGS — PIN TO TOP LEFT (MOBILE LANDSCAPE)
+// =====================
+{
+  const TOP_PAD = 12;   // distance from top edge
+  const LEFT_PAD = 12;  // distance from left edge
+
+  // Settings lives in screen space, not panel space
+  settingsBtnPixi.x = LEFT_PAD + settingsBtnPixi.width * 0.5;
+  settingsBtnPixi.y = TOP_PAD + settingsBtnPixi.height * 0.5;
+}
+
+
  function layoutUIMobileLandscape(panelW: number, targetH: number, anchorX: number) {
 
     const w = panelW;
@@ -568,15 +946,11 @@ if (!didWarmRelayout) {
     centerPivot(autoBtnPixi);
     centerPivot(turboBtnPixi);
 
-    centerPivot(betDisplayGroup);
-    centerPivot(betControlsGroup);
-    centerPivot(winUI);
-    centerPivot(balanceGroup);
 
-    const BUY_H   = h * 2.4;
-    const SPIN_H  = h * 2.4;
-    const MINI_H  = h * 1.5;
-    const ARROW_H = h * 0.6;
+const BUY_H   = h * 3;  // bigger buy
+const SPIN_H  = h * 3;  // bigger spin (primary)
+const MINI_H  = h * 2;  // auto / turbo / settings
+const ARROW_H = h * 0.9;  // bet arrows
 
     setScaleToHeight(buyBtnPixi, BUY_H);
     setScaleToHeight(spinBtnPixi, SPIN_H);
@@ -598,116 +972,197 @@ if (!didWarmRelayout) {
     balanceGroup.visible = true;
     betDisplayGroup.visible = true;
     betControlsGroup.visible = true;
-
-    const CY = Math.round(h * 0.72);
-    const GROUPS_Y_OFFSET = Math.round(h * -0.2);
-    const LAND_GROUP_H = (h * 0.58) * 1.9;
-    const SETTINGS_Y_OFFSET = Math.round(h * -0.3);
-
- const LEFT_PAD = 18;
-
-// ✅ Right edge of the panel (local coords in uiPanel space)
-const RIGHT_EDGE_X = panelW;
-
-// ✅ mirrored left edge around anchorX (pairs with RIGHT_EDGE_X)
-const LEFT_EDGE_X = anchorX - (RIGHT_EDGE_X - anchorX);
+    // ✅ portrait hides these; landscape must re-enable them
+winTitleLabel.visible = true;
+winAmountLabel.visible = true;
+// 🔧 move entire landscape UI row UP so buttons don’t clip bottom
+const CY = Math.round(h * -1);
+const STAT_ROW_Y_OFFSET = Math.round(h * .4); // 🔧 positive = DOWN
+const STAT_TOP_Y = CY + STAT_ROW_Y_OFFSET;
 
 
-settingsBtnPixi.x = Math.round(LEFT_EDGE_X + LEFT_PAD + settingsBtnPixi.getLocalBounds().width * 0.5);
+const SETTINGS_Y_OFFSET = 0;
+// =====================
+// LANDSCAPE STAT ROW — MATCH BALANCE EXACTLY
+// WIN + BET clone BALANCE sizing + baseline
+// =====================
 
-    settingsBtnPixi.y = CY + SETTINGS_Y_OFFSET;
 
-    buyBtnPixi.x = Math.round(settingsBtnPixi.x + settingsBtnPixi.width * 0.75 + buyBtnPixi.width * 0.5 + 12);
+const STAT_TITLE_OFFSET_Y = -30;
+const STAT_SCALE_FRAC = 1.2;
+
+// BALANCE (reference)
+layoutStatGroupTopAligned({
+  group: balanceGroup,
+  title: balanceTitleLabel,
+  value: balanceLabel,
+  targetH: h,
+  topY: STAT_TOP_Y,
+  titleOffsetY: STAT_TITLE_OFFSET_Y,
+  scaleFrac: STAT_SCALE_FRAC,
+});
+
+// ✅ IMPORTANT: in landscape, the BET "pill" should NOT carry portrait scaling.
+// The group is scaled by layoutStatGroupTopAligned; the pill must stay neutral inside it.
+betAmountUI.scale.set(1);
+betAmountUI.position.set(0, 0);
+
+// WIN (same as balance)
+layoutStatGroupTopAligned({
+  group: winUI,
+  title: winTitleLabel,
+  value: winAmountLabel,
+  targetH: h,
+  topY: STAT_TOP_Y,
+  titleOffsetY: STAT_TITLE_OFFSET_Y,
+  scaleFrac: STAT_SCALE_FRAC,
+});
+winUI.x = Math.round(w * 0.5);
+
+// BET (same as balance)
+layoutStatGroupTopAligned({
+  group: betDisplayGroup,
+  title: betTitleLabel,
+  value: betAmountUI,
+  targetH: h,
+  topY: STAT_TOP_Y,
+  titleOffsetY: STAT_TITLE_OFFSET_Y,
+  scaleFrac: STAT_SCALE_FRAC,
+});
+
+// ✅ Align bet arrows vertically to the BET stat group (same row)
+{
+  const b = betDisplayGroup.getLocalBounds();
+  const sy = betDisplayGroup.scale.y || 1;
+
+  const betCenterY = Math.round(
+    betDisplayGroup.y + (b.y * sy) + (b.height * sy * 0.5)
+  );
+
+  // ✅ THIS is what prevents "drift" when switching layouts
+  betControlsGroup.y = betCenterY;
+}
+
+
+
+
+
+const LEFT_PAD = 12;
+
+// ✅ true panel edges in LOCAL space
+const LEFT_EDGE_X = 0;
+const RIGHT_EDGE_X = w;
+
+
+
+// =====================
+// BUY — PIN TO LEFT EDGE (MOBILE LANDSCAPE)
+// =====================
+const BUY_LEFT_PAD = 12; // 🔧 tweak: 12–24 feels good
+
+const buyW = buyBtnPixi.getLocalBounds().width * (buyBtnPixi.scale.x || 1);
+
+// panel-local coords → left edge = 0
+buyBtnPixi.x = Math.round(BUY_LEFT_PAD + buyW * 0.5);
+buyBtnPixi.y = CY;
+
+
     buyBtnPixi.y = CY;
 
     // bet arrows group
-    const arrowsX = Math.round(buyBtnPixi.x + buyBtnPixi.width * 0.62 + betControlsGroup.getLocalBounds().width * 0.5 + 16);
-    betControlsGroup.x = arrowsX;
+   const buyW2 = buyBtnPixi.getLocalBounds().width * (buyBtnPixi.scale.x || 1);
+const controlsW = betControlsGroup.getLocalBounds().width * (betControlsGroup.scale.x || 1);
 
-    const BET_ARROW_GAP_Y = Math.round(h * 0.36);
-    const BET_ARROWS_GROUP_Y_OFFSET = -10;
-    betControlsGroup.y = CY + GROUPS_Y_OFFSET + BET_ARROWS_GROUP_Y_OFFSET;
+
+
+   const BET_ARROW_GAP_Y = Math.round(h * 0.5);
+  const BET_ARROWS_GROUP_Y_OFFSET = 0;
+   
 
     betUpBtnPixi.position.set(0, -BET_ARROW_GAP_Y);
     betDownBtnPixi.position.set(0, +BET_ARROW_GAP_Y);
 
-    // bet display group scaling
-    betDisplayGroup.y = CY + GROUPS_Y_OFFSET;
-    betDisplayGroup.scale.set(1, 1);
-    const betH0 = Math.max(1, betDisplayGroup.getLocalBounds().height);
-    betDisplayGroup.scale.set(LAND_GROUP_H / betH0);
+    // ✅ center the arrows group's pivot so x/y are true center
+{
+  const b = betControlsGroup.getLocalBounds();
+  betControlsGroup.pivot.set(b.x + b.width / 2, b.y + b.height / 2);
+}
 
-    const BET_GAP_PX = Math.round(h * 0.01);
-    betTitleLabel.y -= Math.round(BET_GAP_PX / Math.max(0.0001, betDisplayGroup.scale.y));
-
-    // win group scale + gap
-    winUI.scale.set(1, 1);
-    const winH0 = Math.max(1, winUI.getLocalBounds().height);
-    winUI.scale.set(LAND_GROUP_H / winH0);
-   winUI.x = Math.round(anchorX);
-    winUI.y = CY + GROUPS_Y_OFFSET;
-
-    // balance group scale
-    balanceGroup.scale.set(1, 1);
-    const balH0 = Math.max(1, balanceGroup.getLocalBounds().height);
-    balanceGroup.scale.set(LAND_GROUP_H / balH0);
-    balanceGroup.y = CY + GROUPS_Y_OFFSET;
+const GAP_BET_TO_WIN = Math.round(h * 3);
+const GAP_WIN_TO_BAL = Math.round(h * 5.4);
 
     // equal spacing around win
     const WIN_ANCHOR_X = winUI.x;
-    const GROUP_GAP_X = Math.round(h * 2.8);
+  
 
-    const scaledW = (c: Container) => c.getLocalBounds().width * (c.scale.x || 1);
+    const scaledW = (c: Container) => {
+  const b = c.getLocalBounds();
+  return (b.width || 0) * (c.scale.x || 1);
+};
 
     const betW = scaledW(betDisplayGroup);
     const winW = scaledW(winUI);
     const balW = scaledW(balanceGroup);
 
-    betDisplayGroup.x = Math.round(WIN_ANCHOR_X - (winW * 0.5) - GROUP_GAP_X - (betW * 0.5));
-    balanceGroup.x = Math.round(WIN_ANCHOR_X + (winW * 0.5) + GROUP_GAP_X + (balW * 0.5));
+    betDisplayGroup.x =
+  WIN_ANCHOR_X - (winW * 0.5) - GAP_BET_TO_WIN - (betW * 0.5);
+balanceGroup.x =
+  WIN_ANCHOR_X + (winW * 0.5) + GAP_WIN_TO_BAL - (balW * 0.5);
+
+    
 
     // arrows attached left of bet
     const CTRL_TO_BET_GAP = Math.round(h * 0.25);
-    const ctrlW = betControlsGroup.getLocalBounds().width * (betControlsGroup.scale.x || 1);
+    const cb = betControlsGroup.getLocalBounds();
+const ctrlW = (cb.width || 0) * (betControlsGroup.scale.x || 1);
+
     betControlsGroup.x = Math.round(betDisplayGroup.x - (betW * 0.5) - CTRL_TO_BET_GAP - (ctrlW * 0.5));
 
 // right side spin + stack
-const RIGHT_PAD = -5;
+const RIGHT_PAD = 8;          // ✅ keeps SPIN safely inside the panel edge
+const STACK_TO_SPIN_GAP = 2;  // ✅ positive gap between stack and SPIN
 
 // ✅ right boundary for the right cluster (panel right edge in local coords)
-const RIGHT_CLUSTER_EDGE_X = w; // same as panelWLocal
-    const STACK_TO_SPIN_GAP = -50;
-    const STACK_GAP_Y = Math.round(h * 0.6);
-    const SPIN_Y_OFFSET = Math.round(h * -1);
-
-    const spinW = spinBtnPixi.getLocalBounds().width;
-
-    spinBtnPixi.x = Math.round(RIGHT_CLUSTER_EDGE_X - RIGHT_PAD - spinW * 0.5);
+const RIGHT_CLUSTER_EDGE_X = w;
+const STACK_GAP_Y = Math.round(h * 0.8);
+const SPIN_Y_OFFSET = 0;
 
 
-    spinBtnPixi.y = CY + SPIN_Y_OFFSET;
+   const spinW = spinBtnPixi.getLocalBounds().width * (spinBtnPixi.scale.x || 1);
 
-    buyBtnPixi.y = spinBtnPixi.y;
+spinBtnPixi.x = Math.round(RIGHT_CLUSTER_EDGE_X - RIGHT_PAD - spinW * 0.5);
+
+
+spinBtnPixi.y = CY + SPIN_Y_OFFSET;
+  
 
     spinningBtnPixi.x = spinBtnPixi.x;
     spinningBtnPixi.y = spinBtnPixi.y;
     spinningBtnPixi.scale.set(spinBtnPixi.scale.x, spinBtnPixi.scale.y);
 
-    const autoW = autoBtnPixi.getLocalBounds().width;
-    const turboW = turboBtnPixi.getLocalBounds().width;
+   const autoW = autoBtnPixi.getLocalBounds().width * (autoBtnPixi.scale.x || 1);
+const turboW = turboBtnPixi.getLocalBounds().width * (turboBtnPixi.scale.x || 1);
+
 
     const stackX = Math.round(
       spinBtnPixi.x - (spinW * 0.5) - STACK_TO_SPIN_GAP - Math.max(autoW, turboW) * 0.5
     );
 
-    const STACK_CENTER_Y = CY + SPIN_Y_OFFSET;
+   const STACK_CENTER_Y = CY + SPIN_Y_OFFSET;
 
     autoBtnPixi.x = stackX;
     autoBtnPixi.y = STACK_CENTER_Y - STACK_GAP_Y;
 
     turboBtnPixi.x = stackX;
     turboBtnPixi.y = STACK_CENTER_Y + STACK_GAP_Y;
+    // ✅ keep spinning overlay perfectly locked to SPIN in landscape
+spinningBtnPixi.x = spinBtnPixi.x;
+spinningBtnPixi.y = spinBtnPixi.y;
+spinningBtnPixi.scale.set(spinBtnPixi.scale.x, spinBtnPixi.scale.y);
+spinningBtnPixi.pivot.set(spinBtnPixi.pivot.x, spinBtnPixi.pivot.y);
+
   }
+
 
  function layoutUI() {
   const panelW = appScreenW();
@@ -726,10 +1181,16 @@ const anchorXLocal = Math.round(anchorXWorld / s);
 
   const layoutHLocal = Math.round(screenHLocal * PANEL_HEIGHT_FRAC());
 
-  const PORTRAIT_PANEL_BG_FRAC = 0.1;
-  const bgHLocal = Math.round(
-  screenHLocal * (isMobilePortraitUILayout(__layoutDeps) ? PORTRAIT_PANEL_BG_FRAC : PANEL_HEIGHT_FRAC())
-);
+const PORTRAIT_PANEL_BG_FRAC = 0.10;
+const LANDSCAPE_PANEL_BG_FRAC = 0.075; // 🔧 tweak 0.06..0.09
+
+const bgFrac =
+  isMobilePortraitUILayout(__layoutDeps) ? PORTRAIT_PANEL_BG_FRAC :
+  isMobileLandscapeUILayout(__layoutDeps) ? LANDSCAPE_PANEL_BG_FRAC :
+  PANEL_HEIGHT_FRAC();
+
+const bgHLocal = Math.round(screenHLocal * bgFrac);
+
 
 // ✅ screen-space height (what the panel background actually draws to)
 const bgH = Math.round(bgHLocal * s);
@@ -745,12 +1206,56 @@ setUiPanelH(bgH);
 uiBottom.layout({
   W: panelW,
   H: screenH,
-  uiH: bgHLocal, // ✅ IMPORTANT: unscaled height (UIbottom applies uiScale)
+  uiH: bgHLocal,
   safeB,
   uiScale: s,
   isMobile: isMobileUILayout(__layoutDeps),
   isPortrait: isMobilePortraitUILayout(__layoutDeps),
+  isLandscape: isMobileLandscapeUILayout(__layoutDeps), // ✅ NEW
 });
+
+// =====================
+// PANEL BACKGROUND ALPHA (mode-specific)
+// Landscape mobile: invisible panel BG
+// Desktop + Portrait: semi-transparent BG
+// =====================
+const land = isMobileLandscapeUILayout(__layoutDeps);
+const portrait = isMobilePortraitUILayout(__layoutDeps);
+
+// If your uiBottom has a background Graphics, this is the safest:
+if ((uiBottom as any).bg) {
+  (uiBottom as any).bg.alpha = land ? 0 : 0.5;
+} else {
+  // fallback: set the whole panel container alpha, BUT keep UI elements visible
+  // (If this hides your buttons/text, your bg is not separated—use the bg approach above.)
+  uiPanel.alpha = land ? 1 : 1; // keep panel content visible
+}
+
+
+// =====================
+// SETTINGS BUTTON — TOP-LEFT ON MOBILE LANDSCAPE (screen space)
+// =====================
+const isLand = isMobileLandscapeUILayout(__layoutDeps);
+
+if (isLand) {
+  // move settings OUT of the bottom panel so coords are screen-space
+  const host = uiBottom.layer.parent as Container | null;
+if (host && settingsBtnPixi.parent !== host) host.addChild(settingsBtnPixi);
+
+
+  const TOP_PAD = 12;
+  const LEFT_PAD = 12;
+
+  // uiLayer is screen space, so use screen coords
+  settingsBtnPixi.x = Math.round(LEFT_PAD + settingsBtnPixi.width * 0.5);
+  settingsBtnPixi.y = Math.round(TOP_PAD + settingsBtnPixi.height * 0.5);
+} else {
+  // put settings back into the panel for desktop + portrait
+  const panelLayer = uiBottom.layer;
+  if (settingsBtnPixi.parent !== panelLayer) panelLayer.addChild(settingsBtnPixi);
+}
+
+
 
 
   // ensure parenting before we position
@@ -774,13 +1279,20 @@ if (winUI.parent !== panelLayer) panelLayer.addChild(winUI);
 if (balanceGroup.parent !== panelLayer) panelLayer.addChild(balanceGroup);
 if (betDisplayGroup.parent !== panelLayer) panelLayer.addChild(betDisplayGroup);
 if (betControlsGroup.parent !== panelLayer) panelLayer.addChild(betControlsGroup);
+if (betGroup.parent !== panelLayer) panelLayer.addChild(betGroup);
+
 
 if (isMobilePortraitUILayout(__layoutDeps)) {
-  layoutUIMobilePortrait(panelWLocal, layoutHLocal, anchorXLocal);
+  layoutUIMobilePortrait(panelWLocal, bgHLocal, anchorXLocal);
+} else if (isMobileLandscapeUILayout(__layoutDeps)) {
+  layoutUIMobileLandscape(panelWLocal, bgHLocal, anchorXLocal);
+} else if (isTabletLike()) {
+  layoutUITablet(panelWLocal, bgHLocal, anchorXLocal);
 } else {
-  // desktop ONLY (mobile landscape is disabled)
   layoutUIDesktop(panelWLocal, bgHLocal, anchorXLocal);
 }
+
+
 
 
 

@@ -1,4 +1,8 @@
 
+
+
+
+
 import { setLang, getLang, t } from "./i18n/i18n";
 import type { Lang } from "./i18n/i18n";
 import { ensureUiFontLoaded } from "./i18n/loadFonts";
@@ -17,8 +21,8 @@ import { getReelAnchor } from "./layout/reelAnchor";
 function dollarsToMicro(amount: number): number {
   return Math.max(0, Math.round((Number(amount) || 0) * 1_000_000));
 }
-
-
+import { PIXELDOWN_STACK } from "./i18n/fonts"; // near your other imports
+import { MICRO5_STACK } from "./i18n/fonts";
 import { getResultProvider } from "./engine/resultProvider";
 import { setRtpScale } from "./game/simulate";
 import {
@@ -44,6 +48,9 @@ import {
   isMobileLandscapeUILayout,
   disableCustomCursorOnMobile,
   setCursorSafe,
+  isTabletLandscape,
+    isTabletPortrait,
+isTabletLike,
   carsDisabled,
 } from "./ui/layoutFlags";
 
@@ -100,16 +107,15 @@ import type { SfxKey } from "./audio/audio";
   let buyMenuApi: any = null;
 let autoMenuApi: any = null;
 // --- DEV / REPLAY SUPPORT ---
-
+type CellView = { sprite: any; eyes: any };
 // =====================
 // UI LAYER (TDZ-safe forward declarations)
 // =====================
 let uiLayer: Container;
 let uiPanel: Container;
 let uiController: ReturnType<typeof createUiController>;
-
-
-
+ let cellViews: CellView[] = [];
+let lastSettledGrid: Cell[] | null = null;
 // ✅ TDZ-safe forward declarations (must be BEFORE any use)
 let PANEL_HEIGHT_FRAC = 0.1;
 
@@ -120,14 +126,20 @@ let boostedText: Text | null = null;
 let infusedText: Text | null = null;
 
 
+
 async function main() {
+  
     if ((window as any).__GAME_BOOTED__) return;
   (window as any).__GAME_BOOTED__ = true;
 
   // ------------------------------------------------
   // 🔒 SHIP-LOCKED RTP CALIBRATION (GLOBAL)
   // ------------------------------------------------
-  setRtpScale(0.49295, 0.49295);
+// Only set default RTP scales when running the actual game in the browser.
+// Node scripts (generateBooks, RTP sims, etc.) must control scales themselves.
+if (typeof window !== "undefined") {
+  setRtpScale(0.97, 1.0);
+}
 
   
  // 1) decide language first
@@ -137,13 +149,21 @@ async function main() {
     "en";
 
   setLang(detectedLang as any);
+console.log("fmtMoney RUB sample:", fmtMoney(12.34));
+console.log(
+  "currency code used:",
+  new URLSearchParams(location.search).get("currency")
+);
 
  // =====================
 // RGS (Stake) boot handshake
 // =====================
 const isRgs = rgsClient.initFromUrl();
+// ✅ Make rgsClient visible to UI modules like buyMenu.ts
+(window as any).rgsClient = rgsClient;
 const isDemo = isRgs ? rgsClient.isDemo() : false;
 console.log("[RGS] demo?", isDemo);
+const isLiveRgs = isRgs && !isDemo;
 
 const DEV_FORCE_RGS_OK =
   import.meta.env.DEV &&
@@ -153,47 +173,120 @@ const DEV_FORCE_RGS_OK =
 let rgsAuthed = false;
 let rgsReady = !isRgs; // non-RGS builds are always "ready"
 let rgsInitialBalance: number | null = null;
+let __rgsBalanceSeededOnce = false;
 let rgsAuthP: Promise<void> | null = null;
+let __gameReady = false;
+let __pendingResumeRound = false;
+let __resumeInProgress = false;
 // ✅ RGS round lock (prevents "player has active bet" spam)
 let rgsRoundLock = false;
+let pendingReplayRes: SpinResult | null = null;
+let replayLoaded = false;
 let rgsLastRoundId: string | null = null;
 
-if (isRgs) {
-  rgsAuthP = rgsClient
-    .authenticate()
-    .then((res) => {
-      rgsAuthed = true;
-      rgsReady = true;
-      console.log("[RGS] authenticated", res);
-      // capture any round identifier Stake gives us (shape varies)
-rgsLastRoundId =
-  (res as any)?.round?.id ??
-  (res as any)?.round?.roundId ??
-  (res as any)?.roundId ??
-  null;
+async function resumeInterruptedRound() {
+  console.log("[RGS] auto-resume starting");
+  if (__resumeInProgress) return;
+  __resumeInProgress = true;
 
+  // prevent any future resume prompts
+  __pendingResumeRound = false;
 
-    const balObj =
-  (res as any)?.balance ??
-  (res as any)?.wallet?.balance ??
-  (res as any)?.player?.balance ??
-  (res as any)?.data?.balance ??
-  null;
+  try {
+    const auth = rgsClient.getLastAuth() as any;
+    const round = auth?.round;
 
-const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+    const stateArr =
+      round?.state ??
+      round?.event?.state ??
+      null;
 
+    if (Array.isArray(stateArr) && stateArr.length && Array.isArray(stateArr[0]?.grid)) {
+      console.log("[RGS] auto-resume: replaying round.state steps:", stateArr.length);
 
-      if (typeof amt === "number" && Number.isFinite(amt)) {
-        // Stake balances are micro-units (1e6)
-        rgsInitialBalance = amt / 1_000_000;
+      const resumeSpin: any = {
+        mode: "BASE",
+        initialGrid: stateArr[0].grid,
+        steps: stateArr.map((st: any) => ({
+          grid: st.grid,
+          nextGrid: st.nextGrid,
+          clusters: st.clusters ?? [],
+          explodePositions: st.explodePositions ?? [],
+          multiplier: st.multiplier ?? 1,
+          stepWinX: st.stepWinX ?? 0,
+          infusedScatters: st.infusedScatters ?? 0,
+          enchantedClusters: st.enchantedClusters ?? 0,
+          aftershockWildSpawned: !!st.aftershockWildSpawned,
+          aftershockWildIndex: st.aftershockWildIndex ?? -1,
+        })),
+        totalWinX: Number(round?.payoutMultiplier ?? 0),
+        ladderIndexAfter: state.fs.ladderIndex,
+        fsRemainingAfter: state.fs.remaining,
+        fsAwarded: 0,
+      };
+
+      // minimal safe lock
+      state.ui.spinning = true;
+      try {
+        (spinBtnPixi as any).eventMode = "none";
+        (buyBtnPixi as any).eventMode = "none";
+        (autoBtnPixi as any).eventMode = "none";
+        (turboBtnPixi as any).eventMode = "none";
+        if (betUpBtnPixi) (betUpBtnPixi as any).eventMode = "none";
+        if (betDownBtnPixi) (betDownBtnPixi as any).eventMode = "none";
+      } catch {}
+
+      // wait until fully booted
+      await new Promise<void>((resolve) => {
+        const tick = () => (__gameReady ? resolve() : requestAnimationFrame(tick));
+        tick();
+      });
+
+      await playSpin(resumeSpin);
+
+      if (rgsClient.getLastRoundActive()) {
+        try { await rgsClient.endRound(); } catch {}
       }
-    })
-    .catch((err) => {
-      rgsAuthed = false;
-      rgsReady = false;
-      console.error("[RGS] authenticate failed", err);
-    });
+
+      try {
+        const b = await rgsClient.balance();
+        const amt = (b as any)?.balance?.amount;
+        if (typeof amt === "number" && Number.isFinite(amt)) {
+          state.bank.balance = amt / 1_000_000;
+          balanceLabel.text = fmtMoney(state.bank.balance);
+        }
+      } catch (e) {
+        console.warn("[RGS] balance sync after resume failed", e);
+      }
+
+      // restore UI interaction
+      state.ui.spinning = false;
+      try {
+        (spinBtnPixi as any).eventMode = "static";
+        (buyBtnPixi as any).eventMode = "static";
+        (autoBtnPixi as any).eventMode = "static";
+        (turboBtnPixi as any).eventMode = "static";
+        if (betUpBtnPixi) (betUpBtnPixi as any).eventMode = "static";
+        if (betDownBtnPixi) (betDownBtnPixi as any).eventMode = "static";
+      } catch {}
+
+      return;
+    }
+
+    // no state => restart behavior
+    console.warn("[RGS] auto-resume: no round.state available -> endRound (restart)");
+    await rgsClient.endRound();
+  } catch (e) {
+    console.warn("[RGS] auto-resume failed, ending round", e);
+    try { await rgsClient.endRound(); } catch {}
+  } finally {
+    __resumeInProgress = false;
+
+    // if overlay exists, remove it (prevents flash sticking around)
+    document.getElementById("resume-overlay")?.remove();
+  }
 }
+
 
 // ✅ DEV override: pretend we’re authed so you can test UI/spins locally.
 // DO NOT return from main(); just flip flags.
@@ -210,10 +303,13 @@ const fontWarmupP = (async () => {
   await ensureUiFontLoaded(getLang());
 
   // load specific faces you actually use
-  await Promise.allSettled([
-    document.fonts.load('16px "Micro5"'),
-    document.fonts.load('16px "pixeldown"'),
-  ]);
+await Promise.allSettled([
+  document.fonts.load('16px "Micro5"'),
+  document.fonts.load('16px "pixeldown"'),
+  document.fonts.load('16px "Tiny5-Regular"'),
+  document.fonts.load('16px "BigShoulders60pt-Black"'),
+]);
+
 })();
 
 
@@ -247,25 +343,30 @@ const IS_TOUCH =
 
       
 
+
+
 function forcePlaquepixeldown(txt: Text) {
-  // lock to pixeldown regardless of language
   const s: any =
     (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
 
-  // IMPORTANT: match your actual @font-face name
-  s.fontFamily = '"pixeldown"';
+  // ✅ brand font + currency-safe fallback
+  s.fontFamily = PIXELDOWN_STACK;
 
   txt.style = new TextStyle(s);
 }
+
+
+
 function forceMicro5(txt: Text) {
   const s: any =
     (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
 
-  // IMPORTANT: match your @font-face name exactly
-  s.fontFamily = '"Micro5"';
+  // ✅ UI font + currency-safe fallback
+  s.fontFamily = MICRO5_STACK;
 
   txt.style = new TextStyle(s);
 }
+
 
 function loaderFontFamilyFor(lang: string) {
   // ✅ ONLY Latin-safe languages => Micro5
@@ -282,7 +383,8 @@ function forceOverlayBrandFont(txt: Text) {
   // const ff = overlayBrandFontFamilyFor(getLang());
 
   // If you *don't* have overlayBrandFontFamilyFor, use this:
-  const ff = isLatinUiLang(getLang()) ? '"pixeldown"' : uiFontFamilyFor(getLang() as any);
+ const ff = isLatinUiLang(getLang()) ? PIXELDOWN_STACK : uiFontFamilyFor(getLang() as any);
+
 
   const s: any =
     (txt.style as any)?.clone ? (txt.style as any).clone() : { ...(txt.style as any) };
@@ -384,6 +486,7 @@ try {
 }
 
     }
+
   }
 
   if (typeof splashLayer !== "undefined" && splashLayer?.visible && typeof layoutSplash === "function") {
@@ -597,7 +700,7 @@ try {
   spinning: false,
   auto: false,
   turbo: false,
-
+buyChoice: null as null | "SUPER" | "ULTRA",
   // ✅ AUTO MENU “arm then spin”
   autoPendingRounds: -1,  // selected in menu (does NOT start auto)
   autoArmed: false,       // ✅ NEW: menu pick has armed auto, waiting for SPIN confirm
@@ -634,6 +737,313 @@ try {
   },
 
   };
+
+  if (isRgs) {
+  rgsAuthP = rgsClient
+    .authenticate()
+    .then((res) => {
+      rgsAuthed = true;
+      rgsReady = true;
+      console.log("[RGS] authenticated", res);
+      console.log("RGS BET CONFIG:", res.config);
+      console.log("RGS BET LEVELS:", res.config.betLevels);
+      // ✅ Use Stake-provided betLevels (required for review compliance)
+const cfg = res.config;
+const levels = Array.isArray(cfg?.betLevels) ? cfg.betLevels : null;
+
+if (levels && levels.length) {
+  // convert micro-units -> dollars for your UI (fmtMoney expects dollars)
+  const dollars = levels.map((v) => v / 1_000_000);
+
+  // overwrite your local list
+  state.bank.betLevels = dollars;
+
+  // set default index from Stake's defaultBetLevel (micro-units)
+  const def = Number(cfg.defaultBetLevel);
+  let idx = levels.indexOf(def);
+  if (idx < 0) idx = 0;
+
+  state.bank.betIndex = idx;
+
+  console.log("[RGS] applied betLevels =>", state.bank.betLevels.length, "default idx:", idx);
+  
+
+  // refresh UI text + affordability if these exist already
+  try { updateBetUI(); } catch {}
+  try { uiController?.refreshSpinAffordability?.(); } catch {}
+  try { if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.(); } catch {}
+}
+
+// ✅ Refresh bet-level rule (Stake review requirement):
+// - If authenticate says a round is active: preserve bet level (from round amount)
+// - Otherwise: revert to default bet level
+try {
+  const cfg = (res as any)?.config;
+  const betLevels: number[] = Array.isArray(cfg?.betLevels) ? cfg.betLevels : [];
+
+  // default index from Stake config
+  const def = Number(cfg?.defaultBetLevel);
+  let defaultIdx = betLevels.indexOf(def);
+  if (defaultIdx < 0) defaultIdx = 0;
+
+  const round = (res as any)?.round;
+  const isActiveRound = !!round?.active;
+
+  if (isActiveRound) {
+    // Preserve bet ONLY when active
+    const roundAmt = Number(round?.amount ?? round?.betAmount ?? NaN);
+    const idx = betLevels.indexOf(roundAmt);
+
+    if (idx >= 0) {
+      state.bank.betIndex = idx;
+      console.log("[RGS] refresh: active round -> preserved betIndex:", idx, "amount:", roundAmt);
+    } else {
+      // If amount not found, fall back to default (safe)
+      state.bank.betIndex = defaultIdx;
+      console.warn("[RGS] refresh: active round but amount not in betLevels -> defaultIdx:", defaultIdx, "amount:", roundAmt);
+    }
+  } else {
+    // No active round -> MUST revert to default
+    state.bank.betIndex = defaultIdx;
+    console.log("[RGS] refresh: no active round -> default betIndex:", defaultIdx);
+  }
+
+  // reflect UI
+  try { updateBetUI(); } catch {}
+  try { uiController?.refreshSpinAffordability?.(); } catch {}
+  try { if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.(); } catch {}
+} catch (e) {
+  console.warn("[RGS] refresh bet restore rule failed:", e);
+}
+
+try {
+  const levels = res.config?.betLevels ?? [];
+  const round = (res as any)?.round;
+  const isActiveRound = !!round?.active;
+
+  if (isActiveRound) {
+    const roundAmt = Number(round?.amount ?? round?.betAmount ?? NaN);
+    if (Number.isFinite(roundAmt) && roundAmt > 0 && Array.isArray(levels) && levels.length) {
+      const idx = levels.indexOf(roundAmt);
+      if (idx >= 0) state.bank.betIndex = idx;
+    }
+  }
+
+  try { updateBetUI(); } catch {}
+  try { uiController?.refreshSpinAffordability?.(); } catch {}
+} catch {}
+      // capture any round identifier Stake gives us (shape varies)
+rgsLastRoundId =
+  (res as any)?.round?.id ??
+  (res as any)?.round?.roundId ??
+  (res as any)?.roundId ??
+  null;
+
+
+    const balObj =
+  (res as any)?.balance ??
+  (res as any)?.wallet?.balance ??
+  (res as any)?.player?.balance ??
+  (res as any)?.data?.balance ??
+  null;
+
+const amt = (balObj && typeof balObj === "object") ? (balObj as any).amount : balObj;
+
+
+      if (typeof amt === "number" && Number.isFinite(amt)) {
+        // Stake balances are micro-units (1e6)
+        rgsInitialBalance = amt / 1_000_000;
+      }
+      console.log("[RGS] round on authenticate:", (res as any)?.round);
+      // ✅ If a round is active after refresh, show Resume/Restart overlay
+const r = (res as any)?.round;
+// ✅ DEBUG LOGS (paste here)
+console.log("[RGS] auth round:", r ?? null);
+
+// ✅ mark resume as pending if server says a round exists
+__pendingResumeRound = !!(r && (r.active === true || r.betID != null || r.id != null));
+if (__pendingResumeRound) {
+  // ✅ no overlay: just auto-resume
+  void resumeInterruptedRound();
+}
+
+console.log("[RGS] pendingResumeRound:", __pendingResumeRound, "gameReady:", __gameReady);
+
+
+    })
+    .catch((err) => {
+      rgsAuthed = false;
+      rgsReady = false;
+
+      console.error("[RGS] authenticate failed", err);
+
+      showFatalBootError(
+        "Unable to start session.\n\nThis game link is invalid or has expired.\nPlease return to Stake and relaunch the game.",
+        String((err as any)?.message ?? err)
+      );
+    });
+}
+function showResumeOverlay() {
+  if (document.getElementById("resume-overlay")) return;
+
+  const box = document.createElement("div");
+  box.id = "resume-overlay";
+  box.style.cssText =
+    "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;" +
+    "background:rgba(0,0,0,0.85);z-index:2147483647;color:#fff;font-family:system-ui;padding:24px;text-align:center;";
+
+  box.innerHTML = `
+    <div style="max-width:680px;line-height:1.45">
+      <div style="font-size:22px;font-weight:700;margin-bottom:10px">Session Resumed</div>
+      <div style="font-size:15px;opacity:0.9;margin-bottom:18px">
+        We found an active round from before the refresh. Would you like to resume it or restart it?
+      </div>
+      <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+        <button id="resume-btn" style="padding:10px 14px;border-radius:10px;border:0;background:#ffffff;color:#000;font-weight:700;cursor:pointer">Resume round</button>
+        <button id="restart-btn" style="padding:10px 14px;border-radius:10px;border:0;background:#333;color:#fff;font-weight:700;cursor:pointer">Restart round</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(box);
+
+(document.getElementById("resume-btn") as HTMLButtonElement).onclick = async () => {
+  console.log("[RGS] resume requested");
+  if (__resumeInProgress) return;
+__resumeInProgress = true;
+
+// ✅ IMPORTANT: prevent overlay from reappearing later in boot
+__pendingResumeRound = false;
+
+  // disable buttons to prevent double-click
+  (document.getElementById("resume-btn") as HTMLButtonElement).disabled = true;
+  (document.getElementById("restart-btn") as HTMLButtonElement).disabled = true;
+
+  try {
+    const auth = rgsClient.getLastAuth() as any;
+    const round = auth?.round;
+
+    // Try to find state array on authenticate round
+    const stateArr =
+      round?.state ??
+      round?.event?.state ??
+      null;
+
+    if (Array.isArray(stateArr) && stateArr.length && Array.isArray(stateArr[0]?.grid)) {
+      console.log("[RGS] resume: replaying round.state steps:", stateArr.length);
+
+      // Build a SpinResult compatible with your playSpin()
+      const resumeSpin: any = {
+        mode: "BASE",
+        initialGrid: stateArr[0].grid,
+        steps: stateArr.map((st: any) => ({
+          grid: st.grid,
+          nextGrid: st.nextGrid,
+          clusters: st.clusters ?? [],
+          explodePositions: st.explodePositions ?? [],
+          multiplier: st.multiplier ?? 1,
+          stepWinX: st.stepWinX ?? 0,
+          infusedScatters: st.infusedScatters ?? 0,
+          enchantedClusters: st.enchantedClusters ?? 0,
+          aftershockWildSpawned: !!st.aftershockWildSpawned,
+          aftershockWildIndex: st.aftershockWildIndex ?? -1,
+        })),
+        totalWinX: Number(round?.payoutMultiplier ?? 0),
+        ladderIndexAfter: state.fs.ladderIndex,
+        fsRemainingAfter: state.fs.remaining,
+        fsAwarded: 0,
+      };
+
+      box.remove();
+
+// ✅ minimal safe lock (don’t depend on uiController here)
+state.ui.spinning = true;
+try {
+  // hide clickability while resuming (prevents extra input)
+  (spinBtnPixi as any).eventMode = "none";
+  (buyBtnPixi as any).eventMode = "none";
+  (autoBtnPixi as any).eventMode = "none";
+  (turboBtnPixi as any).eventMode = "none";
+  if (betUpBtnPixi) (betUpBtnPixi as any).eventMode = "none";
+  if (betDownBtnPixi) (betDownBtnPixi as any).eventMode = "none";
+} catch {}
+
+// ✅ wait until game is fully booted (prevents TDZ crash)
+await new Promise<void>((resolve) => {
+  const tick = () => (__gameReady ? resolve() : requestAnimationFrame(tick));
+  tick();
+});
+
+await playSpin(resumeSpin);
+
+      // when done, close the round if server says it's active
+      if (rgsClient.getLastRoundActive()) {
+        try { await rgsClient.endRound(); } catch {}
+      }
+      // ✅ sync wallet after resume/restart so UI matches server
+try {
+  const b = await rgsClient.balance();
+  const amt = (b as any)?.balance?.amount;
+  if (typeof amt === "number" && Number.isFinite(amt)) {
+    state.bank.balance = amt / 1_000_000;
+    balanceLabel.text = fmtMoney(state.bank.balance);
+  }
+} catch (e) {
+  console.warn("[RGS] balance sync after resume failed", e);
+}
+      __pendingResumeRound = false;
+      
+// ✅ restore UI interaction after resume completes
+state.ui.spinning = false;
+try {
+  (spinBtnPixi as any).eventMode = "static";
+  (buyBtnPixi as any).eventMode = "static";
+  (autoBtnPixi as any).eventMode = "static";
+  (turboBtnPixi as any).eventMode = "static";
+  if (betUpBtnPixi) (betUpBtnPixi as any).eventMode = "static";
+  if (betDownBtnPixi) (betDownBtnPixi as any).eventMode = "static";
+} catch {}
+      return;
+    }
+
+    // Fallback: no state provided → restart instead
+    console.warn("[RGS] resume: no round.state available, falling back to restart");
+    await rgsClient.endRound();
+__pendingResumeRound = false;
+  } catch (e) {
+    console.warn("[RGS] resume failed, falling back to restart", e);
+    try { await rgsClient.endRound(); } catch {}
+__pendingResumeRound = false;
+} finally {
+  __resumeInProgress = false;
+  box.remove();
+}
+};
+
+  (document.getElementById("restart-btn") as HTMLButtonElement).onclick = async () => {
+  console.log("[RGS] restart requested");
+  if (__resumeInProgress) return;
+__resumeInProgress = true;
+
+// ✅ IMPORTANT: prevent overlay from reappearing later in boot
+__pendingResumeRound = false;
+  // disable buttons to prevent double-click
+  (document.getElementById("resume-btn") as HTMLButtonElement).disabled = true;
+  (document.getElementById("restart-btn") as HTMLButtonElement).disabled = true;
+
+  try {
+    // ✅ close the active round (restart-from-beginning behaviour)
+    await rgsClient.endRound();
+    __pendingResumeRound = false; 
+    console.log("[RGS] restart: endRound OK");
+  } catch (e) {
+    console.warn("[RGS] restart: endRound failed", e);
+ } finally {
+  __resumeInProgress = false;
+  box.remove();
+}
+};
+}
 // ✅ If RGS provided an initial balance, use it
 if (rgsInitialBalance != null) {
   state.bank.balance = rgsInitialBalance;
@@ -696,6 +1106,11 @@ function playMusicWhenUnlocked(key: string, fadeMs = 400) {
 
 
     function enterFreeSpins(forcedCount = 10, startMult = 2) {
+
+        // ✅ mark FS core transition starting
+  const fsToken = markFsCoreNotReady();
+
+
       // ✅ set ladder based on the chosen start multiplier (buy feature)
       const idx = LADDER.indexOf(startMult);
       state.fs.ladderIndex = idx >= 0 ? idx : 0;
@@ -785,7 +1200,20 @@ function playMusicWhenUnlocked(key: string, fadeMs = 400) {
 
 
    
+    // ✅ Local/offline only: start the FIRST free spin automatically.
+    // (RGS features are driven by server round.state; never start additional /wallet/play calls.)
+    const hasRgsSession = !!rgsClient.getConfig()?.sessionID;
+    if (!hasRgsSession && !(state.ui as any).isReplay) {
+      setTimeout(() => {
+        if (state.ui.spinning) return;
+        if (state.fs.remaining <= 0) return;
+        void doSpin();
+      }, 250);
     }
+      // ✅ mark FS core fully ready AFTER everything is switched
+  markFsCoreReady(fsToken);
+    }
+
 
 
 
@@ -820,17 +1248,32 @@ function playMusicWhenUnlocked(key: string, fadeMs = 400) {
 
 
 
-    function fitSpriteToCell(sprite: Sprite) {
-      const texW = sprite.texture.width || 1;
-      const texH = sprite.texture.height || 1;
+function fitSpriteToCell(sprite: Sprite) {
+  const texW = sprite.texture.width || 1;
+  const texH = sprite.texture.height || 1;
 
-      const innerW = cellSize - SYMBOL_INNER_PAD * 2;
-      const innerH = cellSize - SYMBOL_INNER_PAD * 2;
+  const innerW = cellSize - SYMBOL_INNER_PAD * 2;
+  const innerH = cellSize - SYMBOL_INNER_PAD * 2;
 
-      const s = Math.min(innerW / texW, innerH / texH) * SYMBOL_VISUAL_SCALE;
-      sprite.scale.set(s);
-      return s; // ✅ return base scale
-    }
+  let s = Math.min(innerW / texW, innerH / texH) * SYMBOL_VISUAL_SCALE;
+
+  // ✅ TABLET LANDSCAPE ONLY: global symbol shrink to match reel window
+  const TABLET_LAND_SYMBOL_MUL = 0.86;
+  if (isTabletLandscape(__layoutDeps)) {
+    s *= TABLET_LAND_SYMBOL_MUL;
+  }
+
+  // ✅ TINY VIEW ONLY: scale symbols UP individually (NOT the whole grid/gameCore)
+  const TINY_SYMBOL_SCALE_MUL = 1.5; // 🔧 try 1.10 .. 1.30
+  if ((__layoutDeps as any)?.IS_TINY_VIEW) {
+    s *= TINY_SYMBOL_SCALE_MUL;
+  }
+
+  sprite.scale.set(s);
+  return s; // ✅ return base scale
+}
+
+
 
     function applySymbolScale(s: Sprite, id: SymbolId) {
   const base = fitSpriteToCell(s);
@@ -945,26 +1388,55 @@ function computeCellSize() {
 // =====================
 // PORTRAIT-ONLY LOCK (MOBILE)
 // =====================
-const LOCK_MOBILE_TO_PORTRAIT = true;
-const __layoutDeps = { app, LOCK_MOBILE_TO_PORTRAIT, IS_TOUCH };
+const LOCK_MOBILE_TO_PORTRAIT = false;
 
+// ✅ Tiny view detection (CSS px, so DPR doesn’t lie)
+function computeIsTinyView(): boolean {
+  const r = (app.view as any)?.getBoundingClientRect?.();
+  const cssW = r?.width ?? (app.view as any)?.clientWidth ?? window.innerWidth;
+  const cssH = r?.height ?? (app.view as any)?.clientHeight ?? window.innerHeight;
 
-      // =====================
-    // HIDE SYSTEM CURSOR (GLOBAL)
-    // =====================
-  // ✅ Hide OS cursor only on desktop (mobile should keep normal cursor behavior)
-if (!disableCustomCursorOnMobile(__layoutDeps)) {
-  (app.canvas as any).style.cursor = "none";
-  document.body.style.cursor = "none";
-  (document.getElementById("stage") as any)?.style &&
-    (((document.getElementById("stage") as any).style.cursor = "none"));
-} else {
-  // mobile: ensure we DO NOT force-hide the system cursor
-  (app.canvas as any).style.cursor = "auto";
-  document.body.style.cursor = "auto";
-  (document.getElementById("stage") as any)?.style &&
-    (((document.getElementById("stage") as any).style.cursor = "auto"));
+  const longSide = Math.max(cssW, cssH);
+  const shortSide = Math.min(cssW, cssH);
+
+  // Stake pop-out S ≈ 400×225 (plus wiggle room)
+  return longSide <= 420 && shortSide <= 260;
 }
+
+const __layoutDeps: any = { app, LOCK_MOBILE_TO_PORTRAIT, IS_TOUCH, IS_TINY_VIEW: false };
+
+function applyCursorMode() {
+  __layoutDeps.IS_TINY_VIEW = computeIsTinyView();
+
+  const stageEl = document.getElementById("stage") as HTMLElement | null;
+  const canvas = app.canvas as any;
+
+  // ✅ Tiny view: keep normal system cursor (NO pixel cursor)
+  if (__layoutDeps.IS_TINY_VIEW) {
+    if (canvas?.style) canvas.style.cursor = "auto";
+    document.body.style.cursor = "auto";
+    if (stageEl?.style) stageEl.style.cursor = "auto";
+    return;
+  }
+
+  // ✅ Non-tiny: keep your existing rule (desktop hides OS cursor; mobile does not)
+  if (!disableCustomCursorOnMobile(__layoutDeps)) {
+    if (canvas?.style) canvas.style.cursor = "none";
+    document.body.style.cursor = "none";
+    if (stageEl?.style) stageEl.style.cursor = "none";
+  } else {
+    if (canvas?.style) canvas.style.cursor = "auto";
+    document.body.style.cursor = "auto";
+    if (stageEl?.style) stageEl.style.cursor = "auto";
+  }
+}
+
+// run once at boot
+applyCursorMode();
+
+
+
+
 
 
       // ROOT + LAYERS
@@ -1102,6 +1574,7 @@ fsCounterValue.roundPixels = true;
     root.addChild(fsCounterWrap);
 
 function layoutFsCounter() {
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
   const W = app.screen.width;
   const H = app.screen.height;
 
@@ -1113,7 +1586,11 @@ function layoutFsCounter() {
   let responsive = cs / DESIGN_CELL;
   responsive = Math.max(0.60, Math.min(1.15, responsive));
 
-  const base = isMobilePortraitUILayout(__layoutDeps) ? 0.72 : 1.0;
+  const base =
+    IS_TINY_VIEW ? 0.6 : // 🔧 tiny only (landscape-only tiny)
+  isMobilePortraitUILayout(__layoutDeps) ? 0.72 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 1 :
+  1.0;
   const SY = 1.10;
   fsCounterWrap.scale.set(base * responsive, base * responsive * SY);
 
@@ -1162,6 +1639,27 @@ function layoutFsCounter() {
   y = Math.max(y, Math.round(safeT + 18));
   fsCounterWrap.position.set(x, y);
 
+  // ✅ TABLET PORTRAIT: pin to TOP-CENTER of DEVICE (screen space), small scale
+  if (isTabletPortrait?.(__layoutDeps)) {
+    // --- SCALE ---
+    const TABLET_PORT_BASE = 0.62; // 🔧 small (try 0.55..0.75)
+    const SY = 1.10;
+
+    fsCounterWrap.scale.set(
+      TABLET_PORT_BASE * responsive,
+      TABLET_PORT_BASE * responsive * SY
+    );
+
+    // --- POSITION ---
+    const b = fsCounterWrap.getBounds();
+    const halfH = (b.height || 0) * 0.5;
+
+    const TOP_PAD = 2; // 🔧 distance from safe top
+    const y = Math.round(safeT + TOP_PAD + halfH);
+
+    fsCounterWrap.position.set(Math.round(W * 0.5), y);
+    return;
+  }
 
 
 }
@@ -1239,13 +1737,21 @@ function scheduleViewportRelayout() {
   __vpTimer = window.setTimeout(() => {
     __vpTimer = null;
 
- requestAnimationFrame(() => {
+requestAnimationFrame(() => {
   requestAnimationFrame(() => {
     if (!__layoutReady) return; // ✅ prevents TDZ
-layoutAll();
+
+    applyCursorMode(); // ✅ update tiny/non-tiny cursor behavior on resize
+
+    layoutAll();
+// ✅ Win frames must be re-fit whenever cellSize/layout changes
+ensureWinFrameSprites();
+rescaleWinFramesToCell();
+
 layoutStudioTag();
 // ✅ keep reel dimmer in sync with the reel window after every relayout
 if (reelDimmer.visible) redrawReelDimmer();
+redrawReelHouseGlow(); // ✅ keep glow aligned after relayout
 
 root.sortChildren();
 app.stage.hitArea = app.screen;
@@ -1328,16 +1834,16 @@ root.sortChildren();
 
 
 
-   // =====================
-// MAGIC CURSOR (LOADER ONLY) — moved to src/ui/loaderMagicCursor.ts
-// =====================
-installLoaderMagicCursor({
-  app,
-  root,
-  layoutDeps: __layoutDeps,
-  isLoadingVisible: () => loadingLayer.visible,
-  sparksInGame: false, // matches your old CURSOR_SPARKS_IN_GAME = false
-});
+// ✅ No pixel cursor in tiny view
+if (!(__layoutDeps as any).IS_TINY_VIEW) {
+  installLoaderMagicCursor({
+    app,
+    root,
+    layoutDeps: __layoutDeps,
+    isLoadingVisible: () => loadingLayer.visible,
+    sparksInGame: false,
+  });
+}
 
 
 
@@ -1401,6 +1907,18 @@ forceLoaderFont(loadingPct);
 
       const cx = W / 2;
       const cy = H / 2;
+// ✅ Loading title scale: ONLY mobile portrait + tiny view
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+
+// Guard: don't treat tablets as "mobile portrait"
+const IS_TABLET = (isTabletLike?.(__layoutDeps) ?? false) || (isTabletPortrait?.(__layoutDeps) ?? false);
+
+const titleScale =
+  IS_TINY_VIEW ? 0.72 :                                // 🔧 tiny view only
+  (isMobilePortraitUILayout(__layoutDeps) && !IS_TABLET) ? 0.7 : // 🔧 phone portrait only
+  1;                                                   // ✅ untouched everywhere else
+
+loadingTitle.scale.set(titleScale, titleScale);
 
       loadingTitle.position.set(cx, cy - 70);
       loadingPct.position.set(cx, cy - 20);
@@ -2008,15 +2526,12 @@ function overlayBrandFontFamilyFor(lang: string) {
   const base = (lang || "en").toLowerCase();
   const isTr = base === "tr" || base.startsWith("tr-");
 
-  // ✅ Turkish should NOT use pixeldown brand font
   if (isTr) return uiFontFamilyFor(lang as any);
-
-  // Latin-script: keep the brand font
-  if (isLatinUiLang(lang)) return '"pixeldown"';
-
-  // Non-latin / “problematic”: use glyph-safe per-language font
+  if (isLatinUiLang(lang)) return PIXELDOWN_STACK; // ✅ stack, not "pixeldown"
   return uiFontFamilyFor(lang as any);
 }
+
+
 
     // =====================
     // SPLASH LOGO: split into 2 parts (BLOCKY + FARM)
@@ -2140,6 +2655,7 @@ const SPLASH_BOX_MIN_W = 190; // text size multiplier (tweak)
 splashInfoLayer.zIndex = isMobilePortraitUILayout(__layoutDeps) ? 40 : 40; // keep cards at 40
 
     splashLayer.addChild(splashInfoLayer);
+    
 
 const SPLASH_INFO = [
   { titleKey: "splash.card1.title", bodyKey: "splash.card1.body" },
@@ -2257,9 +2773,29 @@ const SPLASH_PORTRAIT_TITLE_TO_CARDS_GAP_PX = 26; // 🔧 try 18..44
       return app.screen.height + SPLASH_CONTINUE_OFFSCREEN_PAD;
     }
 
-    function splashContinueTargetY() {
-      return app.screen.height * SPLASH_CONTINUE_TARGET_Y_N;
-    }
+function splashContinueTargetY() {
+  const H = app.screen.height;
+
+  // default (all modes)
+  let y = H * SPLASH_CONTINUE_TARGET_Y_N;
+
+  // ✅ MOBILE LANDSCAPE ONLY: clamp so it can never be cut off
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    const safeB = safeInsetBottomPx?.() ?? 0;
+
+    // padding above the bottom safe area
+    const PAD = 0; // 🔧 try 8..18
+
+    // bottom edge of the text (anchor=0.5 => y + h/2)
+    const halfH = (splashContinue.getBounds().height || splashContinue.height || 0) * 0.5;
+
+    const maxY = (H - safeB - PAD) - halfH;
+    y = Math.min(y, maxY);
+  }
+
+  return y;
+}
+
 
     function layoutSplashContinueX() {
       splashContinue.x = app.screen.width / 2;
@@ -2324,21 +2860,42 @@ const FARM_X_OFFSET_DESKTOP_DROP = -20;
 // ===============================
 const SPLASH_FINAL_SCALE_DESKTOP   = 0.80;
 const SPLASH_FINAL_SCALE_PORTRAIT  = 1.5;
-const SPLASH_FINAL_SCALE_LANDSCAPE = 0.35;
+const SPLASH_FINAL_SCALE_LANDSCAPE = .7;
+// ✅ Tablet splash scale (only used when isTabletPortrait(__layoutDeps) === true)
+const SPLASH_FINAL_SCALE_TABLET_PORTRAIT = 1.0; // 🔧 tweak 0.85..1.15
+
 
 const SPLASH_DROP_SCALE_DESKTOP    = 1.00; // base multiplier for drop
 const SPLASH_DROP_SCALE_PORTRAIT   = 0.92;
-const SPLASH_DROP_SCALE_LANDSCAPE  = 0.90;
+const SPLASH_DROP_SCALE_LANDSCAPE  = 1.1;
 
 
 
 
     // layout
     function layoutSplash() {
-      const portrait = isMobilePortraitUILayout(__layoutDeps);
+
+const portrait = isMobilePortraitUILayout(__layoutDeps);
 const landscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
+
+const tabletPort = isTabletPortrait?.(__layoutDeps) ?? false;     // ✅ tablet portrait
+const tabletLand = isTabletLandscape?.(__layoutDeps) ?? false;    // ✅ tablet landscape
+const tabletAny = isTabletLike?.(__layoutDeps) ?? false;
+
       const W = app.screen.width;
       const H = app.screen.height;
+      const IS_TINY_SPLASH = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+      const TINY_FINAL_GAP_PX = -5; // 🔧 try 6..30 (bigger = more gap)
+
+      // ✅ Tiny splash detection (use CSS pixels so DevTools DPR doesn't lie)
+const r = (app.view as any)?.getBoundingClientRect?.();
+const cssW = r?.width ?? (app.view as any)?.clientWidth ?? window.innerWidth;
+const cssH = r?.height ?? (app.view as any)?.clientHeight ?? window.innerHeight;
+
+const longSide = Math.max(cssW, cssH);
+const shortSide = Math.min(cssW, cssH);
+
+
 
     splashDim.clear();
   splashDim.rect(0, 0, W, H).fill(0x000000);
@@ -2350,10 +2907,14 @@ const splashUiScale = (() => {
   const s = Math.min(W / 1920, H / 1080);
   return Math.max(0.55, Math.min(1.0, s));
 })();
-splashPresents.scale.set(splashUiScale);
+// ✅ SPLASH: slightly larger "8-BIT WIZARDRY PRESENTS"
+const SPLASH_TAG_SCALE_MUL = 1.3; // 🔧 try 1.05–1.15
+splashPresents.scale.set(splashUiScale * SPLASH_TAG_SCALE_MUL);
 
-// ✅ ONLY show on mobile landscape (hide on desktop + mobile portrait)
-splashPresents.visible = isMobileLandscapeUILayout(__layoutDeps);
+// ✅ HIDE on MOBILE LANDSCAPE + MOBILE PORTRAIT
+splashPresents.visible =
+  !(isMobileLandscapeUILayout(__layoutDeps) || isMobilePortraitUILayout(__layoutDeps));
+
 
 
 
@@ -2369,12 +2930,15 @@ splashPresents.visible = isMobileLandscapeUILayout(__layoutDeps);
 const SPLASH_LOGO_SCALE =
   (landscapeMobile ? SPLASH_FINAL_SCALE_LANDSCAPE :
    portrait        ? SPLASH_FINAL_SCALE_PORTRAIT :
+   tabletPort      ? SPLASH_FINAL_SCALE_TABLET_PORTRAIT :
                      SPLASH_FINAL_SCALE_DESKTOP
   ) * splashUiScale;
 
 
+
 const SPLASH_FINAL_GAP_PX =
-  portrait ? -20 :                    // ✅ portrait final horizontal gap
+  IS_TINY_SPLASH ? TINY_FINAL_GAP_PX :
+  portrait ? -20 :
   -15;
 
     const SPLASH_LOGO_SQUASH_X = 0.82;
@@ -2423,11 +2987,14 @@ if (isDesktop) splashLogoFarm.x += FARM_X_OFFSET_DESKTOP;
 // SPLASH TITLE FINAL Y + CONSISTENT FARM GAP
 // =====================
 
-// Keep your existing per-mode "overall logo height" placement
+// ✅ FINAL RESTING Y (tablet portrait gets its own slot)
 const LOGO_Y_N =
   isMobilePortraitUILayout(__layoutDeps) ? 0.075 :
   isMobileLandscapeUILayout(__layoutDeps) ? 0.150 :
+  tabletPort ? 0.16 :   // 🔧 try 0.12..0.22
   0.25;
+
+
 
 // ✅ One rule: FARM is always offset from BLOCKY by a gap that scales with the logo size
 const baseY = Math.round(H * LOGO_Y_N);
@@ -2483,7 +3050,9 @@ splashShadowFarm.scale.set(farmShadowS, farmShadowS * SHADOW_SQUASH_Y);
       if (!splashContinue.visible) {
       splashContinue.y = splashContinueOffY(); // ✅ prevents cut-off on first layout
     }
-
+// ✅ Tiny view ONLY: shrink "CLICK TO CONTINUE"
+if (IS_TINY_SPLASH) splashContinue.scale.set(0.5);
+else splashContinue.scale.set(1);
 
 // base Y
 // =====================
@@ -2525,18 +3094,25 @@ if (bandBot - bandTop < minBandH) {
 const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
 // 🔧 TUNING
-const SPLASH_CARD_PORTRAIT_SCALE = 1.18; // 🔧 try 1.10..1.30 (portrait only)
-
-const SPLASH_CARD_DESKTOP_SCALE  = 2.5; // your big desktop look
+const SPLASH_CARD_PORTRAIT_SCALE = 1.18;
+const SPLASH_CARD_LAND_SCALE = 1;          // your current landscape-mobile value
+const SPLASH_CARD_TABLET_LAND_SCALE = 1.25; // 🔧 try 1.10..1.45
+const SPLASH_CARD_DESKTOP_SCALE  = 2.5;
 
 const baseFrac = portrait ? 0.62 : SPLASH_BOX_TARGET_W_N;
 
 const cardScale =
   portrait ? SPLASH_CARD_PORTRAIT_SCALE :
   isLandscapeMobile ? SPLASH_CARD_LAND_SCALE :
+  tabletLand ? SPLASH_CARD_TABLET_LAND_SCALE :
   SPLASH_CARD_DESKTOP_SCALE;
 
-const finalFrac = baseFrac * cardScale;
+// ✅ Tiny view ONLY: shrink splash cards further
+const TINY_SPLASH_CARD_SHRINK = 0.78; // 🔧 try 0.70–0.85 (smaller = smaller)
+const tinyMul = IS_TINY_SPLASH ? TINY_SPLASH_CARD_SHRINK : 1;
+
+const finalFrac = baseFrac * cardScale * tinyMul;
+
 
 const minW = isLandscapeMobile ? Math.round(SPLASH_BOX_MIN_W * 0.85) : SPLASH_BOX_MIN_W;
 
@@ -2547,18 +3123,25 @@ let targetW = Math.max(
 );
 
 
-// ✅ NEW: hard clamp so 3 cards + gaps ALWAYS fit within screen on non-portrait
 if (!portrait) {
-  const SIDE_PAD = 24; // breathing room from screen edges
+  const SIDE_PAD = tabletLand ? 36 : 24; // ✅ a bit more breathing room on tablets
 
-  // gapX is computed as: targetW * SPLASH_BOX_GAP_MULT * (landscape ? 0.92 : 1.0)
-  const gapMul = SPLASH_BOX_GAP_MULT * (isLandscapeMobile ? 0.92 : 1.0);
+  // tablets: slightly tighter gaps so 3 cards fit cleanly
+  const tabletGapMul = 1.05; // 🔧 try 0.95..1.15
+
+  const gapMul =
+    SPLASH_BOX_GAP_MULT *
+    (isLandscapeMobile ? 0.92 : 1.0) *
+    (tabletLand ? tabletGapMul : 1.0);
 
   // total span across screen = targetW + 2*gapX = targetW * (1 + 2*gapMul)
-  const maxWByScreen = Math.floor((W - SIDE_PAD * 2) / Math.max(1e-6, (1 + 2 * gapMul)));
+  const maxWByScreen = Math.floor(
+    (W - SIDE_PAD * 2) / Math.max(1e-6, (1 + 2 * gapMul))
+  );
 
   targetW = Math.max(minW, Math.min(targetW, maxWByScreen));
 }
+
 
 // ✅ PORTRAIT: card height scale knob
 const SPLASH_CARD_H_PORTRAIT_MUL = 0.840; // 🔧 try 0.82..0.95 (smaller = shorter cards)
@@ -2583,10 +3166,8 @@ if (!portrait) {
 
   
 
-const isDesktopCards = !portrait && !isLandscapeMobile;
-
-// ✅ desktop-only spacing multiplier
-const DESKTOP_GAP_MUL = 1.18; // 🔧 try 1.10..1.30
+const isDesktopCards = !portrait && !isLandscapeMobile && !tabletAny;
+const DESKTOP_GAP_MUL = 1.18;
 
 const gapMul =
   SPLASH_BOX_GAP_MULT *
@@ -2929,11 +3510,44 @@ if (!portrait) {
     splashInfoLayer.y = Math.round(splashInfoLayer.y + shiftY);
   }
 }
-
+// ✅ Tiny splash ONLY: scale the cards layer down
+if (IS_TINY_SPLASH) {
+  const TINY_CARDS_SCALE = 0.70; // 🔧 lower = smaller (try 0.62..0.75)
+  splashInfoLayer.scale.set(TINY_CARDS_SCALE);
+} else {
+  splashInfoLayer.scale.set(1);
+}
 splashLayer.sortChildren();
+if (IS_TINY_SPLASH) {
+  const TINY_SPLASH_SCALE = 0.6; // 🔧 tune 0.62–0.75
+
+  // Apply scale
+  splashInfoLayer.scale.set(TINY_SPLASH_SCALE);
+
+  // --- RECENTER AFTER SCALE ---
+  const b = splashInfoLayer.getLocalBounds();
+
+  // Move pivot to visual center
+  splashInfoLayer.pivot.set(
+    b.x + b.width * 0.5,
+    b.y + b.height * 0.5
+  );
+
+  const TINY_SPLASH_Y_OFFSET_PX = 18; // 🔧 move cards DOWN (try 10..40)
+
+  splashInfoLayer.position.set(
+    Math.round(W * 0.5),
+    Math.round(H * 0.5 + TINY_SPLASH_Y_OFFSET_PX)
+  );
+} else {
+  // Reset for non-tiny layouts
+  splashInfoLayer.scale.set(1);
+  splashInfoLayer.pivot.set(0, 0);
+}
 
 
     }
+
 
     window.addEventListener("resize", layoutSplash);
 
@@ -2942,6 +3556,9 @@ splashLayer.sortChildren();
 // =====================
 const SPLASH_LAND_DROP_Y_N = 0.42;
 const SPLASH_LAND_FARM_DROP_PX = 18;
+// ✅ TABLET PORTRAIT: landing Y for the drop phase
+const SPLASH_TABLET_DROP_Y_N = 0.40; // 🔧 try 0.34..0.46
+
     // MAIN sequence
     async function startSplashSequence() {
       // ✅ Splash background starts at TOP of PNG
@@ -2953,8 +3570,7 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
   studioTag.visible = false;
   studioTag.alpha = 0;
 }
-root.addChild(studioTag);
-root.sortChildren();
+
 
       lockBackgroundForSplash(); // ✅ Solution B lock
     // ✅ kill any live cars when splash begins
@@ -3044,10 +3660,14 @@ leafLive.length = 0;
 
 const landscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 const portraitMobile  = isMobilePortraitUILayout(__layoutDeps);
+const tabletPort      = isTabletPortrait?.(__layoutDeps) ?? false; // ✅ tablet portrait
 
-const logoDropY = landscapeMobile
-  ? H * SPLASH_LAND_DROP_Y_N
-  : H * 0.48;
+
+const logoDropY =
+  landscapeMobile ? H * SPLASH_LAND_DROP_Y_N :
+  tabletPort      ? H * SPLASH_TABLET_DROP_Y_N :
+                    H * 0.48;
+
 
 
 // ✅ FARM drop landing offset should match the FINAL gap rule (scale-aware)
@@ -3327,10 +3947,8 @@ studioTag.alpha = 0;
       splashLayer.eventMode = "none";
       state.overlay.splash = false;
       // ✅ restore studio tag after splash (non-portrait only)
-if (!isMobilePortraitUILayout(__layoutDeps)) {
-  studioTag.visible = true;
-  studioTag.alpha = 0.85;
-}
+// ✅ restore studio tag after splash using the SAME rules as main game
+layoutStudioTag();
 
 
 gameTitle.visible = false;
@@ -3348,12 +3966,12 @@ leafSpawnAcc = 0;
 
     // ✅ draw the initial board so symbols exist when the game reveals
     bootInitialBoard();
-
+await bootReplayIfNeeded();
     // ✅ title drop AFTER the reveal finishes (matches old feel)
   setTimeout(() => {
   allowGameTitle = true;      // ✅ NEW: only now the title is allowed to exist
   gameTitle.visible = false;  // keep it hidden until the drop sets it
-  animateTitleDropIn();
+showTitleAtRestAndFloat();
 }, STARTUP_PAN_MS + STARTUP_REVEAL_DELAY + 80);
 
 
@@ -5184,6 +5802,7 @@ addSystem((dt) => {
       fsTractorLayer.addChild(a);
 
       layoutFsTractor(); // initial position
+layoutFsTractorBanner(); // initial banner scale/offsets for current view
 
       // =====================
     // FS INTRO BANNER (ATTACHED TO TRACTOR)
@@ -5233,10 +5852,20 @@ const bannerSpins = new Text({
   } as any),
 } as any);
 // 🔧 scale FREE / SPINS slightly smaller than the number
-const FS_WORD_SCALE = 1.2; // try 0.8–0.9
+// 🔧 scale FREE / SPINS slightly smaller than the number
+const FS_WORD_SCALE =
+  (( __layoutDeps as any )?.IS_TINY_VIEW ? 0.6 : 1.2); // ✅ tiny view only
 
-bannerFree.scale.set(FS_WORD_SCALE);
-bannerSpins.scale.set(FS_WORD_SCALE);
+// ✅ FS INTRO — tiny view scaling
+const FS_INTRO_TINY_NUM_SCALE  = 0.5; // 🔧 try 0.55–0.75
+const FS_INTRO_TINY_WORD_SCALE = 0.5; // 🔧 optional, keeps proportions nice
+
+
+// ----------------------------------
+// FS INTRO BANNER — SCALE (TINY ONLY)
+// ----------------------------------
+
+
 
 bannerFree.anchor.set(0.5);
 bannerSpins.anchor.set(0.5);
@@ -5258,13 +5887,22 @@ function setFsIntroBannerText() {
   centerBannerText(bannerSpins);
 }
 
-// layout (center aligned stack)
-const GAP_10_TO_FREE = 90;
-const GAP_FREE_TO_SPINS = 60;
+
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+// default gaps (all normal modes)
+let GAP_10_TO_FREE = 90;
+let GAP_FREE_TO_SPINS = 60;
+
+// ✅ Tiny view only: tighten vertical spacing
+if (IS_TINY_VIEW) {
+  GAP_10_TO_FREE = 70;      // 🔧 try 48..70
+  GAP_FREE_TO_SPINS = 50;   // 🔧 try 28..48
+}
 
 banner10.position.set(0, 0);
 bannerFree.position.set(0, GAP_10_TO_FREE);
 bannerSpins.position.set(0, GAP_10_TO_FREE + GAP_FREE_TO_SPINS);
+
 
 // ✅ call once after positions are set
 setFsIntroBannerText();
@@ -5280,30 +5918,53 @@ setFsIntroBannerText();
 const BANNER_OFF_X = -290;
 
 const BANNER_OFF_Y =
-  isMobileLandscapeUILayout(__layoutDeps) ? -130 :   // 🔧 less negative = lower
-  isMobilePortraitUILayout(__layoutDeps)  ? -235 :   // 🔧 was -275
-                                          -220;     // 🔧 was -235
+  isMobileLandscapeUILayout(__layoutDeps) ? -130 :
+  isMobilePortraitUILayout(__layoutDeps)  ? -235 :
+                                          -220;
+
+// ✅ Tiny view ONLY: pull banner closer to tractor
+
+const TINY_BANNER_Y_PUSH = 65; // 🔧 try 60..120
+
+const bannerOffYFinal = IS_TINY_VIEW
+  ? BANNER_OFF_Y + TINY_BANNER_Y_PUSH
+  : BANNER_OFF_Y;
+
+fsTractorBanner.position.set(BANNER_OFF_X, bannerOffYFinal);
+
+// keep for follow-system reuse
+(a as any)._bannerOffY = bannerOffYFinal;
 
 
 
-fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
+
+fsTractorBanner.position.set(BANNER_OFF_X, bannerOffYFinal);
 
 (a as any)._bannerOffX = BANNER_OFF_X;
-(a as any)._bannerOffY = BANNER_OFF_Y;
+(a as any)._bannerOffY = bannerOffYFinal;
 
 
-    // 🔧 this is now your REAL size control
-    const BANNER_SCALE_DESKTOP  = 1.4;
+// 🔧 this is now your REAL size control
+const BANNER_SCALE_DESKTOP  = 1.4;
 const BANNER_SCALE_PORTRAIT = 1.4;
 const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
 
-(a as any)._bannerScale =
+// ✅ Tiny view ONLY: shrink the whole “10 FREE SPINS” banner
+
+const TINY_FS_BANNER_SCALE_MUL = 0.9; // 🔧 try 0.60..0.85
+
+let bannerScale =
   isMobileLandscapeUILayout(__layoutDeps) ? BANNER_SCALE_LAND
   : isMobilePortraitUILayout(__layoutDeps) ? BANNER_SCALE_PORTRAIT
   : BANNER_SCALE_DESKTOP;
 
-    fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
-    fsTractorBanner.scale.set((a as any)._bannerScale);
+if (IS_TINY_VIEW) bannerScale *= TINY_FS_BANNER_SCALE_MUL;
+
+(a as any)._bannerScale = bannerScale;
+
+fsTractorBanner.position.set(BANNER_OFF_X, BANNER_OFF_Y);
+
+
 
     // store refs so we can update "10" per entry
     (a as any)._banner10 = banner10;
@@ -5331,9 +5992,16 @@ const BANNER_SCALE_LAND     = 1; // 🔧 landscape smaller (try 0.95..1.25)
       banner.x = Math.round(fsTractor.x + offX);
       banner.y = Math.round(fsTractor.y + offY);
 
-      // keep banner size independent (screen space)
-      const sc = (fsTractor as any)._bannerScale ?? 1.6;
-      banner.scale.set(sc);
+  // keep banner size independent (screen space)
+let sc = (fsTractor as any)._bannerScale ?? 1.6;
+
+// ✅ Tiny view ONLY: enforce shrink even if something overwrites _bannerScale later
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+const TINY_FS_BANNER_SCALE_MUL = 0.75; // keep same value as above
+if (IS_TINY_VIEW) sc *= TINY_FS_BANNER_SCALE_MUL;
+
+banner.scale.set(sc);
+
     });
 
 
@@ -5383,8 +6051,52 @@ const y = Math.round(H * FS_TRACTOR_Y_N);
         fsTractor.y = y;
       }
     }
+function layoutFsTractorBanner() {
+  if (!fsTractor) return;
 
-    window.addEventListener("resize", layoutFsTractor);
+  const banner = (fsTractor as any)._banner as Container | undefined;
+  if (!banner) return;
+
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+
+  // --- Offsets ---
+  const BANNER_OFF_X = -290;
+
+  const BANNER_OFF_Y =
+    isMobileLandscapeUILayout(__layoutDeps) ? -130 :
+    isMobilePortraitUILayout(__layoutDeps)  ? -235 :
+                                              -220;
+
+  const TINY_BANNER_Y_PUSH = 65;
+
+  const bannerOffYFinal = IS_TINY_VIEW
+    ? BANNER_OFF_Y + TINY_BANNER_Y_PUSH
+    : BANNER_OFF_Y;
+
+  (fsTractor as any)._bannerOffX = BANNER_OFF_X;
+  (fsTractor as any)._bannerOffY = bannerOffYFinal;
+
+  // --- Scale ---
+  const BANNER_SCALE_DESKTOP  = 1.4;
+  const BANNER_SCALE_PORTRAIT = 1.4;
+  const BANNER_SCALE_LAND     = 1;
+
+  const TINY_FS_BANNER_SCALE_MUL = 0.9;
+
+  let bannerScale =
+    isMobileLandscapeUILayout(__layoutDeps) ? BANNER_SCALE_LAND
+    : isMobilePortraitUILayout(__layoutDeps) ? BANNER_SCALE_PORTRAIT
+    : BANNER_SCALE_DESKTOP;
+
+  if (IS_TINY_VIEW) bannerScale *= TINY_FS_BANNER_SCALE_MUL;
+
+  (fsTractor as any)._bannerScale = bannerScale;
+}
+
+   window.addEventListener("resize", () => {
+  layoutFsTractor();
+  layoutFsTractorBanner();
+});
 
     function fsTractorOffLeftX() {
       const w = fsTractor?.width || 400;
@@ -5447,6 +6159,9 @@ const y = Math.round(H * FS_TRACTOR_Y_N);
       const token = fsTractorEnterToken;
 
       fsTractorLayer.visible = true;
+      // 🔥 force recalculation for current layout before animating
+layoutFsTractor();
+layoutFsTractorBanner();
 
       // show/update banner (dragged in with tractor)
     const banner = (fsTractor as any)._banner as Container | undefined;
@@ -6241,10 +6956,10 @@ function layoutFsAddedPopup() {
   // restore
   fsOutroWinAmount.text = oldAmt;
 
-  if (widest <= maxW) return 1;
+if (widest <= maxW) return 1;
 
   const s = maxW / widest;
-  return Math.max(0.58, Math.min(1, s)); // clamp so it doesn’t get microscopic
+ return Math.max(0.58, Math.min(1, s));// clamp so it doesn’t get microscopic
 }
 
 function clampFsOutroScaleToScreen(proposedScale: number) {
@@ -6276,23 +6991,161 @@ function clampFsOutroScaleToScreen(proposedScale: number) {
   // Keep your same “don’t go microscopic” floor
   return Math.max(0.58, s);
 }
+// =====================
+// ✅ FS OUTRO — MOBILE LANDSCAPE AUTO-FIT
+// =====================
+const FS_OUTRO_LAND_BASE_SCALE = 0.62;     // 🔧 overall smaller in mobile landscape (0.50..0.75)
+const FS_OUTRO_LAND_MIN_SCALE  = 0.45;     // 🔧 floor (don’t go microscopic)
+const FS_OUTRO_LAND_PAD_N      = 0.10;     // 🔧 side padding as % of screen width (0.06..0.14)
+
+
+
+
+function computeFsOutroLandscapeScale(): number {
+  if (!isMobileLandscapeUILayout(__layoutDeps)) return 1;
+
+  const W = app.screen.width;
+  const PAD = Math.round(W * FS_OUTRO_LAND_PAD_N);
+  const maxW = Math.max(1, W - PAD * 2);
+
+  // measure at base scale
+  fsOutroTotalLabel.scale.set(FS_OUTRO_LAND_BASE_SCALE);
+  fsOutroWinAmount.scale.set(FS_OUTRO_LAND_BASE_SCALE);
+
+  const widest = Math.max(
+    fsOutroTotalLabel.getBounds().width,
+    fsOutroWinAmount.getBounds().width
+  );
+
+  if (widest <= maxW) return FS_OUTRO_LAND_BASE_SCALE;
+
+  const fit = maxW / Math.max(1, widest);
+  const s = FS_OUTRO_LAND_BASE_SCALE * fit;
+
+  return Math.max(FS_OUTRO_LAND_MIN_SCALE, Math.min(FS_OUTRO_LAND_BASE_SCALE, s));
+}
+
+function applyFsOutroLandscapeFit() {
+  if (!isMobileLandscapeUILayout(__layoutDeps)) return;
+
+  const s = computeFsOutroLandscapeScale();
+  fsOutroTotalLabel.scale.set(s, s);
+  fsOutroWinAmount.scale.set(s, s);
+
+
+}
+// =====================
+// ✅ FS OUTRO — MOBILE PORTRAIT FIT (shared scale for label/amount/continue)
+// =====================
+function applyFsOutroPortraitFit(finalAmountForMeasure?: number) {
+  if (!isMobilePortraitUILayout(__layoutDeps)) return;
+
+  const W = app.screen.width;
+
+  // Side padding so nothing kisses the edges
+  const PAD = Math.round(W * 0.10); // 🔧 0.07..0.14
+  const maxW = Math.max(1, W - PAD * 2);
+
+  // Base "locked" scale computed from final amount (your existing mechanism)
+  const base = fsOutroPortraitScaleLocked ? fsOutroPortraitScale : 1;
+
+  // Start from base on ALL texts (keeps them relatively consistent)
+  fsOutroTotalLabel.scale.set(base, base);
+  fsOutroWinAmount.scale.set(base, base);
+// leave continue alone here (we'll size it after fitting)
+
+  // Measure worst-case width at this scale
+  const oldAmt = fsOutroWinAmount.text;
+  const measureAmt =
+    (typeof finalAmountForMeasure === "number")
+      ? fmtMoney(finalAmountForMeasure)
+      : oldAmt;
+
+  fsOutroWinAmount.text = measureAmt;
+
+const widest = Math.max(
+  fsOutroTotalLabel.getBounds().width,
+  fsOutroWinAmount.getBounds().width
+);
+
+  // Restore text
+  fsOutroWinAmount.text = oldAmt;
+
+  if (widest <= maxW) return;
+
+  // Shrink all together so they match scale + fit width
+  const fitMul = maxW / Math.max(1, widest);
+  const s = Math.max(0.58, base * fitMul); // floor so it doesn’t go microscopic
+
+fsOutroTotalLabel.scale.set(s, s);
+fsOutroWinAmount.scale.set(s, s);
+
+// ✅ portrait-only: continue larger without affecting label/amount
+const CONT_MUL = 1.7;                 // 🔧 try 1.5..2.0
+const contS = Math.min(1, s * CONT_MUL);
+fsOutroContinue.scale.set(contS, contS);
+}
 
 
 // =====================
 // FS OUTRO — GAP TUNING
 // =====================
 const FS_OUTRO_LABEL_Y_DESKTOP = 0.39;
+// =====================
+// ✅ FS OUTRO — TINY VIEW SCALE (pop-out S)
+// =====================
+const FS_OUTRO_TINY_BASE_SCALE = 0.42; // 🔧 try 0.34..0.55
+const FS_OUTRO_TINY_MIN_SCALE  = 0.30; // 🔧 safety floor
+const FS_OUTRO_TINY_PAD_N      = 0.08; // 🔧 side padding as % of W
+
 const FS_OUTRO_AMOUNT_Y_DESKTOP = 0.59;
 
 // ✅ MOBILE LANDSCAPE: bigger gap
 const FS_OUTRO_LABEL_Y_LAND = 0.38;   // smaller = higher
 const FS_OUTRO_AMOUNT_Y_LAND = 0.70;  // bigger = lower
 
+function normalizeFsOutroTextScalesForCurrentLayout() {
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+  const isPortrait = isMobilePortraitUILayout(__layoutDeps);
+  const isLand = isMobileLandscapeUILayout(__layoutDeps);
+
+  // Desktop / tablet / anything that's NOT tiny/portrait/landscape-phone:
+  // ✅ hard reset all text scales so they can't inherit old tiny values
+  if (!IS_TINY_VIEW && !isPortrait && !isLand) {
+    fsOutroTotalLabel.scale.set(1, 1);
+    fsOutroWinAmount.scale.set(1, 1);
+    fsOutroContinue.scale.set(1, 1);
+    return;
+  }
+
+  // Tiny view: apply the locked (or base) scale to ALL 3
+  if (IS_TINY_VIEW) {
+    const s = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+    fsOutroTotalLabel.scale.set(s, s);
+    fsOutroWinAmount.scale.set(s, s);
+    fsOutroContinue.scale.set(s, s);
+    return;
+  }
+
+  // Mobile landscape: fit label+amount, and ensure continue isn't stuck tiny
+  if (isLand) {
+    applyFsOutroLandscapeFit();
+    fsOutroContinue.scale.set(1, 1); // ✅ ensure it doesn't inherit tiny
+    return;
+  }
+
+  // Mobile portrait: your portrait fit sets label/amount and also sizes continue
+  if (isPortrait) {
+    applyFsOutroPortraitFit(fsOutroFinalAmount);
+    return;
+  }
+}
 
     function layoutFsOutro() {
       const W = app.screen.width;
       const H = app.screen.height;
-
+  // ✅ NEW: prevents inherited scales when switching layouts
+  normalizeFsOutroTextScalesForCurrentLayout();
       // scale bg to cover
       fsOutroBg.x = Math.round(W * 0.5);
       fsOutroBg.y = Math.round(H * 0.5);
@@ -6316,8 +7169,24 @@ const cy = Math.round(H * 0.5);
 // 🔧 GAP between label and amount
 const GAP_PX =
   isMobilePortraitUILayout(__layoutDeps) ? 0 :
-  isMobileLandscapeUILayout(__layoutDeps) ? 56 :
+  isMobileLandscapeUILayout(__layoutDeps) ? 0:
   -20;
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+
+if (IS_TINY_VIEW) {
+  const s = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+
+  // ✅ hard-apply locked scale (no dynamic refit mid-count)
+  fsOutroTotalLabel.scale.set(s, s);
+  fsOutroWinAmount.scale.set(s, s);
+  fsOutroContinue.scale.set(s, s);
+} else {
+  // existing behavior untouched
+  applyFsOutroLandscapeFit();
+  applyFsOutroPortraitFit(fsOutroFinalAmount);
+}
+
+
 
 // measure heights AFTER scale is applied
 const labelH = fsOutroTotalLabel.getBounds().height;
@@ -6342,7 +7211,19 @@ fsOutroWinAmount.position.set(cx, Math.round(topY + labelH + GAP_PX + amtH * 0.5
 
     }
 
-    window.addEventListener("resize", layoutFsOutro);
+window.addEventListener("resize", () => {
+    // cancel any pulse using stale base scales
+  fsOutroPulseToken++;
+  // 🔥 Clear ALL scale locks on layout change
+  fsOutroPortraitScaleLocked = false;
+  fsOutroTinyScaleLocked = false;
+
+  fsOutroPortraitScale = 1;
+  fsOutroTinyScale = 1;
+
+  layoutFsOutro();
+});
+
 
     // =====================
     // FS OUTRO COUNT-UP
@@ -6352,6 +7233,8 @@ fsOutroWinAmount.position.set(cx, Math.round(topY + labelH + GAP_PX + amtH * 0.5
     let fsOutroFinalAmount = 0;
     let fsOutroPortraitScale = 1;
 let fsOutroPortraitScaleLocked = false;
+let fsOutroTinyScale = 1;
+let fsOutroTinyScaleLocked = false;
 
     let fsOutroBurstDone = false;
     let fsOutroPulseToken = 0;
@@ -6360,13 +7243,41 @@ function startFsOutroIdlePulse() {
   fsOutroPulseToken++;
   const token = fsOutroPulseToken;
 
-  const base = (fsOutroPortraitScaleLocked ? fsOutroPortraitScale : (fsOutroWinAmount.scale.x || 1));
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+const isPortrait = isMobilePortraitUILayout(__layoutDeps);
+const isLand = isMobileLandscapeUILayout(__layoutDeps);
+
+let base: number;
+
+if (IS_TINY_VIEW) {
+  base = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+}
+else if (isLand) {
+  base = computeFsOutroLandscapeScale();
+}
+else if (isPortrait) {
+  base = fsOutroPortraitScaleLocked ? fsOutroPortraitScale : 1;
+}
+else {
+  // ✅ DESKTOP ALWAYS HARD RESET
+  base = 1;
+}
+
+
+
+// keep label matched in landscape too (but DON'T touch continue here)
+if (IS_TINY_VIEW || isMobileLandscapeUILayout(__layoutDeps)) {
+  fsOutroTotalLabel.scale.set(base, base);
+  fsOutroWinAmount.scale.set(base, base);
+  // fsOutroContinue scale is handled by layout/apply fit so it doesn't snap at finish
+}
+
   const portrait = isMobilePortraitUILayout(__layoutDeps);
   const isLandscapeMobile = isMobileLandscapeUILayout(__layoutDeps);
 
   // Portrait: pulse vertically only. Non-portrait: uniform (clamped).
   const upX = portrait ? base : clampFsOutroScaleToScreen(base * 1.08);
-  const upY = portrait ? base * 1.10 : upX;
+  const upY = portrait ? base * 1.4 : upX;
 
   const UP_MS = 260;
   const DOWN_MS = 320;
@@ -6402,31 +7313,32 @@ function startFsOutroIdlePulse() {
 
 
 
-   function pulseBigWinAmount() {
-  // ✅ use the portrait-locked base scale (or current scale elsewhere)
+function pulseBigWinAmount() {
   const base =
     (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked)
       ? bigWinPortraitScale
       : (bigWinAmount.scale.x || 1);
 
-  // ✅ clamp the peak so it can’t exceed screen width
-  const peak = clampBigWinScaleToScreen(base * 1.06); // 6% pop
+  // ✅ Vertical-only pulse: width stays constant, so digits won't affect it
+  const peakX = base;
+  const peakY = base * 1.7; // 🔧 try 1.06..1.14
 
-  // start from base (NOT 1)
   bigWinAmount.scale.set(base, base);
 
   tween(
     140,
     (k) => {
       const e = easeOutBack(k, 1.05);
-      const s = base + (peak - base) * e;
-      bigWinAmount.scale.set(s, s);
+      const sx = base + (peakX - base) * e;
+      const sy = base + (peakY - base) * e;
+      bigWinAmount.scale.set(sx, sy);
     },
     () => {
       tween(220, (k2) => {
-        const e2 = k2 * k2 * (3 - 2 * k2); // smoothstep
-        const s = peak + (base - peak) * e2;
-        bigWinAmount.scale.set(s, s);
+        const e2 = k2 * k2 * (3 - 2 * k2);
+        const sx = peakX + (base - peakX) * e2;
+        const sy = peakY + (base - peakY) * e2;
+        bigWinAmount.scale.set(sx, sy);
       });
     }
   );
@@ -6434,13 +7346,34 @@ function startFsOutroIdlePulse() {
 
 
 function pulseFsOutroAmount() {
-  const base = (fsOutroPortraitScaleLocked ? fsOutroPortraitScale : (fsOutroWinAmount.scale.x || 1));
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+const isPortrait = isMobilePortraitUILayout(__layoutDeps);
+const isLand = isMobileLandscapeUILayout(__layoutDeps);
+
+let base: number;
+
+if (IS_TINY_VIEW) {
+  base = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+}
+else if (isLand) {
+  base = computeFsOutroLandscapeScale();
+}
+else if (isPortrait) {
+  base = fsOutroPortraitScaleLocked ? fsOutroPortraitScale : 1;
+}
+else {
+  // ✅ DESKTOP ALWAYS HARD RESET
+  base = 1;
+}
+
+
+
 
   // Portrait: pulse vertically only (keeps width inside bounds)
   const portrait = isMobilePortraitUILayout(__layoutDeps);
 
   const peakX = base;
-  const peakY = portrait ? base * 1.08 : clampFsOutroScaleToScreen(base * 1.06);
+  const peakY = portrait ? base * 1.7 : clampFsOutroScaleToScreen(base * 1.06);
 
   fsOutroWinAmount.scale.set(base, base);
 
@@ -6498,6 +7431,11 @@ function pulseFsOutroAmount() {
   fsOutroWinAmount.text = fmtMoney(fsOutroFinalAmount);
   fsOutroCountDone = true;
 
+// ✅ LANDSCAPE: lock fitted scale at the final snap (prevents “jump big”)
+if (isMobileLandscapeUILayout(__layoutDeps)) {
+  applyFsOutroLandscapeFit();
+  layoutFsOutro();
+}
   // ✅ restore music immediately when we hit the final amount (even on skip)
   restoreMusicAfterFsOutro(350);
 
@@ -6577,7 +7515,29 @@ audio?.startTickLoop?.(120, 0.38, 1.0);
 
 
       const v = from + (targetAmount - from) * e;
-      fsOutroWinAmount.text = fmtMoney(v);
+fsOutroWinAmount.text = fmtMoney(v);
+
+// ✅ keep FS outro text fitting during count-up
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+
+if (IS_TINY_VIEW) {
+  // ✅ keep locked tiny scale while ticking (no snap)
+  const s = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+  fsOutroTotalLabel.scale.set(s, s);
+  fsOutroWinAmount.scale.set(s, s);
+  fsOutroContinue.scale.set(s, s);
+
+  layoutFsOutro();
+} else if (isMobileLandscapeUILayout(__layoutDeps)) {
+  applyFsOutroLandscapeFit();
+  layoutFsOutro(); // re-stack after scale change
+} else if (isMobilePortraitUILayout(__layoutDeps)) {
+  applyFsOutroPortraitFit(fsOutroFinalAmount);
+  layoutFsOutro(); // keeps the vertical stack correct
+}
+
+
+
 
       // ✅ TICK LOOP ramp (FS OUTRO): rate + volume rise as we approach the end
 // progress 0..1
@@ -6601,6 +7561,13 @@ audio?.setTickParams?.(vol, rate);
 
   fsOutroWinAmount.text = fmtMoney(targetAmount);
   fsOutroCountDone = true;
+if ((!!(__layoutDeps as any)?.IS_TINY_VIEW)) {
+  const s = fsOutroTinyScaleLocked ? fsOutroTinyScale : 0.42;
+  fsOutroTotalLabel.scale.set(s, s);
+  fsOutroWinAmount.scale.set(s, s);
+  fsOutroContinue.scale.set(s, s);
+  layoutFsOutro();
+}
 
   restoreMusicAfterFsOutro(350);
 
@@ -6612,6 +7579,12 @@ audio?.setTickParams?.(vol, rate);
   setTimeout(() => {
     if (state.overlay.fsOutro) startFsOutroIdlePulse();
   }, 420);
+  // ✅ LANDSCAPE: lock fitted scale at the final snap (prevents “jump big”)
+if (isMobileLandscapeUILayout(__layoutDeps)) {
+  applyFsOutroLandscapeFit();
+  layoutFsOutro();
+}
+
 }
 
     }
@@ -6638,6 +7611,42 @@ function showFsOutroP(on: boolean, totalWin: number, ms = 420) {
 }
 
 
+function computeFsOutroTinyScale(finalAmount: number): number {
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+  if (!IS_TINY_VIEW) return 1;
+
+  const W = app.screen.width;
+
+  // 🔧 tune
+  const PAD_N = 0.08;
+  const BASE  = 0.42;
+  const MIN_S = 0.30;
+
+  const PAD = Math.round(W * PAD_N);
+  const maxW = Math.max(1, W - PAD * 2);
+
+  // measure at BASE using FINAL amount (widest)
+  const oldAmt = fsOutroWinAmount.text;
+
+  fsOutroTotalLabel.scale.set(BASE, BASE);
+  fsOutroWinAmount.scale.set(BASE, BASE);
+  fsOutroContinue.scale.set(BASE, BASE);
+
+  fsOutroWinAmount.text = fmtMoney(finalAmount);
+
+  const widest = Math.max(
+    fsOutroTotalLabel.getBounds().width,
+    fsOutroWinAmount.getBounds().width,
+    fsOutroContinue.getBounds().width
+  );
+
+  fsOutroWinAmount.text = oldAmt;
+
+  if (widest <= maxW) return BASE;
+
+  const fit = maxW / Math.max(1, widest);
+  return Math.max(MIN_S, Math.min(BASE, BASE * fit));
+}
 
     function showFsOutro(on: boolean, totalWin: number, ms = 420) {
       // ✅ FORCE the outro bg texture FIRST (so layout uses correct dimensions)
@@ -6661,8 +7670,18 @@ function showFsOutroP(on: boolean, totalWin: number, ms = 420) {
         // ✅ lock portrait scale ONCE using the final amount (prevents snapping during count-up)
 fsOutroPortraitScaleLocked = false;
 fsOutroPortraitScale = computeFsOutroPortraitScale(totalWin);
+
+// ✅ MOBILE PORTRAIT ONLY: force a smaller base scale
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  fsOutroPortraitScale *= 0.5; // 🔧 0.78 = 22% smaller. Try 0.72 for more.
+}
+
 fsOutroPortraitScaleLocked = true;
-layoutFsOutro(); // apply immediately
+layoutFsOutro();
+// ✅ Tiny view: lock a single scale based on FINAL amount (prevents snap at the end)
+fsOutroTinyScaleLocked = false;
+fsOutroTinyScale = computeFsOutroTinyScale(totalWin);
+fsOutroTinyScaleLocked = true;
 
         // ✅ start fireflies (fresh)
     clearFirefliesNow();
@@ -6706,8 +7725,8 @@ layoutFsOutro(); // apply immediately
 
       } else {
         // ✅ reset portrait fit scaling
-fsOutroPortraitScaleLocked = false;
-fsOutroPortraitScale = 1;
+fsOutroTinyScaleLocked = false;
+fsOutroTinyScale = 1;
         const startA = fsDimmer.alpha;
         const startB = bgBlur.strength;
         const startL = fsOutroLayer.alpha;
@@ -6741,6 +7760,9 @@ fsOutroPortraitScale = 1;
 
 
             state.overlay.fsOutro = false;
+            layoutStudioTag();
+root.sortChildren();
+
             restoreMusicAfterFsOutro(250);
             FIREFLY_ON = false;
     clearFirefliesNow();
@@ -6965,16 +7987,20 @@ for (const t of [bigWinTitle, bigWinAmount]) {
     // =====================
     let bigWinPulseToken = 0;
 
-  function startBigWinIdlePulse() {
+function startBigWinIdlePulse() {
   bigWinPulseToken++;
   const token = bigWinPulseToken;
 
-  const baseScale =
+  const base =
     (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked)
       ? bigWinPortraitScale
       : (bigWinAmount.scale.x || 1);
 
-  const UP_SCALE = clampBigWinScaleToScreen(baseScale * 1.08);
+  const portrait = isMobilePortraitUILayout(__layoutDeps);
+
+  // ✅ Portrait: vertical-only (no width change, digits won't affect it)
+  const upX = base;
+  const upY = portrait ? base * 1.10 : clampBigWinScaleToScreen(base * 1.08);
 
   const UP_MS = 240;
   const DOWN_MS = 320;
@@ -6985,32 +8011,42 @@ for (const t of [bigWinTitle, bigWinAmount]) {
       await animateMs(UP_MS, (t) => {
         if (token !== bigWinPulseToken) return;
         const e = easeOutCubic(t);
-        const s = baseScale + (UP_SCALE - baseScale) * e;
-        bigWinAmount.scale.set(s, s);
+        const sx = base + (upX - base) * e;
+        const sy = base + (upY - base) * e;
+        bigWinAmount.scale.set(sx, sy);
       });
 
       await animateMs(DOWN_MS, (t) => {
         if (token !== bigWinPulseToken) return;
         const e = t * t * (3 - 2 * t);
-        const s = UP_SCALE + (baseScale - UP_SCALE) * e;
-        bigWinAmount.scale.set(s, s);
+        const sx = upX + (base - upX) * e;
+        const sy = upY + (base - upY) * e;
+        bigWinAmount.scale.set(sx, sy);
       });
 
-      bigWinAmount.scale.set(baseScale, baseScale);
+      bigWinAmount.scale.set(base, base);
       await waitMs(PAUSE_MS);
     }
 
-    bigWinAmount.scale.set(baseScale, baseScale);
+    bigWinAmount.scale.set(base, base);
   }
 
   void loop();
 }
 
 
-    function stopBigWinIdlePulse() {
-      bigWinPulseToken++; // cancels loop
-      bigWinAmount.scale.set(1, 1); // settle
-    }
+
+  function stopBigWinIdlePulse() {
+  bigWinPulseToken++; // cancels loop
+
+  // ✅ settle to the correct base scale (prevents 1-frame snap)
+  const base =
+    (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked)
+      ? bigWinPortraitScale
+      : (bigWinAmount.scale.x || 1);
+
+  bigWinAmount.scale.set(base, base);
+}
 
 
     const bigWinContinue = new Text({
@@ -7227,6 +8263,56 @@ function clampBigWinScaleToScreen(proposedScale: number) {
       const cx = app.screen.width / 2;
       const cy = app.screen.height / 2;
         // =====================
+  // ✅ TINY VIEW ONLY: scale down + enforce a real gap (no overlap ever)
+  // =====================
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+  if (IS_TINY_VIEW) {
+    const W = app.screen.width;
+    const H = app.screen.height;
+
+    // scale everything down in tiny view
+    bigWinTitle.scale.set(BIGWIN_TINY_SCALE, BIGWIN_TINY_SCALE);
+    bigWinAmount.scale.set(BIGWIN_TINY_SCALE, BIGWIN_TINY_SCALE);
+    bigWinContinue.scale.set(BIGWIN_TINY_SCALE, BIGWIN_TINY_SCALE);
+
+    // ---- guaranteed gap stack (based on real bounds) ----
+    // place the stack around a slightly higher center than exact middle
+    const stackCy = Math.round(H * BIGWIN_TINY_TITLE_Y_N);
+
+    // measure AFTER scale is applied
+   // ✅ Use LOCAL bounds so skew doesn't inflate "height" when the word gets wider
+const titleLB = bigWinTitle.getLocalBounds();
+const amtLB   = bigWinAmount.getLocalBounds();
+
+const titleH = Math.max(1, titleLB.height) * (bigWinTitle.scale.y || 1);
+const amtH   = Math.max(1, amtLB.height)   * (bigWinAmount.scale.y || 1);
+
+
+    const gap = BIGWIN_TINY_GAP_PX;
+
+    const stackH = titleH + gap + amtH;
+    const topY = Math.round(stackCy - stackH * 0.5);
+
+    // anchor is 0.5, so y = center of each text
+    bigWinTitle.position.set(cx, Math.round(topY + titleH * 0.5));
+    bigWinAmount.position.set(cx, Math.round(topY + titleH + gap + amtH * 0.5));
+
+    // continue stays near bottom
+    bigWinContinue.position.set(cx, Math.round(H * 0.92));
+
+    // keep continue hit area sane
+    const b = bigWinContinue.getLocalBounds();
+    bigWinContinue.hitArea = new Rectangle(
+      b.x - 60,
+      b.y - 24,
+      b.width + 120,
+      b.height + 48
+    );
+
+    return; // ✅ prevent other layouts (land/portrait/desktop) from overriding
+  }
+
+        // =====================
   // MOBILE LANDSCAPE: SCALE DOWN BIG WIN
   // =====================
 if (isMobileLandscapeUILayout(__layoutDeps)) {
@@ -7259,19 +8345,25 @@ if (isMobileLandscapeUILayout(__layoutDeps)) {
 
 
 
-    // 🔧 vertical offsets (tweak freely)
-    const BIGWIN_TITLE_OFFSET_Y  = -100; // was ~ -180
-    const BIGWIN_AMOUNT_OFFSET_Y =  70;  // was ~ -35
+    const BIGWIN_TITLE_OFFSET_Y  = -110;
+const BIGWIN_AMOUNT_OFFSET_Y =  70;
 
-    const titleY = Math.round(cy + BIGWIN_TITLE_OFFSET_Y);
-    if (!bigWinTitleAnimActive) {
-      bigWinTitle.position.set(cx, titleY);
-    } else {
-      // keep x centered even during animation (only y is animated)
-      bigWinTitle.x = cx;
-    }
+// ✅ portrait-only adjustment (no redeclaration)
+const titleOffset =
+  isMobilePortraitUILayout(__layoutDeps) ? -22 : BIGWIN_TITLE_OFFSET_Y;
 
-    bigWinAmount.position.set(cx, Math.round(cy + BIGWIN_AMOUNT_OFFSET_Y));
+const amountOffset =
+  isMobilePortraitUILayout(__layoutDeps) ? 50 : BIGWIN_AMOUNT_OFFSET_Y;
+
+const titleY = Math.round(cy + titleOffset);
+if (!bigWinTitleAnimActive) {
+  bigWinTitle.position.set(cx, titleY);
+} else {
+  bigWinTitle.x = cx;
+}
+
+bigWinAmount.position.set(cx, Math.round(cy + amountOffset));
+
     bigWinContinue.position.set(cx, Math.round(app.screen.height * 0.92));
 
     // enlarge click area around the continue text
@@ -7293,23 +8385,32 @@ if (isMobileLandscapeUILayout(__layoutDeps)) {
 // - Desktop: normal (1)
 // =====================
 if (isMobilePortraitUILayout(__layoutDeps)) {
-  const s = bigWinPortraitScaleLocked ? bigWinPortraitScale : BIGWIN_PORTRAIT_BASE_SCALE;
+ const s = bigWinPortraitScaleLocked ? bigWinPortraitScale : BIGWIN_PORTRAIT_BASE_SCALE;
+
   bigWinTitle.scale.set(s, s);
   bigWinAmount.scale.set(s, s);
+
+  // ✅ Bigger continue (portrait only)
+  const CONT_MUL = 1.8; // 🔧 try 1.4 .. 2.0
+  bigWinContinue.scale.set(s * CONT_MUL, s * CONT_MUL);
 } else {
   bigWinTitle.scale.set(1, 1);
   bigWinAmount.scale.set(1, 1);
+  bigWinContinue.scale.set(1, 1); // ✅ FIX: reset continue on desktop/tablet
 }
 
-// ✅ Portrait: apply LOCKED scale (prevents snapping during count-up)
+
 if (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked) {
   bigWinTitle.scale.set(bigWinPortraitScale);
   bigWinAmount.scale.set(bigWinPortraitScale);
+  // keep continue as whatever you set above (portrait uses CONT_MUL)
 } else if (!isMobilePortraitUILayout(__layoutDeps)) {
   // non-portrait: normal
   bigWinTitle.scale.set(1, 1);
   bigWinAmount.scale.set(1, 1);
+  bigWinContinue.scale.set(1, 1); // ✅ FIX: ensure it can't inherit tiny
 }
+
 
     }
 
@@ -7318,7 +8419,12 @@ if (isMobilePortraitUILayout(__layoutDeps) && bigWinPortraitScaleLocked) {
 // =====================
 const BIGWIN_LAND_SCALE = 0.6;     // 🔧 try 0.62–0.82
 // ✅ BIG WIN — MOBILE PORTRAIT SCALE (TITLE + AMOUNT ONLY)
-const BIGWIN_PORTRAIT_BASE_SCALE = 0.78; // 🔧 try 0.70–0.85 (smaller = smaller)
+const BIGWIN_PORTRAIT_BASE_SCALE = 0.35; // 🔧 try 0.70–0.85 (smaller = smaller)\
+// ✅ BIG WIN — TINY VIEW (pop-out S) tuning
+const BIGWIN_TINY_SCALE = 0.4;   // 🔧 try 0.48..0.65
+const BIGWIN_TINY_GAP_PX = 3;    // 🔧 try 12..32 (guaranteed gap)
+const BIGWIN_TINY_TITLE_Y_N = 0.5; // 🔧 0.40..0.48 (moves stack up/down a bit)
+
 
 
     // =====================
@@ -8465,7 +9571,7 @@ playBigWinTierPitch(tier);
       } else {
           // ✅ RESET portrait big win scaling
   bigWinPortraitScaleLocked = false;
-  bigWinPortraitScale = 1;
+  bigWinPortraitScale = 1.2;
 
 
         stopBigWinIdlePulse();
@@ -8631,146 +9737,163 @@ setTimeout(() => {
     }
 
 
+    // =====================
+    // FS INTRO: click continues (DELAY SPIN UNTIL FADE COMPLETE)
+    // =====================
+    let fsIntroContinueInFlight = false;
+
     fsDimmer.on("pointertap", () => {
    // =====================
   // BIG WIN: click = skip then close
   // =====================
   if (state.overlay.bigWin) {
-  audio?.initFromUserGesture?.();
+    audio?.initFromUserGesture?.();
 
-  // 1st click: skip (NO click sfx)
-  if (!bigWinCountDone) {
-    finishBigWinCountUp();
+    // 1st click: skip (NO click sfx)
+    if (!bigWinCountDone) {
+      finishBigWinCountUp();
+      return;
+    }
+
+    // 2nd click: close (PLAY click sfx)
+    audio?.playSfx?.("fs_click", 1.15);
+
+    showBigWin(false, 0, 0, 260);
     return;
   }
-
-  // 2nd click: close (PLAY click sfx)
-  audio?.playSfx?.("fs_click", 1.15);
-
-  showBigWin(false, 0, 0, 260);
-  return;
-}
-
 
       // =====================
       // FS OUTRO: click = skip then close
       // =====================
      if (state.overlay.fsOutro) {
-  fsOutroPulseToken++;
+      fsOutroPulseToken++;
 
-  // 1st click: skip to final (NO click sfx)
-  if (!fsOutroCountDone) {
-    finishFsOutroCountUp();
-    return;
-  }
-
-  // 2nd click: continue/close (PLAY click sfx)
-  audio?.playSfx?.("fs_click", 1.15);
-
-  void (async () => {
-  await showFsOutroP(false, 0, 260);
-
-      // ✅ IMPORTANT: turn OFF the reel win dimmer when leaving FS outro
-    await setReelDimmer(false);
-
-    // extra safety (no harm)
-    reelDimmer.alpha = 0;
-    reelDimmer.visible = false;
-
-
-  // ✅ Now fsOutro flag is definitely cleared (and plaque is allowed again)
-  layoutMultiplierPlaque();
-  uiController.restoreUiAfterFsOutro();
-  root.sortChildren();
-
-  // (optional) if you want it to “snap show” no matter what:
-  multPlaqueLayer.visible = true;
-})();
-
-        clearSmokeNow();
-
-        setReelHouseForMode("BASE");
-        void setBackgroundForMode("BASE", true);
-     playMusicWhenUnlocked("music_base", 450);
-
-        snowFxEnabled = false;
-        clearSnowNow();
-        leafFxEnabled = true;
-        cloudFxEnabled = true;
-        seedCloudFx(6);
-        cloudSpawnAcc = 0;
-        smokeFxEnabled = true;
-
-        leafSpawnAcc = 0;
-        smokeSpawnAcc = 0;
-
-        state.game.returningFromFreeSpins = true;
-
-        setMult(LADDER[plaqueIdx] ?? 1);
-
-        void (async () => {
-          await animatePlaqueReturnToBase();
-          state.game.returningFromFreeSpins = false;
-        })();
-
-        animateTitleDropIn();
-
-        gameCore.alpha = 1;
-        (gameCore as any).eventMode = "auto";
-
-        stopCoinShower(true);
-        state.overlay.bigWin = false;
+      // 1st click: skip to final (NO click sfx)
+      if (!fsOutroCountDone) {
+        finishFsOutroCountUp();
         return;
       }
 
-      // =====================
-      // FS INTRO: click continues
-      // =====================
-        if (!state.overlay.fsIntro) return;
- audio?.playSfx?.("fs_click", 1.0); 
-      state.overlay.fsIntro = false;
-
-      // ✅ FS intro ended → immediately hide BASE car (and its exhaust)
-      if (bgCarLive) {
-        bgCarLive.s.removeFromParent();
-        bgCarLive = null;
-      }
-      clearCarExhaustNow();
-
-      // optional: ensure it doesn't respawn while we're in FREE_SPINS
-      bgCarCooldown = 999;
-
-      fsDimmer.eventMode = "none";
-      showFsContinue(false, 180);
+      // 2nd click: continue/close (PLAY click sfx)
+      audio?.playSfx?.("fs_click", 1.15);
 
       void (async () => {
-        // ✅ Portrait: tractor + banner exit completely offscreen
-if (isMobilePortraitUILayout(__layoutDeps)) {
-  await playFsTractorExitPortrait(3000); // ✅ same timing as desktop
-} else {
-  await playFsTractorExit(3000);
-}
+        await showFsOutroP(false, 0, 260);
+        layoutStudioTag();
+        root.sortChildren();
 
-        await setBackgroundForMode("FREE_SPINS", true);
-      
+        // ✅ IMPORTANT: turn OFF the reel win dimmer when leaving FS outro
+        await setReelDimmer(false);
 
-if (!bgBase || !bgFree) return;
+        // extra safety (no harm)
+        reelDimmer.alpha = 0;
+        reelDimmer.visible = false;
 
+        // ✅ Now fsOutro flag is definitely cleared (and plaque is allowed again)
+        layoutMultiplierPlaque();
+        uiController.restoreUiAfterFsOutro();
+        root.sortChildren();
 
-        bgBase.visible = false;
-        bgBase.alpha = 0;
+        // (optional) if you want it to “snap show” no matter what:
+        multPlaqueLayer.visible = true;
+      })();
 
-        bgFree.visible = true;
-        bgFree.alpha = 1;
+      clearSmokeNow();
 
-        setFsOverlay(false, 0.72, 8, FS_OVERLAY_FADE_OUT_MS);
-        await waitMs(FS_BG_TO_CORE_PAUSE_MS);
-        showGameCoreDelayed(120, 360, 0.9);
-        playMusicWhenUnlocked("music_fs", 450);
-        fsCarCooldown = 0.6; // wait ~0.6s before car can spawn
+      setReelHouseForMode("BASE");
+      void setBackgroundForMode("BASE", true);
+      playMusicWhenUnlocked("music_base", 450);
 
-        await waitMs(220);
-        void doSpin();
+      snowFxEnabled = false;
+      clearSnowNow();
+      leafFxEnabled = true;
+      cloudFxEnabled = true;
+      seedCloudFx(6);
+      cloudSpawnAcc = 0;
+      smokeFxEnabled = true;
+
+      leafSpawnAcc = 0;
+      smokeSpawnAcc = 0;
+
+      state.game.returningFromFreeSpins = true;
+
+      setMult(LADDER[plaqueIdx] ?? 1);
+
+      void (async () => {
+        await animatePlaqueReturnToBase();
+        state.game.returningFromFreeSpins = false;
+
+        // 🔥 Wait for layout + anchors to stabilize
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+
+          });
+        });
+      })();
+
+      gameCore.alpha = 1;
+      (gameCore as any).eventMode = "auto";
+
+      stopCoinShower(true);
+      state.overlay.bigWin = false;
+      return;
+    }
+
+      // =====================
+      // FS INTRO: click continues (DELAY SPIN UNTIL FADE COMPLETE)
+      // =====================
+      if (!state.overlay.fsIntro) return;
+      if (fsIntroContinueInFlight) return;
+      fsIntroContinueInFlight = true;
+
+      audio?.playSfx?.("fs_click", 1.0);
+
+      // prevent double-trigger while fading (but keep the handler callable in dev)
+      // We use the guard above; eventMode stays clickable until we start fading out.
+
+      void (async () => {
+        try {
+          // 1️⃣ play tractor exit first (same timing you already use)
+          if (isMobilePortraitUILayout(__layoutDeps)) {
+            await playFsTractorExitPortrait(3000);
+          } else {
+            await playFsTractorExit(3000);
+          }
+
+          // 2️⃣ switch background
+          await setBackgroundForMode("FREE_SPINS", true);
+
+          if (!bgBase || !bgFree) return;
+
+          bgBase.visible = false;
+          bgBase.alpha = 0;
+
+          bgFree.visible = true;
+          bgFree.alpha = 1;
+
+          // 3️⃣ CRITICAL: WAIT for dimmer fade-out to FINISH
+          fsDimmer.eventMode = "none"; // now block further taps during the fade
+          await new Promise<void>((resolve) => {
+            setFsOverlay(false, 0.72, 8, FS_OVERLAY_FADE_OUT_MS);
+            setTimeout(resolve, FS_OVERLAY_FADE_OUT_MS);
+          });
+
+          // 4️⃣ NOW mark intro finished (this unblocks playSpin)
+          state.overlay.fsIntro = false;
+
+          // 5️⃣ reveal core AFTER fade completes
+          await waitMs(FS_BG_TO_CORE_PAUSE_MS);
+          showGameCoreDelayed(120, 360, 0.9);
+          playMusicWhenUnlocked("music_fs", 450);
+
+          fsCarCooldown = 0.6;
+        } finally {
+          // if the intro is still up for some reason, allow trying again
+          if (state.overlay.fsIntro) {
+            fsDimmer.eventMode = "static";
+          }
+          fsIntroContinueInFlight = false;
+        }
       })();
     });
 
@@ -8902,9 +10025,24 @@ if (!bgBase || !bgFree) return;
       return app.screen.height + FS_CONTINUE_OFFSCREEN_PAD;
     }
 
-    function fsContinueTargetY() {
-      return app.screen.height * FS_CONTINUE_TARGET_Y_N;
-    }
+function fsContinueTargetY() {
+  const H = app.screen.height;
+
+  let y = H * FS_CONTINUE_TARGET_Y_N;
+
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    const safeB = safeInsetBottomPx?.() ?? 0;
+    const PAD = 0;
+
+    const halfH = (fsContinueText.getBounds().height || fsContinueText.height || 0) * 0.5;
+    const maxY = (H - safeB - PAD) - halfH;
+
+    y = Math.min(y, maxY);
+  }
+
+  return y;
+}
+
 
     function layoutFsContinueX() {
       fsContinueText.x = app.screen.width / 2;
@@ -8919,9 +10057,24 @@ if (!bgBase || !bgFree) return;
       return app.screen.height + BIGWIN_CONTINUE_OFFSCREEN_PAD;
     }
 
-    function bigWinContinueTargetY() {
-      return app.screen.height * BIGWIN_CONTINUE_TARGET_Y_N;
-    }
+   function bigWinContinueTargetY() {
+  const H = app.screen.height;
+
+  let y = H * BIGWIN_CONTINUE_TARGET_Y_N;
+
+  if (isMobileLandscapeUILayout(__layoutDeps)) {
+    const safeB = safeInsetBottomPx?.() ?? 0;
+    const PAD = 0;
+
+    const halfH = (bigWinContinue.getBounds().height || bigWinContinue.height || 0) * 0.5;
+    const maxY = (H - safeB - PAD) - halfH;
+
+    y = Math.min(y, maxY);
+  }
+
+  return y;
+}
+
 
     function layoutBigWinContinueX() {
       bigWinContinue.x = app.screen.width / 2;
@@ -8965,7 +10118,8 @@ if (!bgBase || !bgFree) return;
 
     function showFsContinue(on: boolean, ms = 320) {
       layoutFsContinueX();
-
+const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+fsContinueText.scale.set(IS_TINY_VIEW ? 0.5 : 1); // 🔧 0.70..0.85
       const offY = fsContinueOffY();
       const targetY = fsContinueTargetY();
 
@@ -9694,24 +10848,49 @@ gameCore.sortChildren();
     });
     forceMicro5(studioTag);
     studioTag.anchor.set(0.5);
-   studioTag.zIndex = 1700; // now on root, screen-space
+   studioTag.zIndex = 5; // now on root, screen-space
     studioTag.eventMode = "none";
     root.addChild(studioTag);
 root.sortChildren();
 
 function layoutStudioTag() {
-  // 🚫 NEVER show studio tag during splash / boot / loader (ALL devices)
+  // 🚫 NEVER show studio tag during any blocking overlay/menu
   if (
-  state.overlay.splash ||
-  state.overlay.boot ||
-  state.overlay.startup ||   // ✅ ADD THIS
-  loadingLayer?.visible
-) {
-  studioTag.visible = false;
-  studioTag.alpha = 0;
-  return;
-}
+    state.overlay.splash ||
+    state.overlay.boot ||
+    state.overlay.startup ||
+    loadingLayer?.visible ||
 
+    // ✅ overlays you mentioned
+    state.overlay.fsIntro ||
+    state.overlay.fsOutro ||
+    state.overlay.fsOutroPending ||
+    state.overlay.bigWin ||
+
+
+   
+    (autoMenuApi?.isOpen?.() ?? false)
+  ) {
+    studioTag.visible = false;
+    studioTag.alpha = 0;
+    return;
+  }
+
+  // ✅ MAIN GAME RULE:
+  // Hide on: tablet portrait, tablet landscape, mobile landscape
+  // Show on: desktop, mobile portrait
+  const hideInMainGame =
+    isMobileLandscapeUILayout(__layoutDeps) ||
+    isTabletPortrait(__layoutDeps) ||
+    isTabletLandscape(__layoutDeps);
+
+  if (hideInMainGame) {
+    studioTag.visible = false;
+    studioTag.alpha = 0;
+    return;
+  }
+
+  // ---- existing positioning for desktop + mobile portrait ----
   const safeT = safeInsetTopPx?.() ?? 0;
 
   studioTag.anchor.set(0, 0);
@@ -9721,8 +10900,16 @@ function layoutStudioTag() {
 
   studioTag.position.set(Math.round(x), Math.round(y));
   studioTag.alpha = 0.85;
-  studioTag.scale.set(isMobilePortraitUILayout(__layoutDeps) ? 0.90 : 0.95);
+
+  // ✅ scale tweak (desktop slightly smaller)
+  studioTag.scale.set(isMobilePortraitUILayout(__layoutDeps) ? 0.90 : 0.80);
+if (isMobilePortraitUILayout(__layoutDeps)) {
+  studioTag.scale.set(studioTag.scale.x * 0.6);
 }
+  studioTag.visible = true;
+}
+
+
 
 
 
@@ -9953,6 +11140,7 @@ const b = gridMask.getBounds(); // ✅ exact visible reel window
   const PAD_Y = 18;                 // vertical padding stays “reel-ish”
   const SIDE_MARGIN = 14;           // device edge margin in portrait
   const PAD_X_DESKTOP = 18;         // original desktop padding
+  const PAD_Y_DESKTOP = 32;
 
   reelFlash.clear();
 
@@ -9971,16 +11159,19 @@ const b = gridMask.getBounds(); // ✅ exact visible reel window
   }
 
   // desktop / non-portrait: keep original behavior
-  const pad = PAD_X_DESKTOP;
-  reelFlash
-    .rect(
-      Math.round(b.x - pad),
-      Math.round(b.y - pad),
-      Math.round(b.width + pad * 2),
-      Math.round(b.height + pad * 2)
-    )
-    .fill(0xffffff);
-}
+ // desktop / non-portrait: custom X/Y padding
+const padX = PAD_X_DESKTOP;
+const padY = PAD_Y_DESKTOP;
+
+reelFlash
+  .rect(
+    Math.round(b.x - padX),
+    Math.round(b.y - padY),
+    Math.round(b.width + padX * 2),
+    Math.round(b.height + padY * 2)
+  )
+  .fill(0xffffff);
+  }
 
 
     gridLayer.sortableChildren = true;
@@ -10019,6 +11210,8 @@ multPlaqueLayer.zIndex = 1600;
 root.addChild(multPlaqueLayer);
 multPlaqueLayer.visible = false;
 root.sortChildren();
+// ✅ expose plaque layer so tiny-view layout can nudge it without touching other modes
+(__layoutDeps as any).multPlaqueLayer = multPlaqueLayer;
 
 // ✅ SAFETY: never allow ladder plaque during FS intro/outro (even if some layout re-enables it)
 addSystem(() => {
@@ -10665,6 +11858,7 @@ if (dir === 1) {
     restyleAllSlots();
 
 let allowGameTitle = false;
+let snapTitleAfterFsReturn = false;
     // =====================
     // TITLE DROP-IN (boot + return-to-base)
     // =====================
@@ -10694,14 +11888,19 @@ let allowGameTitle = false;
 
 let titleDropToken = 0;
    function animateTitleDropIn(ms = TITLE_DROP_MS) {
-    // ✅ MOBILE PORTRAIT: never show the PNG title
-if (isMobilePortraitUILayout(__layoutDeps)) {
+// ✅ MOBILE PORTRAIT + TABLET PORTRAIT: never show the PNG title
+const tabletPort =
+  (isTabletPortrait?.(__layoutDeps) ?? false) ||
+  ((isTabletLike?.(__layoutDeps) ?? false) && app.screen.height >= app.screen.width);
+
+if (isMobilePortraitUILayout(__layoutDeps) || tabletPort) {
   allowGameTitle = false;
   titleDropActive = false;
   gameTitle.visible = false;
   gameTitle.alpha = 0;
   return;
 }
+
   allowGameTitle = true; // ✅ safety: any drop-in call should permit title visibility
 
 
@@ -10774,12 +11973,61 @@ applyGameTitleScaleFromBase(); // ✅ uses titleBaseScale and cancels gameCore z
   );
 
 }
+function showTitleAtRestAndFloat() {
+  // ✅ MOBILE PORTRAIT + TABLET PORTRAIT: never show the PNG title
+  const tabletPort =
+    (isTabletPortrait?.(__layoutDeps) ?? false) ||
+    ((isTabletLike?.(__layoutDeps) ?? false) && app.screen.height >= app.screen.width);
+
+  if (isMobilePortraitUILayout(__layoutDeps) || tabletPort) {
+    allowGameTitle = false;
+    titleDropActive = false;
+    gameTitle.visible = false;
+    gameTitle.alpha = 0;
+    return;
+  }
+
+  allowGameTitle = true;
+
+  // Cancel any in-flight drop
+  titleDropToken++;
+
+  // Make sure layout computes titleBaseX/titleBaseY for current view
+  layoutMultiplierPlaque();
+
+  // Put it immediately in place
+  gameTitle.visible = true;
+  gameTitle.alpha = 1;
+  gameTitle.rotation = 0;
+
+  gameTitle.x = Math.round(titleBaseX || gameTitle.x);
+  gameTitle.y = Math.round(titleBaseY || gameTitle.y);
+
+  // Start (or resume) the float smoothly
+  titleDropActive = false;
+  titleFloatT = 0;
+
+  // If you want it to fade the float in (nice), ramp it quickly
+  titleFloatBlend = 0;
+  tween(
+    240, // 🔧 quick ramp (try 180..320)
+    (k) => {
+      titleFloatBlend = Math.max(0, Math.min(1, k));
+    },
+    () => {
+      titleFloatBlend = 1;
+    }
+  );
+}
 
 
 
 function layoutMultiplierPlaque() {
   
- 
+ const tabletPort =
+  (isTabletPortrait?.(__layoutDeps) ?? false) ||
+  ((isTabletLike?.(__layoutDeps) ?? false) && app.screen.height >= app.screen.width);
+
 
   // -------------------------
   // ✅ ALWAYS LAYOUT THE TITLE FIRST (so drop-in has a real target)
@@ -10802,8 +12050,8 @@ const TITLE_BLOCKED =
   state.ui.settingsOpen ||
   state.ui.buyMenuOpen;
 
-// ✅ HARD RULE: never show title in MOBILE PORTRAIT
-if (isMobilePortraitUILayout(__layoutDeps)) {
+// ✅ HARD RULE: never show title in MOBILE PORTRAIT OR TABLET PORTRAIT
+if (isMobilePortraitUILayout(__layoutDeps) || tabletPort) {
   gameTitle.visible = false;
   gameTitle.alpha = 0;
 } else if (TITLE_BLOCKED && !titleDropActive) {
@@ -10831,6 +12079,24 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
   gameTitle.x = Math.round(A.right + ox);
   const titleTargetY = Math.round(A.cy + oy);
 
+
+
+// ✅ MOBILE LANDSCAPE ONLY: push title PNG DOWN (existing behavior)
+let finalTitleY = titleTargetY;
+
+if (isMobileLandscapeUILayout(__layoutDeps)) {
+  const LAND_TITLE_Y_DROP = Math.round(cellSize * 0.9); // keep your existing
+  finalTitleY += LAND_TITLE_Y_DROP;
+}
+
+// ✅ TINY VIEW ONLY: push title PNG DOWN (NEW)
+const IS_TINY_VIEW = !!(__layoutDeps as any).IS_TINY_VIEW;
+if (IS_TINY_VIEW) {
+  const TINY_TITLE_Y_DROP = 60; // 🔧 try 40..90
+  finalTitleY += TINY_TITLE_Y_DROP;
+}
+
+
   const W = app.screen.width;
   const PAD_R = 12;
   const b = gameTitle.getBounds();
@@ -10843,12 +12109,13 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
     gameTitle.x = Math.round(A.right + ox);
   }
 
-  titleBaseX = gameTitle.x;
-  titleBaseY = titleTargetY;
+titleBaseX = gameTitle.x;
+titleBaseY = finalTitleY;
 
-  if (!titleDropActive) {
-    gameTitle.y = titleTargetY;
-  }
+
+// 🚫 DO NOT directly set gameTitle.y here.
+// Drop + float system owns Y completely.
+
 }
 
 
@@ -10877,38 +12144,148 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
 
 
   
+// ✅ TABLET PORTRAIT ONLY — pin plaque to top-right of device (screen space)
+if (isTabletPortrait(__layoutDeps)) {
+  multPlaqueLayer.visible = true;
+  // ✅ Put plaque ABOVE gameCore, ABOVE bottom UI, but BELOW menu overlays
+  // uiLayer is 8000 in your code, so this sits above UI but still leaves room for menus.
+  multPlaqueLayer.zIndex = 1600;
+  root.sortChildren();
+
+  const W = app.screen.width;
+  const safeTop = safeInsetTopPx?.() ?? 0;
+
+  const PAD_X = 18;
+  const PAD_Y = 18;
+  const SCALE = 1.0;
+
+  multPlaqueLayer.scale.set(SCALE);
+
+  // Pivot to TOP-RIGHT of the actual plaque content
+  const lb = multPlaque.getLocalBounds(); // ✅ use the inner container
+  multPlaqueLayer.pivot.set(lb.x + lb.width, lb.y);
+
+  multPlaqueLayer.x = Math.round(W - PAD_X);
+  multPlaqueLayer.y = Math.round(safeTop + PAD_Y);
 
 
 
- // ✅ MOBILE PORTRAIT — PIN TO TOP-RIGHT OF SCREEN
+  // ✅ clip offscreen vertically (show ~60%)
+  const VISIBLE_FRAC = 0.60;
+  const hiddenFrac = 1 - VISIBLE_FRAC;
+
+  const lb2 = multPlaque.getLocalBounds();
+  const plaqueHLocal = lb2.height || 0;
+  const plaqueH = plaqueHLocal * (multPlaqueLayer.scale.y || 1);
+
+  multPlaqueLayer.y = Math.round(multPlaqueLayer.y - plaqueH * hiddenFrac);
+
+  applyPlaqueState(plaqueIdx);
+  restyleAllSlots();
+  applyPlaqueSlotVisibility(plaqueIdx);
+  return;
+}
+
+
+
+
+
+// ✅ MOBILE PORTRAIT — PIN TO TOP-RIGHT OF SCREEN + CLIP OFFSCREEN (show ~60%)
 if (isMobilePortraitUILayout(__layoutDeps)) {
   multPlaqueLayer.visible = true;
 
-    // ✅ PORTRAIT: put plaque BEHIND the reel house (gameCore is 1500)
+  // (keep your zIndex choice for portrait if you want it behind the reel house)
   multPlaqueLayer.zIndex = 1400;
   root.sortChildren();
 
   const W = app.screen.width;
+  const safeTop = safeInsetTopPx?.() ?? 0;
 
-  // ✅ SAFE AREA (notch / island aware)
-  const safeTop = safeInsetTopPx();
-  const safeRight = 0; // iOS usually only needs top, but keep here for symmetry
-
-  // 🔧 TUNING (adjust once, works everywhere)
-  const PAD_X = 70;    // distance from right edge
-  const PAD_Y = -40;    // distance from top edge
-  const SCALE = 0.6;   // ladder size in portrait
+  const PAD_X = 18;     // 🔧 right padding
+  const PAD_Y = 18;     // 🔧 top padding
+  const SCALE = 0.60;   // 🔧 keep your portrait scale (adjust if you like)
 
   multPlaqueLayer.scale.set(SCALE);
 
-  // ✅ Pin to top-right (screen space)
-  multPlaqueLayer.x = Math.round(
-    W - safeRight - PAD_X
-  );
+  // ✅ true top-right anchor (use plaque content bounds)
+  const lb = multPlaque.getLocalBounds();
+  multPlaqueLayer.pivot.set(lb.x + lb.width, lb.y);
 
-  multPlaqueLayer.y = Math.round(
-    safeTop + PAD_Y
-  );
+  // pin to device top-right
+  multPlaqueLayer.x = Math.round(W - PAD_X);
+  multPlaqueLayer.y = Math.round(safeTop + PAD_Y);
+
+  // ✅ clip vertically: push up so ~40% is offscreen (show ~60%)
+  const VISIBLE_FRAC = 0.60;          // 🔧 change to taste
+  const hiddenFrac = 1 - VISIBLE_FRAC;
+
+  const plaqueHLocal = lb.height || 0;
+  const plaqueH = plaqueHLocal * (multPlaqueLayer.scale.y || 1);
+
+  multPlaqueLayer.y = Math.round(multPlaqueLayer.y - plaqueH * hiddenFrac);
+
+  applyPlaqueState(plaqueIdx);
+  restyleAllSlots();
+  applyPlaqueSlotVisibility(plaqueIdx);
+  return;
+}
+
+// ✅ MOBILE LANDSCAPE + TABLET LANDSCAPE — LEFT OF REEL WINDOW (STABLE)
+if (isMobileLandscapeUILayout(__layoutDeps) || isTabletLandscape(__layoutDeps)) {
+  multPlaqueLayer.visible = true;
+  multPlaqueLayer.alpha = 1;
+
+  multPlaqueLayer.zIndex = 1600;
+  root.sortChildren();
+    // ✅ IMPORTANT: portrait pins by changing pivot — reset it for landscape
+  multPlaqueLayer.pivot.set(0, 0);
+
+
+  // ✅ use the reel window WORLD rect computed in layoutAll.ts
+  const rw = (__layoutDeps as any).reelWindowWorld as
+    | { left: number; top: number; right: number; bottom: number }
+    | undefined;
+
+  // Fallback: if missing for any reason, bail out to avoid jumps
+  if (!rw) return;
+
+  // ---- SCALE (same as your desktop approach) ----
+  const desiredTotalH = cellSize * 4.1;
+  const baseTotalH = PLAQUE_H * 4 + PLAQUE_GAP * 3;
+
+  let s = desiredTotalH / Math.max(1, baseTotalH);
+
+  const minS = isMobileLandscapeUILayout(__layoutDeps) ? 0.55 : 0.65;
+  const maxS = isMobileLandscapeUILayout(__layoutDeps) ? 1.00 : 1.10;
+  s = Math.max(minS, Math.min(maxS, s));
+  multPlaqueLayer.scale.set(s);
+
+    // ---- POSITION (LEFT of REEL HOUSE, aligned to reel house) ----
+  const A = getReelAnchor(reelHouse);
+
+  // ✅ IMPORTANT: portrait pins by changing pivot — reset it for landscape
+  multPlaqueLayer.pivot.set(0, 0);
+
+  // stable local measurements (don’t use bounds)
+  const localRight = PLAQUE_RIGHT_X; // right edge of plaque content (no arrow)
+
+  // 🔧 TUNING
+  const GAP_X = Math.round(cellSize * 0.18) + 12; // try 10..28
+  const Y_FRAC = 0.10;                            // 0=top, 0.5=center
+
+  // x = reelHouse.left - gap - plaqueWidth
+  multPlaqueLayer.x = Math.round(A.left - GAP_X - localRight * s);
+
+  // y = reelHouse.top + fraction of reel height
+  const reelH = (A.bottom - A.top);
+  multPlaqueLayer.y = Math.round(A.top + reelH * Y_FRAC);
+
+  // ✅ clamp so it never disappears off the left/top
+  multPlaqueLayer.x = Math.max(8, multPlaqueLayer.x);
+  multPlaqueLayer.y = Math.max(8, multPlaqueLayer.y);
+
+
+
 
   applyPlaqueState(plaqueIdx);
   restyleAllSlots();
@@ -10921,9 +12298,15 @@ if (isMobilePortraitUILayout(__layoutDeps)) {
 
 
 
+
+
+
+
 // ✅ DESKTOP / NON-MOBILE: anchor to reel house (bounds-correct)
 multPlaqueLayer.zIndex = 1600;
 multPlaqueLayer.visible = true;
+// ✅ IMPORTANT: portrait pins by changing pivot — reset it for desktop
+multPlaqueLayer.pivot.set(0, 0);
 
 
 const A = getReelAnchor(reelHouse);
@@ -10944,7 +12327,13 @@ const localRight = PLAQUE_RIGHT_X; // right edge of the plaque box (NOT includin
 const localTop = 0;               // plaque content starts at y=0 in its local space
 
 multPlaqueLayer.x = Math.round(A.left - GAP_X - localRight * s);
-multPlaqueLayer.y = Math.round(A.top + A.b.height * Y_FRAC - localTop * s);
+let y = Math.round(A.top + A.b.height * Y_FRAC - localTop * s);
+
+
+
+
+
+
 
 
 
@@ -10953,6 +12342,17 @@ multPlaqueLayer.y = Math.round(A.top + A.b.height * Y_FRAC - localTop * s);
 applyPlaqueState(plaqueIdx);
 restyleAllSlots();
 applyPlaqueSlotVisibility(plaqueIdx);
+
+// ✅ TINY VIEW ONLY: apply lift to the y value (NOT the container after)
+const IS_TINY_VIEW = !!(__layoutDeps as any).IS_TINY_VIEW;
+if (IS_TINY_VIEW && multPlaqueLayer.visible) {
+  const TINY_PLAQUE_Y_LIFT = 60; // 🔧 try 30..180
+  y = Math.round(y - TINY_PLAQUE_Y_LIFT);
+}
+
+// ✅ assign ONCE at the end
+multPlaqueLayer.y = y;
+
 
 }
 
@@ -11064,6 +12464,8 @@ let betDownBtnPixi: any = null;
     // ✅ enable UI interaction once visible
     uiLayer.alpha = 1;
     uiLayer.eventMode = "auto";
+
+         layoutStudioTag();
     
   }
 );
@@ -11133,17 +12535,39 @@ const UI_VALUE_STYLE = localizeStyle({
     });
 
     
-// ✅ Apply Stake wallet balance once UI exists
+// ✅ Seed wallet balance from authenticate ONCE (never overwrite later)
 if (isRgs) {
   void (async () => {
     await (rgsAuthP ?? Promise.resolve());
-   if (rgsAuthed && rgsInitialBalance != null && !state.ui.spinning) {
-  state.bank.balance = rgsInitialBalance;
+    if (__rgsBalanceSeededOnce) return;
+
+    if (rgsAuthed && rgsInitialBalance != null) {
+      __rgsBalanceSeededOnce = true;
+
+      state.bank.balance = rgsInitialBalance;
       balanceLabel.text = fmtMoney(state.bank.balance);
-      uiController?.refreshSpinAffordability?.();    }
+      uiController?.refreshSpinAffordability?.();
+    }
   })();
 }
+function showFatalBootError(msg: string, detail?: string) {
+  const box = document.createElement("div");
+  box.style.cssText =
+    "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;" +
+    "background:#000;z-index:99999999;color:#fff;font-family:system-ui;padding:24px;text-align:center;";
 
+  box.innerHTML =
+    `<div style="max-width:720px;line-height:1.45">
+      <div style="font-size:22px;font-weight:700;margin-bottom:12px">Session Error</div>
+      <div style="white-space:pre-wrap;font-size:16px;opacity:0.92">${msg}</div>
+      ${detail ? `<div style="margin-top:14px;font-size:12px;opacity:0.55;white-space:pre-wrap">${detail}</div>` : ""}
+    </div>`;
+
+  document.body.appendChild(box);
+
+  document.body.style.pointerEvents = "none";
+  box.style.pointerEvents = "auto";
+}
 
 
 
@@ -12364,17 +13788,13 @@ bigWinItemsSheet = Assets.get(BIGWIN_ITEMS_ATLAS_URL) as any;
       SPIN_UP,
       SPIN_HOVER,
       SPIN_DOWN,
-      () => {
+     async () => {
           // ✅ RGS AUTH GUARD (ADD THIS)
     if (isRgs && !rgsReady) {
       console.warn("[RGS] spin blocked — not authenticated yet");
       return;
     } 
-    // ✅ RGS: do not allow play spam while a round is "in flight"
-if (isRgs && rgsRoundLock) {
-  console.warn("[RGS] spin blocked — round still active (lock)");
-  return;
-}
+
         // ✅ If auto is running, SPIN becomes "STOP AUTO"
 if (state.ui.auto) {
   stopAutoNow("spin button (stop auto)");
@@ -12382,6 +13802,13 @@ if (state.ui.auto) {
   return;
   
 }
+
+    // ✅ RGS: do not allow play spam while a round is "in flight"
+if (isRgs && rgsRoundLock) {
+  console.warn("[RGS] spin blocked — round still active (lock)");
+  return;
+}
+
 
 
  // ✅ If auto is ARMED (picked a value), SPIN becomes "PLAY AUTO"
@@ -12420,7 +13847,33 @@ uiController.applyUiLocks();
           return;
         }
 
-        void doSpin();
+       // ✅ REPLAY: play the loaded replay instead of placing a bet
+if (getReplayParams() && pendingReplayRes) {
+  const r = pendingReplayRes;
+
+  // prevent double-click / re-entry
+  pendingReplayRes = null;
+
+  try {
+    await playSpin(r);
+  } finally {
+  // allow “Play Again”
+  pendingReplayRes = r;
+
+  // ✅ keep replay UI showing PLAY skin
+  state.ui.auto = false;
+  state.ui.autoArmed = true;
+  state.ui.autoPendingRounds = -1;
+  refreshAutoSpinSpinButton();
+}
+
+
+  return;
+}
+
+// Normal mode
+void doSpin();
+
       
       },
        { clickSfx: null } // ✅ no ui_click on SPIN
@@ -12712,6 +14165,9 @@ refreshLocalizedText();
       false,
       (isOn) => {
       state.ui.settingsOpen = isOn;
+
+      layoutStudioTag();
+root.sortChildren();
       // 🔧 Nudge the ON button slightly left
     const SETTINGS_ON_OFFSET_X = -2; // tweak: -4 to -12 feels good
 
@@ -12809,10 +14265,12 @@ setMusicValue01: (v01: number) => audio?.setMusicVolume01?.(v01),
 
 
     const buyBtnPixi = makePngButton(
+      
       BUY_UP,
       BUY_HOVER,
       BUY_DOWN,
    () => {
+    if (getReplayParams()) return;
     if (state.ui.spinning) return; // ✅ block during spin
     stopAutoNow("buy button");
     
@@ -12823,6 +14281,9 @@ if (state.ui.settingsOpen) {
 }
 
     buyMenuApi?.openBuy?.();
+    state.ui.buyMenuOpen = true; // ✅ if your buy menu doesn't already set this
+layoutStudioTag();
+root.sortChildren();
   }
 
     );
@@ -12941,6 +14402,7 @@ buyBtnPixi.hitArea = new Rectangle(
       state.ui.auto,
       
       (isOn) => {
+        if (getReplayParams()) return;
         // If turning ON auto, check funds first (BASE only)
         if (isOn) {
           const bet = state.bank.betLevels[state.bank.betIndex];
@@ -12993,18 +14455,20 @@ function stopAutoNow(reason = "") {
 
 
 (autoBtnPixi as any).setTapHandler?.(() => {
-  if (state.ui.spinning) return; // ✅ block during spin
+  if (getReplayParams()) return;
   if (state.ui.settingsOpen || state.ui.buyMenuOpen) return;
 
-  // ✅ If auto is currently running, tapping AUTO stops it.
   if (state.ui.auto) {
     stopAutoNow("auto button");
     return;
   }
 
-  // Otherwise open the menu to choose rounds
+  // only block *opening the menu* while spinning
+  if (state.ui.spinning) return;
+
   autoMenuApi?.open?.();
 });
+
 
 
 // Make the AUTO button open the auto menu instead of toggling immediately
@@ -13054,10 +14518,18 @@ function stopAutoNow(reason = "") {
     stopAutoNow("bet down");
 
     if (state.bank.betIndex > 0) {
-      state.bank.betIndex--;
-      updateBetUI();
-      uiController?.refreshSpinAffordability?.();      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
-    }
+  state.bank.betIndex--;
+
+  // ✅ persist selected bet per currency
+  try {
+    const cur = String(rgsClient.getLastAuth()?.balance?.currency ?? "USD").toUpperCase();
+    localStorage.setItem(`bf_lastBetIndex_${cur}`, String(state.bank.betIndex));
+  } catch {}
+
+  updateBetUI();
+  uiController?.refreshSpinAffordability?.();
+  if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
+}
   }
 );
 
@@ -13070,10 +14542,18 @@ betUpBtnPixi = makePngButton(
     stopAutoNow("bet up");
 
     if (state.bank.betIndex < state.bank.betLevels.length - 1) {
-      state.bank.betIndex++;
-      updateBetUI();
-      uiController?.refreshSpinAffordability?.();      if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
-    }
+  state.bank.betIndex++;
+
+  // ✅ persist selected bet per currency
+  try {
+    const cur = String(rgsClient.getLastAuth()?.balance?.currency ?? "USD").toUpperCase();
+    localStorage.setItem(`bf_lastBetIndex_${cur}`, String(state.bank.betIndex));
+  } catch {}
+
+  updateBetUI();
+  uiController?.refreshSpinAffordability?.();
+  if (state.ui.buyMenuOpen) buyMenuApi?.layoutBuy?.();
+}
   }
 );
 
@@ -13209,30 +14689,19 @@ installUiInputController({
 
 
 
-
-   
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 function winPopupScaleMul() {
-  // tweak this number
-  return isMobileUILayout(__layoutDeps) ? 0.72 : 1.0;
+  const IS_TINY_VIEW = !!(__layoutDeps as any)?.IS_TINY_VIEW;
+  if (IS_TINY_VIEW) return 0.45; // keep tiny unchanged
+
+  // ✅ mobile portrait ONLY: smaller popups
+  if (isMobilePortraitUILayout(__layoutDeps)) return 0.5; // 🔧 try 0.55–0.65
+
+  // ✅ keep mobile landscape unchanged (use 0.72 as it is now)
+  if (isMobileLandscapeUILayout(__layoutDeps)) return 0.5;
+
+  // desktop/tablet unchanged
+  return 1.0;
 }
-
-
 
 
 
@@ -13243,10 +14712,11 @@ function ensureBetParentingForLayout() {
   // ✅ called during early boot/layout; buttons may not exist yet
   if (!betUpBtnPixi || !betDownBtnPixi || !betAmountUI || !betTitleLabel) return;
 
-  const portrait = isMobilePortraitUILayout(__layoutDeps);
+ const portrait = isMobilePortraitUILayout(__layoutDeps);
+const landMobile = isMobileLandscapeUILayout(__layoutDeps);
 
   if (portrait) {
-    // PORTRAIT: everything goes into betGroup
+   // PORTRAIT: everything goes into betGroup
     if (betTitleLabel.parent !== betGroup) betGroup.addChild(betTitleLabel);
     if (betAmountUI.parent !== betGroup) betGroup.addChild(betAmountUI);
     if (betUpBtnPixi.parent !== betGroup) betGroup.addChild(betUpBtnPixi);
@@ -13256,7 +14726,7 @@ function ensureBetParentingForLayout() {
     betDisplayGroup.visible = false;
     betControlsGroup.visible = false;
   } else {
-    // DESKTOP: split groups
+    // ✅ DESKTOP + MOBILE LANDSCAPE: split groups
     if (betTitleLabel.parent !== betDisplayGroup) betDisplayGroup.addChild(betTitleLabel);
     if (betAmountUI.parent !== betDisplayGroup) betDisplayGroup.addChild(betAmountUI);
 
@@ -13322,7 +14792,9 @@ const { layoutUI } = makeLayoutUI({
 
 function layoutUIMobile(panelW: number, targetH: number) {
 
-  
+  // ✅ MUST be first so betGroup really contains the bet items in portrait
+ensureBetParentingForLayout();
+
   
 // ===== WIN UI (hidden in portrait mobile) =====
 winUI.visible = false;
@@ -13404,10 +14876,10 @@ centerPivot(betAmountUI);
 
 
 // portrait-only: gap between bet arrows and pill
-const BET_ARROW_TO_PILL_MUL = 0.78; // 🔧 0.70..0.85
+const BET_ARROW_TO_PILL_MUL = 0.5; // 🔧 0.70..0.85
 
 // ✅ PORTRAIT ONLY: move bet arrows left (more negative = further left)
-const BET_ARROWS_X_OFFSET_PX = 18; // 🔧 try 8..30
+const BET_ARROWS_X_OFFSET_PX = 2; // 🔧 try 8..30
 
 const BET_BTN_X   = -betAmountUI.width * BET_ARROW_TO_PILL_MUL - BET_ARROWS_X_OFFSET_PX;
 const BET_BTN_GAP = 25; // ✅ fixed gap in px (portrait only). Tweak 28..44
@@ -13474,16 +14946,16 @@ const SETTINGS_PAD_L = 10;  // 🔧 left padding from device edge
 const SETTINGS_PAD_Y = -6;  // 🔧 vertical nudge (negative = up)
 
 const sb = settingsBtnPixi.getLocalBounds(); // assumes centerPivot(settingsBtnPixi) was called
+
 const SETTINGS_X = Math.round(SAFE_L + SETTINGS_PAD_L + sb.width * 0.5);
 const SETTINGS_Y = Math.round(HUD_Y + SETTINGS_PAD_Y);
 
 settingsBtnPixi.position.set(SETTINGS_X, SETTINGS_Y);
 
 
-// BET position
-const BET_X = Math.round(w * 0.42);       // 🔧
-const BET_Y = HUD_Y;                      // 🔧
-betGroup.position.set(BET_X, BET_Y);
+
+
+
 
 // BALANCE position (✅ portrait: right aligned to device edge)
 const BAL_RIGHT_PAD = 5;                 // 🔧 distance from device right edge
@@ -13534,6 +15006,10 @@ getFsReelAnchor = () => getReelAnchor(reelHouse);
     // =====================
     // TUMBLE WIN BANNER (Gates-like)
     // =====================
+
+    function isTinyViewNow(): boolean {
+  return !!(__layoutDeps as any)?.IS_TINY_VIEW;
+}
     const tumbleBanner = new Container();
     tumbleBanner.zIndex = 4000;           // above reelhouse/grid, below overlay stuff
     tumbleBanner.visible = false;
@@ -13651,6 +15127,13 @@ function isTumbleBannerBlocked(): boolean {
 
     // Call this any time layout changes (resize / reel scaling)
 function layoutTumbleBanner() {
+    // ✅ Tiny view only: never show tumble banner
+  const IS_TINY_VIEW = !!(__layoutDeps as any).IS_TINY_VIEW;
+  if (IS_TINY_VIEW) {
+    tumbleBanner.visible = false;
+    tumbleBanner.alpha = 0;
+    return;
+  }
   
     // ✅ Don’t show tumble banner during overlays/menus that block the reels
   if (isTumbleBannerBlocked()) {
@@ -13783,6 +15266,8 @@ y = Math.min(y, maxY);
 });
 
     function setTumbleBannerText(totalSoFar: number) {
+        // ✅ Tiny view: no tumble banner text updates at all
+  if (isTinyViewNow()) return;
       tumbleBannerLabel.text = t("ui.tumbleWin");
       tumbleBannerValue.text = fmtMoney(totalSoFar);
       layoutTumbleBanner();
@@ -13797,6 +15282,12 @@ y = Math.min(y, maxY);
 
 
 async function showOrUpdateTumbleWinBanner(totalSoFar: number) {
+    // ✅ Tiny view: tumble banner is completely disabled
+  if (isTinyViewNow()) {
+    hideTumbleWinBannerNow();
+    tumbleBannerShown = false;
+    return;
+  }
    // ✅ If an overlay/menu is up, hard-hide and do nothing.
   // Prevents any 1-frame “pop back” if something calls this during overlays.
   if (isTumbleBannerBlocked()) {
@@ -13815,7 +15306,7 @@ async function showOrUpdateTumbleWinBanner(totalSoFar: number) {
 
  if (tumbleBannerShown && tumbleBanner.visible) {
   const base = tumbleBaseScale();
-  tumbleBanner.visible = true;
+  if (!isTinyViewNow()) tumbleBanner.visible = true;
   tumbleBanner.alpha = 1;
   tumbleBanner.scale.set(base * 1.05);
 
@@ -13832,7 +15323,7 @@ async function showOrUpdateTumbleWinBanner(totalSoFar: number) {
 const base = tumbleBaseScale();
 
 // First time: animate IN
-tumbleBanner.visible = true;
+if (!isTinyViewNow()) tumbleBanner.visible = true;
 tumbleBanner.alpha = 0;
 tumbleBanner.scale.set(base * 0.92);
 
@@ -13849,6 +15340,8 @@ tumbleBanner.alpha = 1;
 tumbleBanner.scale.set(base * 1.05);
 
     }
+
+
 
     // Animate OUT once the last tumble finishes
     async function hideTumbleWinBannerAfterLast(ms = 180) {
@@ -13962,15 +15455,59 @@ root.sortChildren();
       const b = reelHouse.getBounds();
       if (!Number.isFinite(b.x) || !Number.isFinite(b.y) || b.width <= 0 || b.height <= 0) return;
 
-      // =====================
-      // 🔧 MANUAL TUNING CONTROLS
-      // =====================
+// =====================
+// 🔧 MANUAL TUNING CONTROLS
+// =====================
+const isPortrait = isMobilePortraitUILayout(__layoutDeps);
+const isLand     = isMobileLandscapeUILayout(__layoutDeps);
+const isTabletL  = isTabletLandscape?.(__layoutDeps) ?? false;
 
-      const isPortrait = isMobilePortraitUILayout(__layoutDeps);
+const tabletPort = isTabletPortrait?.(__layoutDeps) ?? false;
+const tabletLand = isTabletLandscape?.(__layoutDeps) ?? false;
+const tabletAny  = (isTabletLike?.(__layoutDeps) ?? false);
 
-    // Shrink / expand relative to reel house bounds
-const GLOW_WIDTH_ADJUST  = isPortrait ? -17 : -27;   // ✅ portrait bigger
-const GLOW_HEIGHT_ADJUST = isPortrait ? -90 : -132;  // ✅ portrait bigger
+// ---------------------------
+// ✅ PER-VIEW WIDTH/HEIGHT ADJUST KNOBS (px)
+// (positive = bigger, negative = smaller)
+// ---------------------------
+
+// MOBILE PORTRAIT
+const GLOW_W_ADD_MOB_P = -17;
+const GLOW_H_ADD_MOB_P = -90;
+
+// MOBILE LANDSCAPE
+const GLOW_W_ADD_MOB_L = 0;
+const GLOW_H_ADD_MOB_L = -50;
+
+// TABLET PORTRAIT
+const GLOW_W_ADD_TAB_P = -50;  // 🔧 start point; tune
+const GLOW_H_ADD_TAB_P = -160; // 🔧 start point; tune
+
+// TABLET LANDSCAPE
+const GLOW_W_ADD_TAB_L = -70;  // 🔧 start point; tune
+const GLOW_H_ADD_TAB_L = -200; // 🔧 start point; tune
+
+// DESKTOP (everything else)
+const GLOW_W_ADD_DESK  = -27;
+const GLOW_H_ADD_DESK  = -100;
+
+// pick the correct pair
+let W_ADD = GLOW_W_ADD_DESK;
+let H_ADD = GLOW_H_ADD_DESK;
+
+if (tabletPort) {
+  W_ADD = GLOW_W_ADD_TAB_P;
+  H_ADD = GLOW_H_ADD_TAB_P;
+} else if (tabletLand) {
+  W_ADD = GLOW_W_ADD_TAB_L;
+  H_ADD = GLOW_H_ADD_TAB_L;
+} else if (isPortrait) {
+  W_ADD = GLOW_W_ADD_MOB_P;
+  H_ADD = GLOW_H_ADD_MOB_P;
+} else if (isLand) {
+  W_ADD = GLOW_W_ADD_MOB_L;
+  H_ADD = GLOW_H_ADD_MOB_L;
+}
 
 // Move glow if art is visually offset
 const OFFSET_X = 0;
@@ -13980,19 +15517,23 @@ const OFFSET_Y = 4;
 const CORNER_RADIUS = isPortrait ? 34 : 24;
 const STROKE_WIDTH  = isPortrait ? 28 : 20;
 
-      // =====================
+// ---------------------------
+// ✅ APPLY WIDTH/HEIGHT ADJUSTMENTS
+// ---------------------------
+const w = b.width  + W_ADD;
+const h = b.height + H_ADD;
 
-      const w = b.width + GLOW_WIDTH_ADJUST;
-      const h = b.height + GLOW_HEIGHT_ADJUST;
+// keep it centered around reelHouse bounds
+const x = b.x + (b.width  - w) * 0.5 + OFFSET_X;
+const y = b.y + (b.height - h) * 0.5 + OFFSET_Y;
 
-      const x = b.x + (b.width - w) / 2 + OFFSET_X;
-      const y = b.y + (b.height - h) / 2 + OFFSET_Y;
+if (w <= 0 || h <= 0) return;
 
-      if (w <= 0 || h <= 0) return;
+reelHouseGlow
+  .roundRect(x, y, w, h, CORNER_RADIUS)
+  .stroke({ width: STROKE_WIDTH, color: 0xffffff, alpha: 1 });
 
-      reelHouseGlow
-        .roundRect(x, y, w, h, CORNER_RADIUS)
-        .stroke({ width: STROKE_WIDTH, color: 0xffffff, alpha: 1 });
+
     }
 
 
@@ -14217,6 +15758,7 @@ root.sortChildren();
 
 let boostedToken = 0;
 
+
 async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
   boostedToken++;
   const token = boostedToken;
@@ -14236,14 +15778,17 @@ async function showBoostedPopup(msIn = 160, holdMs = 420, msOut = 220) {
 
   boostedText.visible = true;
   boostedText.alpha = 0;
-  boostedText.scale.set(0.85);
+const base = isMobilePortraitUILayout(__layoutDeps) ? 0.54 : 0.85;
+const peak = isMobilePortraitUILayout(__layoutDeps) ? 0.72 : 1.12;
+
+boostedText.scale.set(base);
 
   await animateMs(msIn, (t) => {
     if (token !== boostedToken) return;
     const e = easeOutBack(t, 1.1);
     if (!boostedText) return;
     boostedText.alpha = t;
-    const s = 0.85 + (1.12 - 0.85) * e;
+   const s = base + (peak - base) * e;
     boostedText.scale.set(s);
   });
 
@@ -14313,14 +15858,17 @@ async function showInfusedPopup(msIn = 160, holdMs = 420, msOut = 220) {
 
   infusedText.visible = true;
   infusedText.alpha = 0;
-  infusedText.scale.set(0.85);
+const base = isMobilePortraitUILayout(__layoutDeps) ? 0.54 : 0.85;
+const peak = isMobilePortraitUILayout(__layoutDeps) ? 0.72 : 1.12;
+
+infusedText.scale.set(base);
 
   await animateMs(msIn, (t) => {
     if (token !== infusedToken) return;
     const e = easeOutBack(t, 1.1);
     if (!infusedText) return;
     infusedText.alpha = t;
-    const s = 0.85 + (1.12 - 0.85) * e;
+    const s = base + (peak - base) * e;
     infusedText.scale.set(s);
   });
 
@@ -14564,95 +16112,97 @@ if (isMobileLandscapeUILayout(__layoutDeps)) {
 }
 
 refreshLocalizedText();
-    // --- WIN FRAME (PNG per winning symbol) ---
-    type WinFrameView = { s: Sprite };
-
-    const WIN_FRAME_PAD = 6;       // shrink frame a little inside cell
-    const winFrameViews: WinFrameView[] = [];
-
-    const WIN_FRAME_TEX = () => texExtra("win_frame.png");
-
-
-    function ensureWinFrameSprites() {
-      if (winFrameViews.length) return;
-
-      for (let i = 0; i < CELL_COUNT; i++) {
-        const s = new Sprite(WIN_FRAME_TEX());
-        s.anchor.set(0.5);
-        s.visible = false;
-
-        // Fit the frame to cell (square-ish)
-        const inner = cellSize - WIN_FRAME_PAD * 2;
-        const sx = inner / s.texture.width;
-        const sy = inner / s.texture.height;
-        const sc = Math.min(sx, sy);
-        s.scale.set(sc);
-        function rescaleWinFramesToCell() {
-  if (!winFrameViews.length) return;
-
-  const inner = Math.max(1, cellSize - WIN_FRAME_PAD * 2);
-
-  for (const v of winFrameViews) {
-    const s = v.s;
-    const tw = s.texture.width || 1;
-    const th = s.texture.height || 1;
-    const sc = Math.min(inner / tw, inner / th);
-    s.scale.set(sc);
-  }
+function winFramePadPx() {
+  // keep a tiny “inside” pad that scales with cell size
+  // (same rule in portrait + landscape)
+  return Math.max(1, Math.round(cellSize * 0.03)); // 🔧 try 0.02..0.05
 }
 
-        // Keep frames above symbols
-        s.zIndex = 9999;
+function winFrameScaleMul() {
+  // ✅ Mobile LANDSCAPE ONLY: slightly larger frames
+  if (isMobileLandscapeUILayout(__layoutDeps)) return 1; // 🔧 try 1.06..1.20
+  return 1.0;
+}
 
-        payFrameLayer.addChild(s);
-        winFrameViews.push({ s });
-      }
-    }
+// =====================
+// WIN FRAMES (per-cell overlay frame)
+// =====================
+type WinFrameView = { s: Sprite };
+
+// ✅ declare the array (it was missing)
+const winFrameViews: WinFrameView[] = [];
+
+const WIN_FRAME_TEX = () => texExtra("win_frame.png");
+
 function rescaleWinFramesToCell() {
   if (!winFrameViews.length) return;
 
-  const inner = Math.max(1, cellSize - WIN_FRAME_PAD * 2);
+  const pad = winFramePadPx();
+  const inner = Math.max(1, cellSize - pad * 2);
+  const mul = winFrameScaleMul();
 
   for (const v of winFrameViews) {
     const s = v.s;
     const tw = s.texture.width || 1;
     const th = s.texture.height || 1;
-    const sc = Math.min(inner / tw, inner / th);
+
+    const sc = Math.min(inner / tw, inner / th) * mul;
     s.scale.set(sc);
   }
 }
 
-    // Hide all frames
-    function clearWinFrames() {
-      for (const v of winFrameViews) {
-        v.s.visible = false;
-        v.s.alpha = 1;
-      }
+function ensureWinFrameSprites() {
+  if (winFrameViews.length) return;
+
+  for (let i = 0; i < CELL_COUNT; i++) {
+    const s = new Sprite(WIN_FRAME_TEX());
+    s.anchor.set(0.5);
+    s.visible = false;
+    s.alpha = 0;
+
+    // Keep frames above symbols (payFrameLayer is already above reelDimmer in your setup)
+    s.zIndex = 9999;
+
+    payFrameLayer.addChild(s);
+    winFrameViews.push({ s });
+  }
+
+  // ✅ now that they exist, size them to current cellSize
+  rescaleWinFramesToCell();
+}
+
+// Hide all frames
+function clearWinFrames() {
+  for (const v of winFrameViews) {
+    v.s.visible = false;
+    v.s.alpha = 1;
+  }
+}
+
+// Fade frames out (instead of snapping off)
+async function fadeOutWinFrames(ms = 80) {
+  const toHide = winFrameViews.filter(v => v.s.visible && v.s.alpha > 0);
+
+  if (!toHide.length) {
+    clearWinFrames();
+    return;
+  }
+
+  const starts = toHide.map(v => v.s.alpha);
+
+  await animateMs(ms, (t) => {
+    const e = easeOutCubic(t);
+    for (let i = 0; i < toHide.length; i++) {
+      toHide[i].s.alpha = starts[i] * (1 - e);
     }
-    // Fade frames out (instead of snapping off)
-    async function fadeOutWinFrames(ms = 80) {
-      const toHide = winFrameViews.filter(v => v.s.visible && v.s.alpha > 0);
+  });
 
-      if (!toHide.length) {
-        clearWinFrames();
-        return;
-      }
+  for (const v of toHide) {
+    v.s.alpha = 0;
+    v.s.visible = false;
+  }
+}
 
-      const starts = toHide.map(v => v.s.alpha);
-
-      await animateMs(ms, (t) => {
-        const e = easeOutCubic(t);
-        for (let i = 0; i < toHide.length; i++) {
-          toHide[i].s.alpha = starts[i] * (1 - e);
-        }
-      });
-
-      // finalize
-      for (const v of toHide) {
-        v.s.alpha = 0;
-        v.s.visible = false;
-      }
-    }
 
 
 
@@ -14729,7 +16279,7 @@ function isPopupAlive(p: any): boolean {
       const amountText = new Text({
       text: "0.00",
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 55,
         fontWeight: "1",
@@ -14745,7 +16295,7 @@ function isPopupAlive(p: any): boolean {
     const xText = new Text({
       text: "x",
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 44,              // 👈 slightly smaller feels nicer
         fontWeight: "1",
@@ -14757,7 +16307,7 @@ function isPopupAlive(p: any): boolean {
     const multText = new Text({
       text: String(mult),
       style: {
-        fontFamily: "pixeldown",
+        fontFamily: overlayBrandFontFamilyFor(getLang()),
         fill: 0xffffff,
         fontSize: 55,
         fontWeight: "1",
@@ -14842,7 +16392,7 @@ function tick(now: number) {
   const e = k * k * (3 - 2 * k); // smoothstep
   const v = baseValue * e;
 
-  amountText.text = v.toFixed(2);
+ amountText.text = fmtMoney(v);
 
   // Start tickhigh the first time we actually tick
   if (!startedTickHigh) {
@@ -15239,7 +16789,9 @@ addSystem(() => {
 // LAYOUT ALL (moved out of main.ts)
 // =====================
 const { layoutAll } = makeLayoutAll({
-  
+  settingsBtnPixi,
+    relayoutGridSprites: () => relayoutGridSpritesNow(),
+  redrawReelDimmer: () => { if (reelDimmer.visible) redrawReelDimmer(); },
   app,
   state,
   __layoutDeps,
@@ -15385,16 +16937,36 @@ await runFinalBootPipelineOnce();
 
   playMusicWhenUnlocked,
 
-  onStartupFinished: () => {
-    state.overlay.boot = false;
-    layoutMultiplierPlaque();
+onStartupFinished: () => {
+  state.overlay.boot = false;
 
-    // ✅ BASE GAME START: spawn the base car immediately
-    if (!carsDisabled(__layoutDeps)) {
-      bgCarCooldown = 999;
-      spawnBgCar(true);
-    }
-  },
+  layoutStudioTag();
+  layoutMultiplierPlaque();
+
+  if (!carsDisabled(__layoutDeps)) {
+    bgCarCooldown = 999;
+    spawnBgCar(true);
+  }
+
+  __gameReady = true;
+
+if (__pendingResumeRound) {
+
+
+  // ✅ AUTO-RESUME: once the game is actually booted, programmatically click Resume
+  requestAnimationFrame(() => {
+    const tick = () => {
+      if (!__gameReady) return requestAnimationFrame(tick);
+      if (__resumeInProgress) return;
+
+      const btn = document.getElementById("resume-btn") as HTMLButtonElement | null;
+      if (btn && !btn.disabled) btn.click();
+    };
+    tick();
+  });
+}
+},
+
 
   setSmokeEnabled: (on) => { smokeFxEnabled = on; },
   clearSmokeNow,
@@ -15473,6 +17045,32 @@ function playStartupIntro() {
         cy: oy + y * (cellSize + SYMBOL_GAP) + cellSize / 2,
       };
     }
+function relayoutGridSpritesNow() {
+  // ✅ guard: grid not built yet (boot, loading, etc.)
+  if (!cellViews || !Array.isArray(cellViews) || cellViews.length === 0) return;
+
+  for (let i = 0; i < cellViews.length; i++) {
+    const v = cellViews[i];
+    const s = v?.sprite;
+    if (!s) continue;
+
+    const id = (s as any).__sid;
+    if (!id) continue;
+
+    applySymbolScale(s, id);
+
+    const { cx, cy } = getCellCenterXY(i);
+    s.x = cx;
+    s.y = targetYForSymbol(id, cy);
+
+    // eyes are optional during early boot
+    try {
+      applyEyesForCell(i, id);
+      syncEyesToSprite(i);
+    } catch {}
+  }
+}
+
 
     function targetYForSymbol(id: SymbolId, baseCY: number) {
       return baseCY + (id === "S1" ? SCATTER_LIFT_Y : 0);
@@ -15516,7 +17114,7 @@ function scheduleNextBlink(e: EyeOverlay, id: SymbolId | null) {
 }
 
 
-    let cellViews: CellView[] = [];
+   
   addSystem((dt) => {
     // dt already clamped by router, but this is fine if you want extra safety:
     dt = Math.min(0.05, dt);
@@ -15866,9 +17464,43 @@ const { wait, waitT, durT, turboFactor } = makeTurboTiming(() => !!state.ui.turb
     }
 
 let __fsAutoKickToken = 0;
+let __fsCoreReady = true;
+let __fsCoreReadyToken = 0;
 
+function markFsCoreNotReady() {
+  __fsCoreReady = false;
+  __fsCoreReadyToken++;
+  return __fsCoreReadyToken;
+}
+function markFsCoreReady(token: number) {
+  // only resolve latest transition
+  if (token === __fsCoreReadyToken) __fsCoreReady = true;
+}
+function isFsCoreReady() {
+  return __fsCoreReady;
+}
+
+function waitForFsCoreReady(): Promise<void> {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (isFsCoreReady()) return resolve();
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
 function allowFsSpinWhileSettingsOpen(): boolean {
   return state.game.mode === "FREE_SPINS" && state.fs.remaining > 0;
+}
+
+function waitForFsIntroToFinish(): Promise<void> {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (!state.overlay.fsIntro) return resolve();
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
 }
 
 function kickFreeSpinsAuto(delayMs = 250) {
@@ -15881,6 +17513,8 @@ function kickFreeSpinsAuto(delayMs = 250) {
     // only auto-chain during real FREE SPINS
     if (state.game.mode !== "FREE_SPINS") return;
     if (state.fs.remaining <= 0) return;
+    // ✅ don’t auto-spin until FS reelhouse/VFX have fully transitioned in
+if (!isFsCoreReady()) return;
 
     // do NOT spin during overlays/menus
    if (
@@ -15901,7 +17535,181 @@ function kickFreeSpinsAuto(delayMs = 250) {
 }
 
 
+
+type ReplayResponse = {
+  payoutMultiplier: number;
+  costMultiplier: number;
+  state: any; // game-specific
+};
+
+function getReplayParams() {
+  
+const qs = new URLSearchParams(location.search);
+
+const isReplay =
+  qs.get("replay") === "true" ||
+  location.pathname.includes("/replay") ||
+  (qs.has("event") && (qs.has("math") || qs.has("version")) && qs.has("mode"));
+
+if (!isReplay) return null;
+
+
+  // Stake launcher uses different names
+  const rgs_url =
+    qs.get("rgs_url") ||
+    qs.get("rgsUrl") ||
+    qs.get("rgs");
+
+  const game =
+    qs.get("game");
+
+  const version =
+    qs.get("version") ||
+    qs.get("math");        // ✅ launcher uses math=<number>
+
+  const mode =
+    qs.get("mode");
+
+  const event =
+    qs.get("event") ||
+    qs.get("eventId");     // ✅ launcher uses eventId=<number>
+
+  // rgs_url is REQUIRED to actually call /bet/replay/...
+  if (!game || !version || !mode || !event || !rgs_url) {
+    console.warn("[REPLAY] missing params", { rgs_url, game, version, mode, event });
+    return null;
+  }
+
+  return {
+    rgs_url: rgs_url.replace(/\/+$/, ""),
+    game,
+    version,
+    mode,
+    event,
+  };
+}
+
+
+async function fetchReplay(): Promise<ReplayResponse> {
+  const p = getReplayParams();
+  if (!p) throw new Error("Replay missing required query params");
+
+  // ✅ FORCE absolute base url even if p.rgs_url is "rgs.stake-engine.com"
+  const base =
+    p.rgs_url.startsWith("http://") || p.rgs_url.startsWith("https://")
+      ? p.rgs_url
+      : `https://${p.rgs_url}`;
+
+  const url = `${base.replace(/\/+$/, "")}/bet/replay/${p.game}/${p.version}/${p.mode}/${p.event}`;
+
+  console.log("[REPLAY] fetch url:", url);
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Replay fetch failed: HTTP ${res.status}`);
+  return (await res.json()) as ReplayResponse;
+}
+
+
+
+async function bootReplayIfNeeded() {
+  const replayParams = getReplayParams();
+  if (!replayParams) return;
+
+  console.log("[REPLAY] detected params:", replayParams);
+
+  const replay = await fetchReplay();
+  console.log("[REPLAY] raw response keys:", Object.keys(replay as any));
+  console.log(
+    "[REPLAY] typeof state:",
+    typeof (replay as any).state,
+    "isArray:",
+    Array.isArray((replay as any).state)
+  );
+
+ const rawState = (replay as any)?.state;
+
+// ✅ Support both formats:
+// A) state is already an array of steps
+// B) state is an object with steps (or events) inside it
+const replayStateArr =
+  Array.isArray(rawState) ? rawState :
+  Array.isArray((rawState as any)?.steps) ? (rawState as any).steps :
+  Array.isArray((rawState as any)?.events) ? (rawState as any).events :
+  null;
+
+if (!Array.isArray(replayStateArr) || replayStateArr.length === 0) {
+  console.warn("[REPLAY] rawState keys:", rawState ? Object.keys(rawState) : rawState);
+  throw new Error("Replay state has no steps array (state / state.steps / state.events)");
+}
+
+
+  const initialGrid = replayStateArr[0]?.grid;
+  if (!Array.isArray(initialGrid) || initialGrid.length === 0) {
+    throw new Error("Replay step[0].grid invalid");
+  }
+
+  const m = (new URLSearchParams(location.search).get("mode") || "").toUpperCase();
+  const visualMode: Mode =
+    (m.includes("BONUS") || m.includes("FREE") || m.includes("FS")) ? "FREE_SPINS" : "BASE";
+
+  pendingReplayRes = {
+    mode: visualMode,
+    initialGrid,
+    steps: replayStateArr.map((st: any) => ({
+      grid: st.grid,
+      nextGrid: st.nextGrid,
+      clusters: st.clusters ?? [],
+      explodePositions: st.explodePositions ?? [],
+      multiplier: st.multiplier ?? 1,
+      stepWinX: st.stepWinX ?? 0,
+      infusedScatters: st.infusedScatters ?? 0,
+      enchantedClusters: st.enchantedClusters ?? 0,
+      aftershockWildSpawned: !!st.aftershockWildSpawned,
+      aftershockWildIndex: st.aftershockWildIndex ?? -1,
+    })),
+    totalWinX: Number((replay as any)?.payoutMultiplier ?? 0),
+    ladderIndexAfter: state.fs.ladderIndex,
+    fsRemainingAfter: state.fs.remaining,
+    fsAwarded: 0,
+  } as any;
+
+  replayLoaded = true;
+
+  // mark replay mode so playSpin doesn't auto-chain
+  (state.ui as any).isReplay = true;
+
+  // disable autoplay state
+  state.ui.auto = false;
+  state.ui.autoArmed = false;
+  state.ui.autoPendingRounds = -1;
+// ✅ Replay UI: disable all betting controls
+try {
+  (spinBtnPixi as any)?.resetVisual?.();      // keep SPIN usable as PLAY
+  betUpBtnPixi?.setEnabled?.(false);
+  betDownBtnPixi?.setEnabled?.(false);
+
+  // disable BUY
+  buyBtnPixi.eventMode = "none";
+  buyBtnPixi.cursor = "default";
+  buyBtnPixi.alpha = 1;
+
+  // disable AUTO
+  autoBtnPixi?.setEnabled?.(false);
+} catch {}
+// ✅ Replay: show PLAY skin on the spin button
+state.ui.autoArmed = true;
+refreshAutoSpinSpinButton();
+
+console.log(
+  "[REPLAY] ready. pendingReplayRes.steps =",
+  pendingReplayRes?.steps?.length ?? 0
+);
+
+}
+
+
 async function doSpin() {
+
   function computeTotalWinXFromSteps(res: SpinResult): number {
   // Prefer explicit total if provider gives it
   const direct = (res as any).totalWinX;
@@ -15921,6 +17729,13 @@ async function doSpin() {
 
 
   if (state.overlay.boot) return;
+  // ✅ REPLAY MODE: never place bets / never call RGS wallet endpoints
+if (getReplayParams()) {
+  console.log("[REPLAY] doSpin blocked (replay mode). Use the PLAY button.");
+  return;
+}
+  // reset replay flag unless this spin explicitly sets it
+(state.ui as any).isReplay = false;
   if (loadingLayer?.visible) return;
   if (state.overlay.splash) return;
   if (state.overlay.startup) return;
@@ -15930,18 +17745,30 @@ async function doSpin() {
     console.warn("[RGS] doSpin blocked — not authenticated yet");
     return;
   }
-
-  if (isRgs && isDemo) {
-    // no-op; demo uses local provider path
+// ✅ NOW place the active-round guard here
+  if (isRgs && rgsClient.getLastRoundActive()) {
+    console.warn("[RGS] doSpin blocked — active round exists after refresh (resume/restart required)");
+    return;
   }
+
 
   if (state.ui.buyMenuOpen || (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen())) return;
   if (state.ui.settingsOpen && !allowFsSpinWhileSettingsOpen()) return;
   if (state.ui.spinning) return;
 
-  const mode: Mode = (state.game.mode === "FREE_SPINS" || state.fs.remaining > 0) ? "FREE_SPINS" : "BASE";
+const isBuyBonusSpin = !!state.ui.buyChoice;
+const mode: Mode = isBuyBonusSpin
+  ? "FREE_SPINS"
+  : ((state.game.mode === "FREE_SPINS" || state.fs.remaining > 0) ? "FREE_SPINS" : "BASE");
 
   let rgsRoundStarted = false;
+
+// ✅ RGS safety: do not start another spin while a round is still being processed/closed
+if (isRgs && !isDemo && rgsRoundLock) {
+  console.warn("[RGS] doSpin blocked — round lock active");
+  return;
+}
+
 
   state.ui.spinning = true;
   uiController.applyUiLocks();
@@ -15981,8 +17808,11 @@ buyBtnPixi.cursor = "default";
 // ✅ disable AUTO during spinning (keep dimmed as normal)
 autoBtnPixi?.setEnabled?.(false);
 
-    const bet = state.bank.betLevels[state.bank.betIndex];
-const betMicro = dollarsToMicro(bet);
+const bet = state.bank.betLevels[state.bank.betIndex];
+
+const betMicro = isRgs
+  ? (rgsClient.getLastAuth()?.config?.betLevels?.[state.bank.betIndex] ?? dollarsToMicro(bet))
+  : dollarsToMicro(bet);
 
 
 
@@ -16037,7 +17867,7 @@ autoBtnPixi?.setEnabled?.(uiFree);
     // ✅ BASE: only reset when the NEXT spin starts (so it happens on click)
     let plaqueResetP: Promise<void> | null = null;
 
-    if (mode === "BASE" && plaqueIdx > 0) {
+if (!isBuyBonusSpin && mode === "BASE" && plaqueIdx > 0) {
       plaqueResetP = (async () => {
         // wait for any last step-up animation to finish
         await waitForPlaqueIdle();
@@ -16046,8 +17876,31 @@ autoBtnPixi?.setEnabled?.(uiFree);
         await animatePlaqueReturnToBase();
       })();
     }
-    await animateBoardExitDown();
-    if (plaqueResetP) await plaqueResetP;
+
+    
+// ✅ BUY BONUS: trigger FS intro BEFORE board spins out
+if (isBuyBonusSpin) {
+  const fsToken = markFsCoreNotReady();
+
+  const forcedFs = 10;
+  const startMult =
+    state.ui.buyChoice === "ULTRA" ? 5 :
+    state.ui.buyChoice === "SUPER" ? 3 :
+    1;
+
+  // Immediately switch visuals to FREE_SPINS
+  enterFreeSpins(forcedFs, startMult);
+
+  // Wait for intro to finish BEFORE any board animation
+  await waitForFsIntroToFinish();
+
+  // Allow FS core to spin only AFTER intro
+  markFsCoreReady(fsToken);
+}
+
+// Now animate board exit
+await animateBoardExitDown();
+if (plaqueResetP) await plaqueResetP;
 
 
 
@@ -16056,8 +17909,13 @@ autoBtnPixi?.setEnabled?.(uiFree);
       let openedFsIntro = false;           // if true, don't auto-chain spins
       let outcome: any = null; // we’ll type it properly after compile is green
 
+const replayParams = getReplayParams();
+const isReplay = !!replayParams;
 
+// ✅ Replay overrides everything: no auth, no /wallet/play, no /end-round.
+const useReplay = isReplay;
 
+const useRgsPlay = isRgs && rgsReady && !useReplay;
     try {
       // mode is already decided above
 
@@ -16073,12 +17931,12 @@ autoBtnPixi?.setEnabled?.(uiFree);
 
 const provider = getResultProvider();
 
-let res: SpinResult;
-let charged = 0;
+  let res: SpinResult;
+  let charged = 0;
+  let buyChoice: any = null;
 
-// ✅ Demo sessions can return round.active=false and empty state.
-// In demo: run local sim and DO NOT touch endRound.
-const useRgsPlay = isRgs && !isDemo;
+
+
 
 if (useRgsPlay && rgsRoundLock) {
   console.warn("[RGS] blocked: round lock still active");
@@ -16101,24 +17959,235 @@ if (useRgsPlay && rgsRoundLock) {
   uiController.applyUiLocks();
   return;
 }
+if (useReplay) {
+  // lock UI etc already done above
+  const replay = await fetchReplay();
 
+  // 🔒 In replay: disable betting UI (no spin/autoplay/buy/bet)
+  // Pick whatever you already use to “lock”:
+  state.ui.auto = false;
+  state.ui.autoArmed = false;
+  state.ui.autoPendingRounds = -1;
+    (state.ui as any).isReplay = true;
+
+  // Now convert replay.state into the SAME SpinResult shape your playSpin expects.
+  // You already have a converter for Stake round.state arrays — reuse it.
+
+  const replayStateArr = (replay as any)?.state;
+
+  if (!Array.isArray(replayStateArr) || replayStateArr.length === 0) {
+    throw new Error("Replay state missing/invalid");
+  }
+
+  const initialGrid = replayStateArr[0]?.grid;
+  if (!Array.isArray(initialGrid) || initialGrid.length === 0) {
+    throw new Error("Replay step[0].grid invalid");
+  }
+
+const m = (new URLSearchParams(location.search).get("mode") || "").toUpperCase();
+const visualMode: Mode =
+  (m.includes("BONUS") || m.includes("FREE") || m.includes("FS")) ? "FREE_SPINS" : "BASE";
+
+
+  res = {
+    mode: visualMode,
+    initialGrid,
+    steps: replayStateArr.map((st: any) => ({
+      grid: st.grid,
+      nextGrid: st.nextGrid,
+      clusters: st.clusters ?? [],
+      explodePositions: st.explodePositions ?? [],
+      multiplier: st.multiplier ?? 1,
+      stepWinX: st.stepWinX ?? 0,
+
+      infusedScatters: st.infusedScatters ?? 0,
+      enchantedClusters: st.enchantedClusters ?? 0,
+      aftershockWildSpawned: !!st.aftershockWildSpawned,
+      aftershockWildIndex: st.aftershockWildIndex ?? -1,
+    })),
+    totalWinX: Number(replay?.payoutMultiplier ?? 0),
+
+    // replay should not mutate your FS ladder; keep current
+    ladderIndexAfter: state.fs.ladderIndex,
+    fsRemainingAfter: state.fs.remaining,
+    fsAwarded: 0,
+  } as any;
+
+  // No wallet settlement in replay
+  rgsRoundStarted = false;
+}
+console.log("[RGS] useRgsPlay?", {
+  useRgsPlay,
+  isRgs,
+  rgsReady,
+  demo: rgsClient.getConfig()?.demo,
+  replay: !!getReplayParams(),
+});
 
 if (useRgsPlay) {
   rgsRoundLock = true;
 
   try {
-    const playRes: any = await rgsClient.play(betMicro, "base");
+    // Capture buy choice BEFORE computing rgsMode (buyMenu sets state.ui.buyChoice)
+    buyChoice = state.ui.buyChoice;
 
-    // Your backend may return either {result: ...} or the result directly
-    res = ((playRes as any).result ?? playRes) as SpinResult;
+    const rgsMode =
+      buyChoice === "SUPER" ? "bonus_super" :
+      buyChoice === "ULTRA" ? "bonus_ultra" :
+      "base";
 
-    // ✅ Only mark round started if server says it's active
-    // (endRound is only valid when active === true)
-    if (mode === "BASE" && (playRes as any)?.round?.active === true) {
-      rgsRoundStarted = true;
-    } else {
-      rgsRoundStarted = false;
+    console.log("[BUY] buyChoice used for rgsMode:", buyChoice, "=>", rgsMode);
+
+    const costMult =
+      rgsMode === "bonus_super" ? 89 :
+      rgsMode === "bonus_ultra" ? 100 :
+      1;
+
+    const debitMicro = betMicro * costMult;
+
+    // ✅ Prevent play call if client-side balance is already insufficient
+    if (state.bank.balance * 1_000_000 < debitMicro) {
+      buyMenuApi?.showInsufficientToast?.();
+      rgsRoundLock = false;
+      state.ui.spinning = false;
+      return;
     }
+
+    console.log("[RGS] about to /wallet/play", { betMicro, rgsMode, modeVisual: mode });
+
+    const playRes: any = await rgsClient.play(betMicro, rgsMode);
+    state.ui.buyChoice = null;
+    console.log("🔍 FULL playRes:", playRes);
+console.log("🔍 playRes.round:", playRes?.round);
+ 
+    // ✅ Always sync client balance from play response
+    const playBal = (playRes as any)?.balance;
+    const playAmt = (playBal && typeof playBal === "object") ? playBal.amount : null;
+
+    if (typeof playAmt === "number" && Number.isFinite(playAmt)) {
+      state.bank.balance = playAmt / 1_000_000;
+      balanceLabel.text = fmtMoney(state.bank.balance);
+      uiController.applyUiLocks();
+    }
+
+   
+
+
+
+
+
+
+
+// ✅ Convert Stake round.state -> our SpinResult shape (defensive)
+let round = (playRes as any)?.round ?? null;
+let stateArr = round?.state;
+const payoutMult = Number(round?.payoutMultiplier ?? 0);
+const payout = Number(round?.payout ?? 0);
+
+
+
+
+// ✅ Debug: prove what the server is sending for FS
+console.log("[RGS] round.active:", round?.active);
+console.log("[RGS] round.event:", round?.event ?? null);
+
+if (Array.isArray(stateArr)) {
+  console.log("[RGS] state steps:", stateArr.length);
+  console.log("[RGS] step0 keys:", Object.keys(stateArr[0] ?? {}));
+
+  // dump a quick “shape summary” for a few steps
+  for (let i = 0; i < Math.min(3, stateArr.length); i++) {
+    console.log(`[RGS] step${i} keys:`, Object.keys(stateArr[i] ?? {}));
+  }
+}
+
+// ✅ Empty state can be a valid losing spin (when payout is zero).
+// IMPORTANT: DO NOT try to animate grid when state is empty.
+if (!Array.isArray(stateArr) || stateArr.length === 0) {
+  if (payoutMult <= 0 && payout <= 0 && round?.active !== true) {
+    console.log("[RGS] empty state + zero payout => losing spin");
+
+    const nextGrid = makeNewDemoLosingGrid(lastSettledGrid ?? null, COLS, ROWS);
+
+    await animateBoardReveal(nextGrid as any);
+    applyGridToSprites(nextGrid as any);
+
+    await setReelDimmer(false);
+
+    rgsRoundStarted = false;
+    rgsRoundLock = false;
+    state.ui.spinning = false;
+
+    return;
+  }
+
+  console.warn("[RGS] empty state but non-zero / unexpected payout => aborting", {
+    active: round?.active,
+    payoutMultiplier: round?.payoutMultiplier,
+    payout: round?.payout,
+    event: (round as any)?.event,
+    mode: round?.mode,
+  });
+
+  stopAutoNow("RGS empty state");
+  refreshAutoSpinSpinButton();
+  buyMenuApi?.showToast?.("Stake returned an invalid round. Please refresh.");
+
+  rgsRoundLock = false;
+  state.ui.spinning = false;
+  return;
+}
+
+
+
+
+
+
+// Step 0 grid is our initialGrid
+const initialGrid = stateArr[0]?.grid;
+console.log("[SCATTERS] initial:", countScatters(initialGrid), "payoutX:", Number(round?.payoutMultiplier ?? 0));
+
+
+if (!Array.isArray(initialGrid) || initialGrid.length === 0) {
+  console.warn("[RGS] round.state[0].grid invalid:", stateArr[0]);
+  throw new Error("Invalid RGS step[0].grid");
+}
+console.log("[SCATTERS] step0:", countScatters(initialGrid), "payoutX:", Number(round?.payoutMultiplier ?? 0));
+
+
+res = {
+ mode: buyChoice ? "FREE_SPINS" : mode,
+  initialGrid,
+
+  steps: stateArr.map((st: any) => ({
+      kind: st.kind,
+  fsRemaining: st.fsRemaining,
+  fsAfter: st.fsAfter,
+  fsTotal: st.fsTotal,
+    grid: st.grid,
+    nextGrid: st.nextGrid,
+    clusters: st.clusters ?? [],
+    explodePositions: st.explodePositions ?? [],
+    multiplier: st.multiplier ?? 1,
+    stepWinX: st.stepWinX ?? 0,
+
+    infusedScatters: st.infusedScatters ?? 0,
+    enchantedClusters: st.enchantedClusters ?? 0,
+    aftershockWildSpawned: !!st.aftershockWildSpawned,
+    aftershockWildIndex: st.aftershockWildIndex ?? -1,
+  })),
+
+  // ✅ server truth for win
+  totalWinX: Number(round?.payoutMultiplier ?? 0),
+
+  // temporary defaults (we'll wire FS properly next)
+  ladderIndexAfter: state.fs.ladderIndex,
+  fsRemainingAfter: state.fs.remaining,
+  fsAwarded: 0,
+} as any;
+
+rgsRoundStarted = (round?.active === true);
+
 
   } catch (e: any) {
     // unlock on any play error
@@ -16132,9 +18201,13 @@ if (useRgsPlay) {
       buyMenuApi?.showToast?.("Stake says an active bet is still open. Please refresh the game session.");
       return;
     }
-
-    buyMenuApi?.showToast?.("RGS play failed. Check console for request payload.");
-    throw e;
+if (msg.includes("err_ipb") || msg.includes("insufficient balance")) {
+  // ✅ show your existing "insufficient" UI and exit gracefully
+  buyMenuApi?.showInsufficientToast?.();
+  return;
+}
+   buyMenuApi?.showToast?.("RGS play failed. Check console for request payload.");
+return;
   }
 
 } else {
@@ -16152,43 +18225,32 @@ if (useRgsPlay) {
   charged = (mode === "BASE") ? ((outcome as any).betAmount ?? spinCost) : 0;
 }
 
-// ✅ Only do local debits when NOT under live RGS play
-if (!useRgsPlay && charged > 0) {
+if (!useRgsPlay && !useReplay && charged > 0) {
   state.bank.balance = Math.max(0, state.bank.balance - charged);
   balanceLabel.text = fmtMoney(state.bank.balance);
   uiController.applyUiLocks();
 }
 
-
-
+// ✅ Only apply local-sim FS bookkeeping when NOT using RGS play
+if (!useRgsPlay && !useReplay) { 
   state.fs.ladderIndex = res.ladderIndexAfter;
 
-// ✅ NEW: delay FS retrigger award until the tumble visually settles
-const prevFs = state.fs.remaining;
-const nextFs = res.fsRemainingAfter;
+  const prevFs = state.fs.remaining;
+  const nextFs = res.fsRemainingAfter;
 
-// what FS would be *without* a retrigger (consume 1 spin)
-const expectedNoAward = Math.max(0, prevFs - 1);
+  const expectedNoAward = Math.max(0, prevFs - 1);
+  pendingFsAward = Math.max(0, nextFs - expectedNoAward);
 
-// this is the retrigger add (0 if none)
-pendingFsAward = Math.max(0, nextFs - expectedNoAward);
+  if (mode === "FREE_SPINS") {
+    state.fs.remaining = expectedNoAward;
+  } else {
+    state.fs.remaining = nextFs;
+  }
 
-// show the decrement immediately (visual truth)
-if (mode === "FREE_SPINS") {
-  state.fs.remaining = expectedNoAward;
-} else {
-  state.fs.remaining = nextFs; // BASE keeps old behavior
+  refreshFsCounter();
 }
 
-// update counter now (shows the decrement, not the awarded retrigger yet)
-refreshFsCounter();
 
-// ✅ IMPORTANT: DO NOT grow state.fs.total here anymore
-// (we will apply pendingFsAward after the 3rd scatter lands)
-
-
-
-        
 
         await playSpin(res);
 // ✅ back to calm idle after the spin
@@ -16211,13 +18273,20 @@ if (mode === "FREE_SPINS") {
 // ✅ WIN label should show THIS spin's win (not accumulated)
 setWinAmount(winAmount);
 
-// ✅ BIG WIN overlay should use the same derived winAmount
-if (winX >= BIG_WIN_X && winAmount > 0) {
-  await showBigWinAndWait(winAmount, winX);
+// ✅ Big Win overlay:
+// - Normal spins: show once using the total.
+// - RGS FREE_SPINS packed rounds: Big Wins are shown per spin inside playSpin() using REVEAL boundaries.
+const hasRevealBoundaries = (res.steps as any[]).some((s) => (s as any).kind === "REVEAL");
+const skipTotalBigWin = (useRgsPlay && res.mode === "FREE_SPINS" && hasRevealBoundaries);
+
+if (!skipTotalBigWin) {
+  if (winX >= BIG_WIN_X && winAmount > 0) {
+    await showBigWinAndWait(winAmount, winX);
+  }
 }
 
 // ✅ Wallet: apply win ONLY when NOT running under RGS
-if (!isRgs && winAmount > 0) {
+if (!useRgsPlay && !useReplay && winAmount > 0) {
   state.bank.balance += winAmount;
   balanceLabel.text = fmtMoney(state.bank.balance);
 }
@@ -16229,21 +18298,27 @@ if (!isRgs && winAmount > 0) {
 
 
 
-            // ✅ If we just triggered Free Spins from BASE (eg. 3 scatters),
-        // open the intro overlay instead of immediately chaining into FS spins.
-        if (mode === "BASE" && res.fsAwarded > 0) {
-    enterFreeSpins(res.fsAwarded); // ✅ exact awarded amount (10 usually)
+if (!isLiveRgs) {
+  if (mode === "BASE" && res.fsAwarded > 0) {
+    enterFreeSpins(res.fsAwarded);
     openedFsIntro = true;
   }
+} else {
+  // ✅ LIVE RGS: ignore client-side FS triggers
+  // Free spins must come from server state/event, not local awards.
+}
+
 
       } finally {
-  const useRgsPlay = isRgs && !isDemo;
 
-  // ✅ RGS: only close the round if:
-  // - we used live RGS play (not demo)
-  // - it's BASE
-  // - server said round.active === true (we latched via rgsRoundStarted)
-  if (useRgsPlay && mode === "BASE" && rgsRoundStarted) {
+
+  // ✅ Only close RGS round AFTER the entire feature is finished.
+  // Do NOT end the round mid–FREE_SPINS sequence.
+  if (
+    useRgsPlay &&
+    rgsRoundStarted &&
+    (state.game.mode !== "FREE_SPINS" || state.fs.remaining === 0)
+  ) {
     try {
       const endRes = await rgsClient.endRound();
       console.log("[RGS] endRound response:", endRes);
@@ -16370,7 +18445,6 @@ if (!isRgs && winAmount > 0) {
     state.ui.autoLeft = Math.max(0, (state.ui.autoLeft ?? 0) - 1);
     refreshAutoSpinSpinButton();
 
-
     if (state.ui.autoLeft <= 0) {
       stopAutoNow("auto rounds finished");
       return;
@@ -16394,6 +18468,8 @@ const FS_RETRIGGER_AWARD = 5;  // free spins: 3+ scatters => +5 FS (retrigger)
 
 // Per-spin latch: allow only ONE award per spin outcome
 let __scatterAwardedThisSpin = false;
+let __activeSpinRes: any = null; // ✅ points at the SpinResult currently being played
+
   
 
   function countScatters(grid: Cell[]) {
@@ -16404,43 +18480,46 @@ let __scatterAwardedThisSpin = false;
     return n;
   }
 async function ensureScatterAwardOnSettledGrid(grid: Cell[], res?: SpinResult) {
+  const isRgsDemo = !!rgsClient.getConfig()?.demo;
+  const isLiveRgs = !!rgsClient.getConfig()?.sessionID && !isRgsDemo;
+
+// ✅ LIVE RGS is authoritative — don't mint free spins client-side.
+if (isLiveRgs) {
+  return;
+}
+
+  const spinRes: any = res ?? __activeSpinRes; // ✅ NEW
+
   const sc = countScatters(grid);
   if (sc < 3) return;
 
-  // only award once per spin result
   if (__scatterAwardedThisSpin) return;
   __scatterAwardedThisSpin = true;
 
-  // FREE SPINS: retrigger immediately (even if provider forgot)
   if (state.game.mode === "FREE_SPINS") {
-    // Prefer the provider-derived pendingFsAward if we have it; otherwise force +5.
     const add =
       pendingFsAward > 0 ? pendingFsAward :
-      (res && (res as any).fsAwarded > 0 ? (res as any).fsAwarded : FS_RETRIGGER_AWARD);
+      (spinRes && (spinRes as any).fsAwarded > 0 ? (spinRes as any).fsAwarded : FS_RETRIGGER_AWARD);
 
     if (add > 0) {
       state.fs.remaining = Math.min(state.fs.totalCap, state.fs.remaining + add);
       state.fs.total = Math.min(state.fs.totalCap, state.fs.total + add);
       refreshFsCounter();
-
       await showFsAddedPopup(add);
-
-      // consume any pending award so we never double-pay
       pendingFsAward = 0;
     }
-
     return;
   }
 
-  // BASE GAME: force the spin result to report FS award (so your existing enterFreeSpins() path runs)
   if (state.game.mode === "BASE") {
     const award =
-      (res && (res as any).fsAwarded > 0) ? (res as any).fsAwarded : BASE_FS_AWARD;
+      (spinRes && (spinRes as any).fsAwarded > 0) ? (spinRes as any).fsAwarded : BASE_FS_AWARD;
 
-    if (res) (res as any).fsAwarded = award;
+    if (spinRes) (spinRes as any).fsAwarded = award;
     return;
   }
 }
+
 
 
 
@@ -16749,7 +18828,7 @@ await ensureScatterAwardOnSettledGrid(nextGrid);
 
     
       function applyGridToSprites(grid: Cell[]) {
-        
+        lastSettledGrid = grid.slice();
       for (let i = 0; i < CELL_COUNT; i++) {
         const id = grid[i].id;
         const s = cellViews[i].sprite;
@@ -17108,37 +19187,144 @@ function colsThatMovedFromExplosions(explodePositions: number[], COLS: number) {
       async function playSpin(res: SpinResult) {
         // New spin outcome => allow scatter award again
 __scatterAwardedThisSpin = false;
+__activeSpinRes = res;
         hideTumbleWinBannerNow(); // reset from any previous spin
           // ✅ reset the WIN panel for this spin
   setWinAmount(0);
 
 
-      setBackgroundForMode(res.mode, false);
+    if (res.mode !== "FREE_SPINS") {
+  setBackgroundForMode(res.mode, false);
+}
 
  
         hideTumbleWinBannerNow(); // reset banner for this spin
        
       let tumbleTotalSoFar = 0;
 
+      // ✅ Per-FREE-SPIN Big Win support (RGS packs the whole feature into one /wallet/play)
+      // We treat each segment between REVEAL markers as a single "spin" for Big Win purposes.
+      const betAmount = state.bank.betLevels[state.bank.betIndex];
+      const hasRevealBoundaries = (res.steps as any[]).some((s) => (s as any).kind === "REVEAL");
+      let spinWinXThisSpin = 0; // accumulate stepWinX until the next REVEAL
+
+      async function maybeShowBigWinForCompletedSpin() {
+        if (!hasRevealBoundaries) return; // normal single-spin path
+        if (spinWinXThisSpin <= 0) return;
+
+        if (spinWinXThisSpin >= BIG_WIN_X) {
+          const amount = spinWinXThisSpin * betAmount;
+          await showBigWinAndWait(amount, spinWinXThisSpin);
+        }
+
+        spinWinXThisSpin = 0;
+      }
+
+      // ✅ If this round is FREE_SPINS, force the same "enter feature" presentation
+// as your normal (non-RGS) free spins entry.
+if (res.mode === "FREE_SPINS") {
+  // Find the first REVEAL step (RGS multi-spin marker)
+  const firstReveal = (res.steps as any[]).find((s) => (s as any).kind === "REVEAL") as any;
+
+  const fsTot = Number(firstReveal?.fsTotal ?? state.fs.total ?? 0);
+  const fsRem = Number(firstReveal?.fsRemaining ?? state.fs.remaining ?? fsTot);
+
+  // Use the multiplier from the REVEAL marker as the feature start mult (fallback 1)
+  const startMult = Number(firstReveal?.multiplier ?? 1) || 1;
+
+  
+  // ✅ IMPORTANT: don't start revealing/spinning until the FS intro overlay is done
+if (state.overlay.fsIntro) {
+  await waitForFsIntroToFinish();
+}
+// ✅ wait for reelhouse/VFX transition to finish too
+await waitForFsCoreReady();
+  // RGS is authoritative for counters — overwrite whatever enterFreeSpins set
+  if (Number.isFinite(fsTot) && fsTot > 0) state.fs.total = fsTot;
+  if (Number.isFinite(fsRem) && fsRem >= 0) state.fs.remaining = fsRem;
+
+  refreshFsCounter();
+
+  // Make sure FS background is actually forced on (some paths keep BASE bg)
+  await setBackgroundForMode("FREE_SPINS", false, true);
+}
       await animateBoardReveal(res.initialGrid);
       // ✅ SAFETY: if initial drop has 3+ scatters, force award
 await ensureScatterAwardOnSettledGrid(res.initialGrid, res);
 
 
-    // ✅ FREE SPINS retrigger popup (3+ scatters)
-    //if (res.mode === "FREE_SPINS" && res.fsAwarded > 0) {
-     // await showFsAddedPopup(res.fsAwarded);
-      //refreshFsCounter(); // in case your counter updates need a nudge here
-    //}
-if (res.mode === "FREE_SPINS" && res.fsAwarded > 0 && state.fs.remaining > 0) {
-  kickFreeSpinsAuto(250);
-}
+   
+
       await setReelDimmer(false);
 
-      
+    let pendingFsAfter: number | null = null;
     for (let si = 0; si < res.steps.length; si++) {
       
+      
       const step = res.steps[si];
+      // ✅ RGS multi-spin support: REVEAL steps mean “start of a new free spin”
+const kind = (step as any).kind;
+if (kind === "REVEAL") {
+  // ✅ A new free spin is starting => the previous spin segment is complete.
+// Skip for the very first REVEAL (si===0).
+if (si > 0) {
+  await maybeShowBigWinForCompletedSpin();
+}
+  // ✅ if the previous spin has just finished, apply its "after" counter now
+if (pendingFsAfter != null) {
+  state.fs.remaining = pendingFsAfter;
+  refreshFsCounter();
+  pendingFsAfter = null;
+}
+  // Update FS counter from RGS (fast-test books include these)
+  const fsRem = Number((step as any).fsRemaining);
+  const fsTot = Number((step as any).fsTotal);
+  const fsAfter = Number((step as any).fsAfter);
+if (Number.isFinite(fsAfter) && fsAfter >= 0) {
+  pendingFsAfter = fsAfter;
+}
+
+  if (Number.isFinite(fsRem) && fsRem >= 0) {
+    state.game.mode = "FREE_SPINS";
+    state.fs.remaining = fsRem;
+    if (Number.isFinite(fsTot) && fsTot > 0) state.fs.total = fsTot;
+    refreshFsCounter();
+  }
+
+  // First REVEAL is the same as res.initialGrid (already revealed above)
+  if (si === 0 && gridsEqual((step as any).grid as any, res.initialGrid as any)) {
+    continue;
+  }
+
+  // Subsequent REVEAL steps = new spin reveal inside the same round
+  hideTumbleWinBannerNow();
+  clearWinPopups();
+  setWinAmount(0);
+  tumbleTotalSoFar = 0;
+
+  await animateBoardExitDown();
+  await animateBoardReveal((step as any).grid);
+  await setReelDimmer(false);
+
+  continue;
+}
+      console.log(
+  "[SPIN STEP]",
+  si,
+  {
+    aftershock: !!step.aftershockWildSpawned,
+    clusters: step.clusters?.length ?? 0,
+    stepWinX: step.stepWinX,
+    gridEqNext: gridsEqual(step.grid as any, step.nextGrid as any),
+    nextHasClusters: step.nextGrid ? "?" : "null",
+  }
+);
+if ((step as any).kind !== "REVEAL" &&
+    !step.aftershockWildSpawned &&
+    (!step.clusters || step.clusters.length === 0)) {
+  applyGridToSprites(step.grid);
+  continue;   // ✅ do NOT break the tumble chain
+}
       // ✅ Dynamic soundtrack intensity ramps per tumble
 if (res.mode === "BASE") {
   setBaseMusicIntensityFromTumble(si);
@@ -17149,6 +19335,11 @@ if (res.mode === "BASE") {
 if (step.aftershockWildSpawned) {
   applyGridToSprites(step.grid);     // ✅ ensures no "final wild" is visible
   await playAftershockSequence(step);
+  continue;
+}
+// ✅ if no wins, do nothing (extra safety)
+if (!step.clusters || step.clusters.length === 0) {
+  applyGridToSprites(step.grid);
   continue;
 }
 
@@ -17194,9 +19385,14 @@ drawGrid(step.grid);
     // ✅ Accumulate TOTAL WIN so far across tumbles, update sticky banner
     const stepWinAmount = step.stepWinX * state.bank.betLevels[state.bank.betIndex];
 tumbleTotalSoFar += stepWinAmount;
+// ✅ Per-spin Big Win accumulation (RGS FREE_SPINS packed into one /wallet/play)
+if (hasRevealBoundaries) {
+  spinWinXThisSpin += (Number(step.stepWinX) || 0);
+}
 
 // ✅ bottom WIN panel: tween up to the new total
 await animateWinAmountTo(tumbleTotalSoFar, durT(state.ui.turbo ? 80 : 140));
+
 
 
 // banner stays as-is
@@ -17280,19 +19476,16 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
     restoreWinningSprites();
 
 
-    // ✅ Step UP the multiplier plaque after ANY cluster win
-    if (step.clusters.length > 0) {
-      // step.multiplier is the multiplier used for THIS win,
-      // but the plaque should "step up" after the win.
-      let curIdx = LADDER.findIndex((x) => Math.abs(x - step.multiplier) < 1e-6);
-      if (curIdx < 0) curIdx = 0;
+ // ✅ Step UP the multiplier plaque after ANY cluster win
+if (step.clusters && step.clusters.length > 0) {
+  // Use the plaque's current index as the source of truth.
+  // This avoids "stuck at 2x" if step.multiplier is always 1 in BASE.
+  const nextIdx = Math.min(plaqueIdx + 1, LADDER.length - 1);
+  const nextMult = LADDER[nextIdx] ?? 1;
 
-      const nextIdx = Math.min(curIdx + 1, LADDER.length - 1);
-      const nextMult = LADDER[nextIdx];
-
-      updateMultiplierPlaque(nextMult);
-      setMult(nextMult);
-    }
+  updateMultiplierPlaque(nextMult);
+  setMult(nextMult);
+}
 
 
 
@@ -17310,9 +19503,19 @@ await Promise.all([framesOutP, dimmerOutP, explodeP]);
 
     // ✅ Last tumble is done — now hide the sticky banner
     await hideTumbleWinBannerAfterLast(200);
+    // ✅ apply final FS counter update after last spin
+if (pendingFsAfter != null) {
+  state.fs.remaining = pendingFsAfter;
+  refreshFsCounter();
+  pendingFsAfter = null;
+}
 
+// ✅ End of round: finalize the last free-spin segment for per-spin Big Win
+await maybeShowBigWinForCompletedSpin();
+__activeSpinRes = null;
 
     }
+
 
 
 
@@ -17370,20 +19573,136 @@ if (!bgBase || !bgFree) return;
       currentBgMode = mode;
     }
 
+function makeDeadGrid(): Cell[] {
+  // Guaranteed losing-looking board:
+  // - No 3+ clusters (checkerboard)
+  // - No scatters (S1)
+  // - No wilds (W1) or other specials
+  const a = "L1";
+  const b = "L2";
 
-    // ---- BOOT: show an initial grid ONCE on startup ----
-    function bootInitialBoard() {
-      const bootGrid = makeGrid(COLS, ROWS, WEIGHTS_BASE);
-      
+  const out: Cell[] = new Array(CELL_COUNT);
 
-      // draw immediately so you never start empty
-      drawGrid(bootGrid);
-      applyGridToSprites(bootGrid);
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const i = r * COLS + c;
+
+      // checkerboard prevents adjacency clusters
+      out[i] = { id: ((r + c) % 2 === 0) ? a : b } as any;
     }
+  }
+
+  return out;
+}
+
+function bootInitialBoard() {
+  const bootGrid = makeGrid(COLS, ROWS, WEIGHTS_BASE);
+
+  // draw immediately so you never start empty
+  drawGrid(bootGrid);
+  applyGridToSprites(bootGrid);
+
+  // ✅ remember this as the fallback for “empty state”
+  lastSettledGrid = bootGrid.slice();
+}
 
 
 
 }
+
+function gridsEqual(a: any[] | null | undefined, b: any[] | null | undefined) {
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i]?.id !== b[i]?.id) return false;
+  }
+  return true;
+}
+
+// 4-neighbour cluster check (up/down/left/right)
+function hasAnyCluster3Plus(grid: any[], cols: number, rows: number) {
+  const N = cols * rows;
+  const seen = new Uint8Array(N);
+
+  const idx = (c: number, r: number) => r * cols + c;
+
+  for (let i = 0; i < N; i++) {
+    if (seen[i]) continue;
+
+    const id = grid[i]?.id;
+    if (!id) { seen[i] = 1; continue; }
+
+    // BFS flood fill
+    let count = 0;
+    const q: number[] = [i];
+    seen[i] = 1;
+
+    while (q.length) {
+      const cur = q.pop()!;
+      count++;
+
+      // Early exit: any cluster >= 3 means "winning-like"
+      if (count >= 3) return true;
+
+      const r = Math.floor(cur / cols);
+      const c = cur - r * cols;
+
+      // neighbors
+      if (c > 0) {
+        const j = cur - 1;
+        if (!seen[j] && grid[j]?.id === id) { seen[j] = 1; q.push(j); }
+      }
+      if (c < cols - 1) {
+        const j = cur + 1;
+        if (!seen[j] && grid[j]?.id === id) { seen[j] = 1; q.push(j); }
+      }
+      if (r > 0) {
+        const j = cur - cols;
+        if (!seen[j] && grid[j]?.id === id) { seen[j] = 1; q.push(j); }
+      }
+      if (r < rows - 1) {
+        const j = cur + cols;
+        if (!seen[j] && grid[j]?.id === id) { seen[j] = 1; q.push(j); }
+      }
+    }
+  }
+
+  return false;
+}
+
+function makeRandomLosingGrid(cols: number, rows: number) {
+  // ✅ choose symbols that exist in your atlas and are “normal”
+  // Expand this list if you want more variety.
+  const pool = ["L1", "L2", "L3", "L4", "H1", "H2", "H3", "H4", "H5"];
+
+  const out: any[] = new Array(cols * rows);
+  for (let i = 0; i < out.length; i++) {
+    const id = pool[(Math.random() * pool.length) | 0];
+    out[i] = { id };
+  }
+  return out;
+}
+
+function makeNewDemoLosingGrid(prev: any[] | null | undefined, cols: number, rows: number) {
+  // Try a bunch of times to get a random grid with NO 3+ clusters
+  for (let k = 0; k < 250; k++) {
+    const g = makeRandomLosingGrid(cols, rows);
+
+    // must be different from last grid
+    if (prev && gridsEqual(g, prev)) continue;
+
+    // must be a true “losing” layout (no 3+ connected)
+    if (hasAnyCluster3Plus(g, cols, rows)) continue;
+
+    return g;
+  }
+
+  // Fallback (very unlikely): force a quick “safe” pattern
+  // (still not scatter/wild)
+  const fallback = makeRandomLosingGrid(cols, rows);
+  return fallback;
+}
+
 
 
 
@@ -17391,4 +19710,4 @@ if (!bgBase || !bgFree) return;
 
 main().catch((err) => {
   console.error("[BOOT ERROR]", err);
-});
+}); 

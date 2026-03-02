@@ -100,7 +100,7 @@ export function runBuyPricing(cfg: SimConfig) {
 const opts = [
   { name: "Pick & Mix", priceMult: 67, fsCount: 10, startMult: 1 },
   { name: "Giga",      priceMult: 78, fsCount: 10, startMult: 2 },
-  { name: "Super",     priceMult: 90, fsCount: 10, startMult: 3 },
+  { name: "Super",     priceMult: 89, fsCount: 10, startMult: 3 },
   { name: "Ultra",     priceMult: 100, fsCount: 10, startMult: 5 },
 ];
 

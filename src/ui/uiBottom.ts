@@ -5,14 +5,16 @@ export type UIBottomLayoutArgs = {
   W: number;
   H: number;
 
-  uiH: number;      // BASE (unscaled) panel height
-  safeB: number;    // safe inset bottom in px
+  uiH: number;
+  safeB: number;
 
-  uiScale: number;  // ✅ NEW: uniform scale for the entire bottom UI layer
+  uiScale: number;
 
   isMobile: boolean;
   isPortrait: boolean;
+  isLandscape: boolean; // ✅ NEW
 };
+
 
 
 export function createUIBottom() {
@@ -25,6 +27,12 @@ export function createUIBottom() {
   panelBg.eventMode = "none";
   layer.addChild(panelBg);
 
+// ✅ Landscape-only background plate (taller)
+const panelBgLand = new Graphics();
+panelBgLand.zIndex = -1;      // behind panelBg (and behind everything)
+panelBgLand.eventMode = "none";
+layer.addChild(panelBgLand);
+
   // ✅ Panel dimmer (blocks clicks when menus open)
   const uiDimmer = new Graphics();
   uiDimmer.zIndex = 9999;      // above anything in the panel
@@ -34,8 +42,11 @@ export function createUIBottom() {
   uiDimmer.cursor = "default";
   layer.addChild(uiDimmer);
 
- function layout(args: UIBottomLayoutArgs) {
-  const { W, H, uiH, safeB, uiScale } = args;
+function layout(args: UIBottomLayoutArgs) {
+  const { W, H, uiH, safeB, uiScale, isLandscape } = args;
+
+
+
 
   const s = Math.max(0.01, uiScale || 1);
 
@@ -47,30 +58,46 @@ export function createUIBottom() {
   layer.y = Math.round(H - uiH * s - safeB);
 
 
-    // --- draw panel bg ---
-    const PANEL_FILL = 0x000000;
-    const PANEL_ALPHA = 0.38;
-    const PANEL_OUTLINE_A = 0.35;
-    const PANEL_OUTLINE_W = 2;
-    const PANEL_RADIUS = 0;
+   // --- draw panel bg ---
+const PANEL_FILL = 0x000000;
 
+// ✅ landscape: invisible bg
+// ✅ desktop + portrait: semi-transparent bg
+const PANEL_ALPHA = isLandscape ? 0 : 0.5;
+
+const PANEL_OUTLINE_A = 0;
+const PANEL_OUTLINE_W = 2;
+const PANEL_RADIUS = 0;
+
+
+
+    
    panelBg.clear();
 
 const localW = W / s;
 const localH = uiH;
 
-if (PANEL_RADIUS > 0) {
-  panelBg
-    .roundRect(0, 0, localW, localH, PANEL_RADIUS)
+panelBgLand.clear();
 
-        .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
-        .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
-    } else {
-      panelBg
-        .rect(0, 0, localW, localH)
-        .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
-        .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
-    }
+if (isLandscape) {
+  const LAND_BG_H_MUL = 1.6; // 🔧 1.2–1.8
+  const landH = Math.round(localH * LAND_BG_H_MUL);
+  const y0 = Math.round(localH - landH);
+
+  panelBgLand
+    .rect(0, y0, localW, landH)
+    .fill({ color: 0x000000, alpha: 0.5 });
+} else {
+  panelBgLand.clear();
+}
+
+// draw main panel bg
+panelBg.clear();
+panelBg
+  .rect(0, 0, localW, localH)
+  .fill({ color: PANEL_FILL, alpha: PANEL_ALPHA })
+  .stroke({ width: PANEL_OUTLINE_W, color: 0xc7c7c7, alpha: PANEL_OUTLINE_A });
+
 
     // --- draw dimmer (panel-sized) ---
 uiDimmer.clear();

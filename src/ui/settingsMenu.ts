@@ -572,8 +572,10 @@ infoScrollViewport.addChild(infoContent);
 // We’ll use 2 text blocks + a paytable section in-between
 const INFO_TEXT_TOP_EN = `
 GAME RULES
+
 Blocky Farm is a 6×5 tumbling slot game that pays wins in clusters.
-A win is formed when 5 or more identical symbols connect anywhere on the grid.
+A win is formed when 5 or more identical symbols connect horizontally and/or vertically.
+Diagonal connections do NOT form a cluster win.
 
 Winning symbols explode and are removed from the grid.
 New symbols tumble into place and may create additional wins.
@@ -584,35 +586,49 @@ WAYS TO WIN
 • Winning symbols tumble and can trigger multiple wins in a single spin
 • Wild symbols substitute for all regular symbols except Scatter symbols
 
+
 GLOBAL MULTIPLIER
 • Starts at 1× on every spin
 • Advances on every winning tumble:
   1× → 2× → 3× → 5× → 8× → 12× → 20×
-• Resets when no further winning tumbles occur
+• Resets when no further winning tumbles occur in the base game
+
 
 FREE SPINS
-• In base game, FREE SPINS is triggered by landing 3 or more Scatter symbols
-• 3 or more Scatters award 5 additional Free Spins
-• Uses the same tumbling and cluster mechanics as the base game
-• The Global Multiplier does NOT reset during Free Spins
+• In the base game, 3 or more Scatter symbols trigger 10 Free Spins
+• During Free Spins, 3 or more Scatters award 5 additional Free Spins
+• Free Spins use the same tumbling and cluster mechanics as the base game
+• The Global Multiplier does NOT reset between Free Spins
+• The multiplier can advance a maximum of one step per Free Spin
 • Multiplier progression persists for the entire Free Spins session
+
+
+BONUS BUY
+• Players may purchase entry into a Free Spins feature
+• SUPER starts with 10 Free Spins at a 3× starting multiplier
+• ULTRA starts with 10 Free Spins at a 5× starting multiplier
+• Bonus Buy modes enter the feature directly without requiring Scatter symbols
+
 
 SECOND CHANCE WILD
 After a winning spin finishes tumbling, if no further cluster wins are available:
 • A Wild symbol may randomly land anywhere on the grid
-• This can create a final chance for an additional cluster win
+• This may create one additional opportunity for a final cluster win
+
 
 BOOSTED WILDS
 If a winning cluster contains 2 or more Wild symbols:
-• That cluster’s paytable value is boosted (1.6×)
+• That cluster’s paytable value is boosted by 1.25×
 • The boost applies only to the affected cluster
 • The boost is applied before the Global Multiplier
 
+
 INFUSED SCATTERS
 If exactly 2 Scatter symbols are present on the grid when a winning tumble occurs:
-• The winning tumble is infused
+• That winning tumble is infused
 • The Global Multiplier temporarily advances by one additional step for that tumble
 • This effect can occur once per spin
+
 
 Music by: 
 Cody O’Quinn
@@ -620,8 +636,27 @@ Cody O’Quinn
 
 const INFO_TEXT_BOTTOM_EN = `
 GENERAL TERMS
+
+GAME MODES
+
+BASE GAME
+• Cost: 1× bet
+• RTP: 97.08%
+• Maximum win: 27.58× the bet
+
+SUPER BONUS BUY
+• Cost: 89× bet
+• RTP: 97.08%
+• Starts with 10 Free Spins at 3× starting multiplier
+• Maximum win: 769× the bet
+
+ULTRA BONUS BUY
+• Cost: 100× bet
+• RTP: 96.99%
+• Starts with 10 Free Spins at 5× starting multiplier
+• Maximum win: 704.8× the bet
+
 • Theoretical RTP is approximately 97% over a long period of play
-• Maximum win is 10,000× the bet
 • All wins are paid according to the paytable and active multipliers
 
 Malfunction voids all wins and plays. A consistent internet connection is required. In the event of a disconnection, reload the game to finish any uncompleted rounds. The expected return is calculated over many plays. The game display is not representative of any physical device and is for illustrative purposes only. Winnings are settled according to the amount received from the Remote Game Server and not from events within the web browser. TM and © 2025 Stake Engine
@@ -664,8 +699,185 @@ infoContent.addChild(infoBodyTop);
 // ✅ paytable section (create once)
 const paytableSection = buildPaytableSection();
 
-infoContent.addChild(paytableSection);
+// ✅ define FIRST
+function buildWaysExampleSection() {
+  const section = new Container();
 
+  const title = new Text(
+    "WAYS TO WIN EXAMPLES",
+    new TextStyle(localizeInfoSystemStyle({
+      fontSize: 24,
+      fill: 0xffffff,
+      align: "center",
+    } as any))
+  );
+  title.anchor.set(0.5, 0);
+  section.addChild(title);
+
+  const gridSize = 14;
+  const cols = 6;
+  const rows = 6;
+
+  const labelStyle = new TextStyle(localizeInfoSystemStyle({
+    fontSize: 14,
+    fill: 0xffffff,
+    align: "center",
+  } as any));
+
+  const badStyle = new TextStyle(localizeInfoSystemStyle({
+    fontSize: 14,
+    fill: 0xff3b30,
+    align: "center",
+  } as any));
+
+  function drawBaseGrid(g: Graphics) {
+    g.clear();
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        g.rect(x * gridSize, y * gridSize, gridSize - 2, gridSize - 2)
+          .fill({ color: 0x555555 });
+      }
+    }
+  }
+
+  function fillCell(g: Graphics, x: number, y: number, col: number) {
+    g.rect(x * gridSize, y * gridSize, gridSize - 2, gridSize - 2)
+      .fill({ color: col });
+  }
+
+  function makeExampleBlock(opts: {
+    heading: string;
+    headingColor?: number;
+    kind: "H" | "V" | "M" | "D";
+    showRedX?: boolean;
+  }) {
+    const wrap = new Container();
+
+    const head = new Text(
+      opts.heading,
+      new TextStyle(localizeInfoSystemStyle({
+        fontSize: 14,
+        fill: opts.headingColor ?? 0xffffff,
+        align: "center",
+      } as any))
+    );
+    head.anchor.set(0.5, 0);
+
+    const g = new Graphics();
+
+    // draw grid + highlight
+    drawBaseGrid(g);
+
+    const blue = 0x4a8cff;
+
+    if (opts.kind === "H") {
+      for (let i = 0; i < 5; i++) fillCell(g, 1 + i, 2, blue);
+    } else if (opts.kind === "V") {
+      for (let i = 0; i < 5; i++) fillCell(g, 2, 1 + i, blue);
+    } else if (opts.kind === "M") {
+      // any-shape cluster (orthogonally connected)
+      fillCell(g, 2, 1, blue);
+      fillCell(g, 2, 2, blue);
+      fillCell(g, 2, 3, blue);
+      fillCell(g, 3, 3, blue);
+      fillCell(g, 4, 3, blue);
+    } else {
+      // D = diagonal (not counted)
+      for (let i = 0; i < 5; i++) fillCell(g, 1 + i, 1 + i, blue);
+    }
+
+  
+
+    wrap.addChild(head, g);
+ 
+
+    (wrap as any).__layout = (w: number) => {
+      const gridW = cols * gridSize;
+      const gridH = rows * gridSize;
+
+      head.x = Math.round(w / 2);
+      head.y = 0;
+
+      g.x = Math.round((w - gridW) / 2);
+      g.y = Math.round(head.height + 10);
+
+   
+
+      return { h: Math.round(g.y + gridH) };
+    };
+
+    return wrap;
+  }
+
+  // ✅ Valid examples (top row)
+  const goodBlocks = [
+    makeExampleBlock({ heading: "HORIZONTAL", kind: "H" }),
+    makeExampleBlock({ heading: "VERTICAL", kind: "V" }),
+    makeExampleBlock({ heading: "ANY SHAPE (CLUSTER)", kind: "M" }),
+  ];
+
+ const badBlock = makeExampleBlock({
+  heading: "DIAGONAL (NOT COUNTED)",
+  headingColor: 0xff3b30,
+  kind: "D",
+});
+
+  goodBlocks.forEach((b) => section.addChild(b));
+  section.addChild(badBlock);
+
+  (section as any).__layout = (w: number) => {
+    title.x = Math.round(w / 2);
+    title.y = 0;
+
+    let y = Math.round(title.height + 18);
+
+    // ----- Row 1: 3-up if wide enough, else stack -----
+    const row1Use3Up = w >= 720;
+    const row1Cols = row1Use3Up ? 3 : 1;
+    const row1GapX = row1Use3Up ? 36 : 0;
+    const rowGapY = 22;
+
+    const row1CellW = Math.max(1, Math.floor((w - row1GapX * (row1Cols - 1)) / row1Cols));
+    const row1StartX = Math.round((w - (row1CellW * row1Cols + row1GapX * (row1Cols - 1))) / 2);
+
+    let row1H = 0;
+    for (let i = 0; i < goodBlocks.length; i++) {
+      const r = Math.floor(i / row1Cols);
+      const c = i % row1Cols;
+
+      const b: any = goodBlocks[i];
+      b.x = row1StartX + c * (row1CellW + row1GapX);
+      b.y = y + r * ( (b.__layout(row1CellW).h ?? b.height) + rowGapY );
+      const h = b.__layout(row1CellW).h ?? b.height;
+      row1H = Math.max(row1H, h);
+    }
+
+    // advance y past row1 (handle stacked case too)
+    const row1Rows = Math.ceil(goodBlocks.length / row1Cols);
+    y += row1Rows * (row1H + rowGapY);
+
+    // ----- Row 2: Bad example centered -----
+    const badW = Math.min(w, 520); // keep it a bit tighter
+    const bx = Math.round((w - badW) / 2);
+
+    (badBlock as any).x = bx;
+    (badBlock as any).y = y;
+
+    const badH = (badBlock as any).__layout?.(badW)?.h ?? badBlock.height;
+
+    y += badH;
+
+    return { h: y };
+  };
+
+  return section;
+}
+
+// ✅ create once AFTER it's defined
+const waysExampleSection = buildWaysExampleSection();
+
+infoContent.addChild(waysExampleSection);
+infoContent.addChild(paytableSection);
 infoContent.addChild(infoBodyBottom);
 
 // scrolling state
@@ -680,53 +892,72 @@ let dragEnabled = false;
 let dragging = false;
 let dragStartY = 0;
 let scrollStartY = 0;
+let infoPanelRect = new Rectangle(); // ✅ used to restrict drag + wheel to the panel
+
 
 function setInfoDragEnabled(v: boolean) {
   dragEnabled = v;
 
-  // We only want drag gestures when enabled.
+  // Enable pointer events on both the panel and the viewport
   infoScrollViewport.eventMode = v ? "static" : "passive";
+  infoPanel.eventMode = "static"; // panel must remain static so it catches drags
+
   infoScrollViewport.cursor = v ? "grab" : "default";
 
-  // Clear any previous listeners so we don’t double-bind on resize/layout.
-  infoScrollViewport.removeAllListeners?.("pointerdown");
-  infoScrollViewport.removeAllListeners?.("pointerup");
-  infoScrollViewport.removeAllListeners?.("pointerupoutside");
-  infoScrollViewport.removeAllListeners?.("pointermove");
+  // Clear old listeners
+  infoScrollViewport.removeAllListeners?.();
+  infoPanel.removeAllListeners?.("pointerdown");
+  infoPanel.removeAllListeners?.("pointerup");
+  infoPanel.removeAllListeners?.("pointerupoutside");
+  infoPanel.removeAllListeners?.("pointermove");
 
   if (!v) return;
 
-  // Important: don’t let drag gestures bubble to backdrop/panel tap handlers.
-  infoScrollViewport.on("pointerdown", (e: any) => {
+  const startDrag = (e: any) => {
     e.stopPropagation?.();
+
+    // only allow drag if the pointer is inside the panel rect
+    const gx = e.global?.x ?? 0;
+    const gy = e.global?.y ?? 0;
+    if (!infoPanelRect.contains(gx, gy)) return;
+
     dragging = true;
-    dragStartY = e.global.y;
+    dragStartY = gy;
     scrollStartY = infoScrollY;
+
     infoScrollViewport.cursor = "grabbing";
-  });
+  };
 
-  infoScrollViewport.on("pointerup", (e: any) => {
-    e.stopPropagation?.();
+  const endDrag = (e?: any) => {
+    e?.stopPropagation?.();
     dragging = false;
     infoScrollViewport.cursor = "grab";
-  });
+  };
 
-  infoScrollViewport.on("pointerupoutside", () => {
-    dragging = false;
-    infoScrollViewport.cursor = "grab";
-  });
-
-  infoScrollViewport.on("pointermove", (e: any) => {
+  const moveDrag = (e: any) => {
     if (!dragEnabled || !dragging) return;
     e.stopPropagation?.();
 
-    const dy = e.global.y - dragStartY;
+    const gy = e.global?.y ?? 0;
+    const dy = gy - dragStartY;
 
-    // Thumb gesture: drag up -> content moves up (scrolls down)
-    // So subtract dy (classic mobile feel).
+    // drag up => content moves up (scroll down)
     setInfoScroll(scrollStartY + dy);
-  });
+  };
+
+  // ✅ dragging anywhere on the panel scrolls
+  infoPanel.on("pointerdown", startDrag);
+  infoPanel.on("pointermove", moveDrag);
+  infoPanel.on("pointerup", endDrag);
+  infoPanel.on("pointerupoutside", endDrag);
+
+  // ✅ dragging directly on the viewport also scrolls (same handlers)
+  infoScrollViewport.on("pointerdown", startDrag);
+  infoScrollViewport.on("pointermove", moveDrag);
+  infoScrollViewport.on("pointerup", endDrag);
+  infoScrollViewport.on("pointerupoutside", endDrag);
 }
+
 
 
 function getInfoContentHeight() {
@@ -744,13 +975,40 @@ function setInfoScroll(y: number) {
   infoScrollY = y;
   infoScrollViewport.y = Math.round(infoViewportY + infoScrollY);
 }
-
-window.addEventListener("wheel", (e) => {
+function onInfoWheel(e: WheelEvent) {
   if (!infoLayer.visible) return;
 
-  // ✅ keep wheel scrolling "natural" (match thumb drag)
-  setInfoScroll(infoScrollY + e.deltaY);
-}, { passive: true });
+  // ✅ always allow wheel/trackpad scroll while INFO is open
+  e.preventDefault();
+  e.stopPropagation?.();
+
+  setInfoScroll(infoScrollY - e.deltaY);
+}
+
+
+
+const infoWheelOpts = { passive: false, capture: true } as AddEventListenerOptions;
+
+// ✅ Pixi v8: use app.canvas (NOT app.view)
+(app.canvas as any)?.addEventListener?.("wheel", onInfoWheel, infoWheelOpts);
+
+// ✅ fallback: some embedded views deliver wheel to window
+window.addEventListener("wheel", onInfoWheel, infoWheelOpts);
+
+// ✅ document fallback
+document.addEventListener("wheel", onInfoWheel, infoWheelOpts);
+
+
+
+
+
+
+
+
+
+
+
+
 
 // close button (X)
 const infoClose = new Graphics();
@@ -789,12 +1047,63 @@ function refreshInfoTextForLanguage() {
   infoBodyBottom.anchor.x = 0.5;
 }
 
+// ✅ Tiny-view scaling for Settings overlay only
 
+
+function isTinyView(): boolean {
+  return !!state?.ui?.IS_TINY_VIEW;
+}
+
+const INFO_FONT_NORMAL = 20;
+const INFO_LINE_NORMAL = 30;
+
+const INFO_FONT_TINY = 14;   // 🔧 try 13..16
+const INFO_LINE_TINY = 20;   // 🔧 try 18..22
+
+function isTabletLikeInfoLayout(W: number, H: number) {
+  // same “mobileish” heuristic you use elsewhere
+  const aspect = W / H;
+  const mobileish = !!IS_TOUCH || W < 820 || aspect < 0.90;
+  const tabletish = mobileish && Math.min(W, H) >= 740; // matches your tablet threshold vibe
+  return tabletish;
+}
+
+function fitInfoTitleToWidth(maxW: number) {
+  // reset first so we don't "ping-pong" shrink on repeated layout calls
+  infoModalTitle.scale.set(1);
+
+  const b = infoModalTitle.getLocalBounds();
+  const w = Math.max(1, b.width);
+
+  if (w <= maxW) return;
+
+  const s = maxW / w;
+
+  // clamp so it doesn't become microscopic
+  const MIN_S = 0.72; // 🔧 try 0.65..0.80
+  infoModalTitle.scale.set(Math.max(MIN_S, s));
+}
 
 function layoutInfo() {
-  const W = app.screen.width;
-  const H = app.screen.height;
-    const LAND = isMobileLandscapeSettingsLayout();
+ 
+const W = app.screen.width;
+const H = app.screen.height;
+
+// ✅ Tiny view: shrink INFO body typography
+const fs = isTinyView() ? INFO_FONT_TINY : INFO_FONT_NORMAL;
+const lh = isTinyView() ? INFO_LINE_TINY : INFO_LINE_NORMAL;
+
+(infoBodyTop.style as any).fontSize = fs;
+(infoBodyBottom.style as any).fontSize = fs;
+
+(infoBodyTop.style as any).lineHeight = lh;
+(infoBodyBottom.style as any).lineHeight = lh;
+
+
+const cx = Math.round(W / 2);
+const cy = Math.round(H / 2); // ✅ no -20 in tiny view for info either
+applyTinyMainScale(cx, cy);
+  const LAND = isMobileLandscapeSettingsLayout();
 
   // backdrop
   infoBackdrop.clear();
@@ -806,14 +1115,32 @@ const panelH = Math.min(700, Math.round(H * 0.85));
   const x = (W - panelW) / 2;
   const y = (H - panelH) / 2;
 
+  // ✅ panel rect used for scrolling + hit testing
+infoPanelRect = new Rectangle(Math.round(x), Math.round(y), Math.round(panelW), Math.round(panelH));
+
+// ✅ make the panel catch pointer events everywhere inside it
+infoPanel.hitArea = infoPanelRect;
+
+
+
+
   infoPanel.clear();
   infoPanel
     .roundRect(x, y, panelW, panelH, 16)
     .fill({ color: 0x0b0b0b, alpha: 0.95 })
     .stroke({ width: 2, color: 0xb0b0b0, alpha: 0.35 });
 
-  infoModalTitle.x = Math.round(W / 2);
-  infoModalTitle.y = Math.round(y + 20);
+ infoModalTitle.x = Math.round(W / 2);
+infoModalTitle.y = Math.round(y + 20);
+
+// ✅ Tiny view only: force title to fit inside the panel width
+if (isTinyView()) {
+  // panel inner width (account for padding)
+  const pad = 30;
+  const titleMaxW = Math.max(1, panelW - pad * 2);
+  fitInfoTitleToWidth(titleMaxW);
+}
+
 
   // viewport rectangle (inside the panel)
   const pad = 30;
@@ -828,6 +1155,9 @@ const panelH = Math.min(700, Math.round(H * 0.85));
   infoScrollViewport.x = infoViewportX;
   infoScrollViewport.y = infoViewportY;
 
+  // ✅ keep the scroll viewport interactive (so dragging on content works too)
+infoScrollViewport.hitArea = new Rectangle(0, 0, infoViewportW, infoViewportH);
+
   // content is local to viewport
   infoContent.x = 0;
   infoContent.y = 0;
@@ -836,37 +1166,45 @@ const panelH = Math.min(700, Math.round(H * 0.85));
   (infoBodyTop.style as any).wordWrapWidth = infoViewportW;
   (infoBodyBottom.style as any).wordWrapWidth = infoViewportW;
 
-  // layout children vertically (local coords)
-  infoBodyTop.x = Math.round(infoViewportW / 2);
-  infoBodyTop.y = 0;
-
-  const topEndY = infoBodyTop.y + infoBodyTop.height + 26;
-
-  paytableSection.x = 0;
-  paytableSection.y = Math.round(topEndY);
-
-  // layout paytable to viewport width
-  const PORTRAIT_INFO = isMobilePortraitInfoLayout(W, H);
   // ✅ Mobile portrait: split header into 2 lines
+const PORTRAIT_INFO = isMobilePortraitInfoLayout(W, H);
 if (PORTRAIT_INFO) {
   infoModalTitle.text = "BLOCKY FARM\nGAME INFO";
   (infoModalTitle.style as any).align = "center";
-  // Optional: make the two lines sit nicer
-  (infoModalTitle.style as any).lineHeight = 40; // tweak if you want
+  (infoModalTitle.style as any).lineHeight = 40;
 } else {
-  // keep whatever your localized title is in non-portrait
   infoModalTitle.text = uiLabel("ui.gameInfoTitle", "BLOCKY FARM – GAME INFO");
   (infoModalTitle.style as any).lineHeight = 0;
 }
 
-    // ✅ Thumb-scroll only on mobile portrait
-  setInfoDragEnabled(PORTRAIT_INFO);
+// ✅ Drag-scroll enable (keep your current rules if you want to refine later)
+setInfoDragEnabled(true);
+
+// layout children vertically (local coords)
+infoBodyTop.x = Math.round(infoViewportW / 2);
+infoBodyTop.y = 0;
+
+// ✅ Ways example (between top text and paytable)
+waysExampleSection.x = 0;
+waysExampleSection.y = Math.round(infoBodyTop.y + infoBodyTop.height + 26);
+
+const waysSize = (waysExampleSection as any).__layout?.(infoViewportW);
+const afterWaysY = Math.round(
+  waysExampleSection.y + (waysSize?.h ?? waysExampleSection.height) + 26
+);
+
+// ✅ Paytable (after ways example)
+paytableSection.x = 0;
+paytableSection.y = afterWaysY;
+
 const paySize = (paytableSection as any).__layout?.(infoViewportW, PORTRAIT_INFO);
+const payEndY = Math.round(
+  paytableSection.y + (paySize?.h ?? paytableSection.height) + 26
+);
 
-  const payEndY = paytableSection.y + (paySize?.h ?? paytableSection.height) + 26;
-
-  infoBodyBottom.x = Math.round(infoViewportW / 2);
-  infoBodyBottom.y = Math.round(payEndY);
+// Bottom text after paytable
+infoBodyBottom.x = Math.round(infoViewportW / 2);
+infoBodyBottom.y = payEndY;
 
   // mask (world coords)
   infoMask.clear();
@@ -877,33 +1215,59 @@ const paySize = (paytableSection as any).__layout?.(infoViewportW, PORTRAIT_INFO
   // clamp + apply scroll
   setInfoScroll(infoScrollY);
 
-  // close button
-  const cx = Math.round(x + panelW - 30);
-  const cy = Math.round(y + 30);
 
-  infoClose.clear();
-  infoClose
-    .circle(cx, cy, 16)
-    .fill({ color: 0x000000, alpha: 0.4 })
-    .stroke({ width: 2, color: 0xffffff, alpha: 0.8 })
-    .moveTo(cx - 6, cy - 6).lineTo(cx + 6, cy + 6)
-    .moveTo(cx + 6, cy - 6).lineTo(cx - 6, cy + 6)
-    .stroke({ width: 3, color: 0xffffff });
+
+// ✅ Close button — top-right of INFO panel
+const closeX = Math.round(x + panelW - 30);
+const closeY = Math.round(y + 30);
+
+infoClose.clear();
+infoClose
+  .circle(closeX, closeY, 16)
+  .fill({ color: 0x000000, alpha: 0.4 })
+  .stroke({ width: 2, color: 0xffffff, alpha: 0.8 })
+  .moveTo(closeX - 6, closeY - 6).lineTo(closeX + 6, closeY + 6)
+  .moveTo(closeX + 6, closeY - 6).lineTo(closeX - 6, closeY + 6)
+  .stroke({ width: 3, color: 0xffffff });
+
 }
 
 
   let settingsPanelRect = new Rectangle();
 
-  // click-blocker full screen (invisible)
-  const settingsBlocker = new Graphics();
-  settingsMenuLayer.addChild(settingsBlocker);
+  // click-blocker full screen (invisible) — MUST stay unscaled
+const settingsBlocker = new Graphics();
+settingsMenuLayer.addChild(settingsBlocker);
 
-  // main panel (rounded rect)
-  const settingsPanel = new Graphics();
-  settingsMenuLayer.addChild(settingsPanel);
-  // ✅ All UI elements that must visually scale live in here (sliders can’t “undo” parent scaling)
+// ✅ Wrap panel+content so we can scale them around screen center (tiny view only)
+const settingsMain = new Container();
+settingsMenuLayer.addChild(settingsMain);
+
+
+
+function applyTinyMainScale(cx: number, cy: number) {
+  const mul = isTinyView() ? 0.82 : 1; // 🔧 tweak 0.78..0.88
+
+  if (mul !== 1) {
+    settingsMain.pivot.set(cx, cy);
+    settingsMain.position.set(cx, cy);
+    settingsMain.scale.set(mul);
+  } else {
+    settingsMain.scale.set(1);
+    settingsMain.pivot.set(0, 0);
+    settingsMain.position.set(0, 0);
+  }
+}
+
+
+// main panel (rounded rect)
+const settingsPanel = new Graphics();
+settingsMain.addChild(settingsPanel);
+
+// ✅ All UI elements that must visually scale live in here
 const settingsContent = new Container();
-settingsMenuLayer.addChild(settingsContent);
+settingsMain.addChild(settingsContent);
+
 
   // swallow clicks inside panel
   settingsPanel.eventMode = "static";
@@ -1061,12 +1425,24 @@ const infoTitle = new Text({
 settingsContent.addChild(sfxRow, musicRow);
 
   function layoutSettingsMenu() {
+
+// ✅ hard reset — settingsMenuLayer must be screen space
+settingsMenuLayer.scale.set(1);
+settingsMenuLayer.position.set(0, 0);
       const LAND = isMobileLandscapeSettingsLayout();
+        // ✅ tiny-view scale (only)
+
+ const W = app.screen.width;
+const H = app.screen.height;
+
+const PORTRAIT_MOBILE = (W < 820 || (W / H) < 0.90) && H >= W;
+
+
     // blocker to screen size
-    settingsBlocker.clear();
-    settingsBlocker
-      .rect(0, 0, app.screen.width, app.screen.height)
-      .fill({ color: 0x000000, alpha: 0.35 });
+  settingsBlocker.clear();
+  settingsBlocker
+    .rect(0, 0, W, H)
+    .fill({ color: 0x000000, alpha: 0.35 });
 
     settingsBlocker.eventMode = "static";
     settingsBlocker.cursor = "default";
@@ -1078,23 +1454,33 @@ settingsContent.addChild(sfxRow, musicRow);
     // panel size
 
   
-const W = app.screen.width;
-const H = app.screen.height;
-
-// ✅ portrait mobile detection (settings)
-const PORTRAIT_MOBILE = (W < 820 || (W / H) < 0.90) && H >= W;
-
-const panelW = 420;   
 
 
-const panelH = LAND ? 260 : 320
+// ✅ portrait PHONE ONLY (exclude tablets + exclude tiny)
+const shortSide = Math.min(W, H);
+const PORTRAIT_PHONE =
+  shortSide < 740 &&                 // ✅ tablet guard
+  !state?.ui?.IS_TINY_VIEW &&        // ✅ don't touch tiny view
+  (W < 820 || (W / H) < 0.90) &&
+  H >= W;
+
+// ✅ shrink settings menu ONLY in mobile portrait phone
+const panelW = PORTRAIT_PHONE ? 340 : 420;          // 🔧 try 360..400
+const panelH = LAND ? 260 : (PORTRAIT_PHONE ? 300 : 320); // 🔧 try 285..310
+
 
 
 
     const radius = 0;
 
-    const cx = Math.round(app.screen.width / 2);
-    const cy = Math.round(app.screen.height / 2) - 20;
+const cx = Math.round(app.screen.width / 2);
+
+// ✅ Tiny view: no vertical offset (400×225 can’t afford -20)
+const cy = Math.round(app.screen.height / 2) - (state?.ui?.IS_TINY_VIEW ? 0 : 20);
+
+applyTinyMainScale(cx, cy);
+
+
 
     settingsPanel.clear();
     settingsPanel
